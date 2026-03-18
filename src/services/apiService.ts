@@ -1,14 +1,59 @@
 /**
  * API Service — HTTP client for the local Musaic Bun server.
  *
- * Default base URL: http://localhost:3001
- * Change SERVER_URL to your Mac's local IP when testing on a real device.
+ * URL resolution priority:
+ *  1. User-configured IP (stored in MMKV)
+ *  2. Auto-detected from Metro bundler scriptURL (LAN IP on physical device)
+ *  3. Platform fallback (Android emulator / localhost)
  */
+import { NativeModules, Platform } from 'react-native';
+import { MMKV } from 'react-native-mmkv';
 
-export let SERVER_URL = 'http://localhost:3001';
+const storage = new MMKV({ id: 'musaic-settings' });
+const STORED_SERVER_URL_KEY = 'server_url';
+const PORT = 3001;
 
+function detectServerUrlAutomatic(): string {
+  if (__DEV__) {
+    // Metro bundler's scriptURL looks like "http://192.168.x.x:8081/index.bundle?..."
+    const scriptURL: string | undefined =
+      NativeModules?.SourceCode?.scriptURL ??
+      NativeModules?.SourceCode?.getConstants?.()?.scriptURL;
+    if (scriptURL) {
+      const match = scriptURL.match(/^https?:\/\/([^:\/]+)/);
+      if (match && match[1] !== 'localhost' && match[1] !== '127.0.0.1') {
+        return `http://${match[1]}:${PORT}`;
+      }
+    }
+  }
+  // Fallback: Android emulator uses 10.0.2.2 for host loopback
+  if (Platform.OS === 'android') return `http://10.0.2.2:${PORT}`;
+  return `http://localhost:${PORT}`;
+}
+
+function detectServerUrl(): string {
+  const stored = storage.getString(STORED_SERVER_URL_KEY);
+  if (stored) return stored;
+  return detectServerUrlAutomatic();
+}
+
+export let SERVER_URL = detectServerUrl();
+
+/** Persist a custom server URL and apply it immediately. */
 export function setServerUrl(url: string) {
   SERVER_URL = url.replace(/\/$/, '');
+  storage.set(STORED_SERVER_URL_KEY, SERVER_URL);
+}
+
+/** Clear the stored URL and fall back to auto-detection. */
+export function clearServerUrl() {
+  storage.delete(STORED_SERVER_URL_KEY);
+  SERVER_URL = detectServerUrlAutomatic();
+}
+
+/** Returns the user-stored server URL, or undefined if not configured. */
+export function getStoredServerUrl(): string | undefined {
+  return storage.getString(STORED_SERVER_URL_KEY);
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -291,6 +336,15 @@ export function getLyricsJobStatus(trackId: string): Promise<LyricsJobStatus> {
 /** Save manually edited lyrics. */
 export function saveLyrics(trackId: string, lrc: string): Promise<{ ok: boolean }> {
   return put<{ ok: boolean }>(`/api/lyrics/${encodeURIComponent(trackId)}`, { lrc });
+}
+
+/** Trigger online artwork lookup for a track that has no embedded cover. */
+export function fetchTrackArtwork(
+  trackId: string
+): Promise<{ ok: boolean; url?: string; source?: string; message?: string }> {
+  return get<{ ok: boolean; url?: string; source?: string; message?: string }>(
+    `/api/covers/${encodeURIComponent(trackId)}/fetch`
+  );
 }
 
 async function put<T>(path: string, body: unknown): Promise<T> {

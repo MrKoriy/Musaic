@@ -214,6 +214,13 @@ export function logListening(trackId: string, action: string): void {
     .run({ $id: trackId, $action: action });
 }
 
+// Update cover_url on a track (e.g. after fetching online artwork)
+export function updateTrackCoverUrl(trackId: string, coverUrl: string): void {
+  const db = getDb();
+  db.prepare("UPDATE tracks SET cover_url = $url, updated_at = unixepoch() WHERE id = $id")
+    .run({ $url: coverUrl, $id: trackId });
+}
+
 // Cover art
 export function setCoverData(trackId: string, data: Buffer, mimeType: string): void {
   const db = getDb();

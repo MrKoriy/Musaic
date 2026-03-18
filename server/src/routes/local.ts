@@ -31,6 +31,7 @@ import {
   upsertTrack,
   setCoverData,
   getCoverData,
+  updateTrackCoverUrl,
   getPlaylists,
   createPlaylist,
   deletePlaylist,
@@ -38,6 +39,7 @@ import {
   addTrackToPlaylist,
   removeTrackFromPlaylist,
 } from "../db/index.js";
+import { fetchOnlineArtwork } from "../providers/artwork.js";
 
 const AUDIO_EXTENSIONS = new Set([".flac", ".mp3", ".m4a", ".wav", ".ogg", ".opus", ".aiff", ".aif"]);
 
@@ -118,7 +120,7 @@ localRouter.post("/scan", async (c) => {
     return c.json({ error: "Scan already in progress", status: scanStatus }, 409);
   }
 
-  const body = await c.req.json<{ dir?: string }>().catch(() => ({}));
+  const body = await c.req.json<{ dir?: string }>().catch(() => ({} as { dir?: string }));
   const musicDir = body.dir ?? process.env.MUSIC_DIR;
 
   if (!musicDir) {
@@ -146,6 +148,26 @@ localRouter.post("/scan", async (c) => {
 
       scanStatus.lastScanAt = Date.now();
       console.log(`[scan] Done: ${scanStatus.scanned} tracks indexed`);
+
+      // Background: fetch online artwork for tracks that have no embedded cover
+      const db = getDb();
+      const noArt = db
+        .prepare("SELECT id, artist, title FROM tracks WHERE cover_url IS NULL AND source = 'local'")
+        .all() as Array<{ id: string; artist: string; title: string }>;
+      if (noArt.length > 0) {
+        console.log(`[artwork] Fetching online artwork for ${noArt.length} tracks...`);
+        let fetched = 0;
+        for (const track of noArt) {
+          const result = await fetchOnlineArtwork(track.artist, track.title);
+          if (result) {
+            updateTrackCoverUrl(track.id, result.url);
+            fetched++;
+          }
+          // 100 ms delay to be polite to free APIs
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        console.log(`[artwork] Done: ${fetched}/${noArt.length} artworks fetched`);
+      }
     } finally {
       scanStatus.scanning = false;
     }
@@ -164,13 +186,29 @@ localRouter.get("/status", (c) => {
 
 export const coversRouter = new Hono();
 
+/** Trigger online artwork lookup for a specific track */
+coversRouter.get("/:trackId/fetch", async (c) => {
+  const trackId = decodeURIComponent(c.req.param("trackId"));
+  const db = getDb();
+  const track = db
+    .prepare("SELECT id, artist, title FROM tracks WHERE id = $id")
+    .get({ $id: trackId }) as { id: string; artist: string; title: string } | null;
+  if (!track) return c.json({ error: "Track not found" }, 404);
+
+  const result = await fetchOnlineArtwork(track.artist, track.title);
+  if (!result) return c.json({ ok: false, message: "No artwork found" });
+
+  updateTrackCoverUrl(track.id, result.url);
+  return c.json({ ok: true, url: result.url, source: result.source });
+});
+
 coversRouter.get("/:trackId", (c) => {
   const trackId = decodeURIComponent(c.req.param("trackId"));
   const cover = getCoverData(trackId);
   if (!cover) {
     return c.json({ error: "Cover not found" }, 404);
   }
-  return new Response(cover.data, {
+  return new Response(new Uint8Array(cover.data), {
     status: 200,
     headers: { "Content-Type": cover.mimeType, "Cache-Control": "public, max-age=604800" },
   });
