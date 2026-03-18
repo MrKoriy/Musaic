@@ -1,12 +1,13 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TextInput, ScrollView,
   SafeAreaView, TouchableOpacity, ActivityIndicator,
 } from 'react-native';
-import { Search, Mic } from 'lucide-react-native';
+import { Search, Clock, X } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { MMKV } from 'react-native-mmkv';
 import { Colors, Spacing, Typography, Radius } from '../theme';
 import { GlassCard } from '../components/GlassCard';
 import { TrackRow } from '../components/TrackRow';
@@ -16,20 +17,63 @@ import { api, serverTrackToAppTrack } from '../services/apiService';
 import { RootStackParamList, Track } from '../types';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
+type SourceFilter = 'all' | 'local' | 'soundcloud' | 'vk';
+
+const SOURCE_FILTERS: { id: SourceFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'local', label: 'Local' },
+  { id: 'soundcloud', label: 'SoundCloud' },
+  { id: 'vk', label: 'VK' },
+];
+
+const storage = new MMKV({ id: 'musaic-search' });
+const RECENT_KEY = 'recent_searches';
+const MAX_RECENT = 8;
+
+function loadRecentSearches(): string[] {
+  try {
+    const raw = storage.getString(RECENT_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentSearch(query: string) {
+  const trimmed = query.trim();
+  if (!trimmed) return;
+  const current = loadRecentSearches();
+  const filtered = current.filter((q) => q !== trimmed);
+  const updated = [trimmed, ...filtered].slice(0, MAX_RECENT);
+  storage.set(RECENT_KEY, JSON.stringify(updated));
+}
+
+function removeRecentSearch(query: string) {
+  const current = loadRecentSearches();
+  storage.set(RECENT_KEY, JSON.stringify(current.filter((q) => q !== query)));
+}
 
 export function SearchScreen() {
   const navigation = useNavigation<NavProp>();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Track[]>([]);
   const [loading, setLoading] = useState(false);
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
+  const [recentSearches, setRecentSearches] = useState<string[]>([]);
+  const [inputFocused, setInputFocused] = useState(false);
   const { currentTrack, isPlaying, setQueue, addToQueue } = usePlayerStore();
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const doSearch = useCallback(async (q: string) => {
+  useEffect(() => {
+    setRecentSearches(loadRecentSearches());
+  }, []);
+
+  const doSearch = useCallback(async (q: string, source: SourceFilter) => {
     if (q.length < 2) { setResults([]); return; }
     setLoading(true);
+    const sources = source === 'all' ? 'local,soundcloud,vk' : source;
     try {
-      const res = await api.searchTracks(q, 'local,soundcloud');
+      const res = await api.searchTracks(q, sources);
       setResults(res.tracks.map(serverTrackToAppTrack));
     } catch {
       setResults([]);
@@ -40,8 +84,57 @@ export function SearchScreen() {
   function onChangeText(text: string) {
     setQuery(text);
     if (searchTimer.current) clearTimeout(searchTimer.current);
-    searchTimer.current = setTimeout(() => doSearch(text), 300);
+    searchTimer.current = setTimeout(() => doSearch(text, sourceFilter), 300);
   }
+
+  function onSelectSource(src: SourceFilter) {
+    setSourceFilter(src);
+    if (query.length >= 2) {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+      doSearch(query, src);
+    }
+  }
+
+  function onClear() {
+    setQuery('');
+    setResults([]);
+  }
+
+  function onSubmitEditing() {
+    if (query.trim().length >= 2) {
+      saveRecentSearch(query.trim());
+      setRecentSearches(loadRecentSearches());
+    }
+  }
+
+  function onSelectRecent(q: string) {
+    setQuery(q);
+    doSearch(q, sourceFilter);
+  }
+
+  function onRemoveRecent(q: string) {
+    removeRecentSearch(q);
+    setRecentSearches(loadRecentSearches());
+  }
+
+  // Group results by source
+  const groupedResults: { source: string; tracks: Track[] }[] = [];
+  for (const track of results) {
+    const last = groupedResults[groupedResults.length - 1];
+    if (last && last.source === track.source) {
+      last.tracks.push(track);
+    } else {
+      groupedResults.push({ source: track.source, tracks: [track] });
+    }
+  }
+
+  const sourceLabel: Record<string, string> = {
+    local: 'Local Library',
+    soundcloud: 'SoundCloud',
+    vk: 'VK Music',
+  };
+
+  const showSuggestions = inputFocused && query.length < 2 && recentSearches.length > 0;
 
   return (
     <View style={styles.root}>
@@ -68,6 +161,9 @@ export function SearchScreen() {
               <TextInput
                 value={query}
                 onChangeText={onChangeText}
+                onFocus={() => setInputFocused(true)}
+                onBlur={() => setInputFocused(false)}
+                onSubmitEditing={onSubmitEditing}
                 placeholder="Search songs, artists, albums"
                 placeholderTextColor={Colors.textTertiary}
                 style={styles.searchInput}
@@ -77,41 +173,80 @@ export function SearchScreen() {
               {loading ? (
                 <ActivityIndicator size="small" color={Colors.textTertiary} />
               ) : query.length > 0 ? (
-                <TouchableOpacity onPress={() => { setQuery(''); setResults([]); }}>
+                <TouchableOpacity onPress={onClear}>
                   <Text style={styles.clearBtn}>✕</Text>
                 </TouchableOpacity>
-              ) : (
-                <Mic size={18} color={Colors.textTertiary} />
-              )}
+              ) : null}
             </View>
           </GlassCard>
 
-          {/* Search Results */}
+          {/* Source Filter Chips */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.filterRow}
+            style={styles.filterScroll}
+          >
+            {SOURCE_FILTERS.map((f) => (
+              <TouchableOpacity
+                key={f.id}
+                style={[styles.filterChip, sourceFilter === f.id && styles.filterChipActive]}
+                onPress={() => onSelectSource(f.id)}
+                activeOpacity={0.75}
+              >
+                <Text style={[styles.filterChipText, sourceFilter === f.id && styles.filterChipTextActive]}>
+                  {f.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+
+          {/* Recent Searches / Suggestions */}
+          {showSuggestions && (
+            <View style={styles.recentSection}>
+              <Text style={styles.sectionTitle}>Recent</Text>
+              {recentSearches.map((q) => (
+                <TouchableOpacity
+                  key={q}
+                  style={styles.recentRow}
+                  onPress={() => onSelectRecent(q)}
+                  activeOpacity={0.7}
+                >
+                  <Clock size={14} color={Colors.textTertiary} />
+                  <Text style={styles.recentText} numberOfLines={1}>{q}</Text>
+                  <TouchableOpacity onPress={() => onRemoveRecent(q)} hitSlop={8}>
+                    <X size={14} color={Colors.textTertiary} />
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+
+          {/* Search Results grouped by source */}
           {results.length > 0 && (
             <>
-              <Text style={styles.sectionTitle}>Results</Text>
-              {results.map((track, i) => (
-                <View key={track.id}>
-                  {track.source === 'soundcloud' && i > 0 && results[i - 1].source !== 'soundcloud' && (
-                    <Text style={styles.sourceLabel}>SoundCloud</Text>
-                  )}
-                  {track.source === 'soundcloud' && i === 0 && (
-                    <Text style={styles.sourceLabel}>SoundCloud</Text>
-                  )}
-                  {track.source === 'local' && i === 0 && (
-                    <Text style={styles.sourceLabel}>Local Library</Text>
-                  )}
-                  {track.source === 'local' && i > 0 && results[i - 1].source !== 'local' && (
-                    <Text style={styles.sourceLabel}>Local Library</Text>
-                  )}
-                  <TrackRow
-                    track={track}
-                    index={i + 1}
-                    isCurrent={currentTrack?.id === track.id}
-                    isPlaying={isPlaying}
-                    onPress={() => { setQueue(results, i); navigation.navigate('NowPlaying'); }}
-                    onAddToQueue={(t) => addToQueue(t)}
-                  />
+              {groupedResults.map((group) => (
+                <View key={group.source}>
+                  <Text style={styles.sourceLabel}>{sourceLabel[group.source] ?? group.source}</Text>
+                  {group.tracks.map((track, i) => {
+                    const globalIndex = results.indexOf(track);
+                    return (
+                      <TrackRow
+                        key={track.id}
+                        track={track}
+                        index={i + 1}
+                        isCurrent={currentTrack?.id === track.id}
+                        isPlaying={isPlaying}
+                        onPress={() => {
+                          saveRecentSearch(query.trim());
+                          setRecentSearches(loadRecentSearches());
+                          setQueue(results, globalIndex);
+                          navigation.navigate('NowPlaying');
+                        }}
+                        onAddToQueue={(t) => addToQueue(t)}
+                      />
+                    );
+                  })}
                 </View>
               ))}
             </>
@@ -119,10 +254,8 @@ export function SearchScreen() {
 
           {/* Empty state after search */}
           {query.length > 1 && !loading && results.length === 0 && (
-            <GlassCard style={{ padding: Spacing.xl, alignItems: 'center', marginTop: Spacing.lg }}>
-              <Text style={{ ...Typography.body, color: Colors.textSecondary }}>
-                No results for "{query}"
-              </Text>
+            <GlassCard style={styles.emptyCard}>
+              <Text style={styles.emptyText}>No results for "{query}"</Text>
             </GlassCard>
           )}
 
@@ -165,15 +298,45 @@ const styles = StyleSheet.create({
   scroll: { flex: 1 },
   scrollContent: { paddingHorizontal: Spacing.lg, paddingBottom: Spacing['3xl'] },
   heading: { ...Typography.headingXl, color: Colors.textPrimary, marginTop: Spacing.lg, marginBottom: Spacing.lg },
-  searchCard: { marginBottom: Spacing.xl },
+  searchCard: { marginBottom: Spacing.md },
   searchRow: {
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md - 2, gap: Spacing.sm,
   },
   searchInput: { flex: 1, ...Typography.body, color: Colors.textPrimary },
   clearBtn: { color: Colors.textTertiary, fontSize: 14 },
+  filterScroll: { marginBottom: Spacing.lg },
+  filterRow: { flexDirection: 'row', gap: Spacing.sm, paddingVertical: Spacing.xs },
+  filterChip: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs + 2,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+    borderColor: Colors.glassBorder,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  filterChipActive: {
+    backgroundColor: Colors.accentPrimary + '22',
+    borderColor: Colors.accentPrimary,
+  },
+  filterChipText: { ...Typography.bodySm, color: Colors.textSecondary },
+  filterChipTextActive: { color: Colors.accentPrimary, fontWeight: '600' },
+  recentSection: { marginBottom: Spacing.lg },
+  recentRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Colors.glassBorder,
+  },
+  recentText: { flex: 1, ...Typography.body, color: Colors.textSecondary },
   sectionTitle: { ...Typography.headingSm, color: Colors.textPrimary, marginBottom: Spacing.md },
-  sourceLabel: { ...Typography.caption, color: Colors.textTertiary, marginTop: Spacing.sm, marginBottom: Spacing.xs, letterSpacing: 0.5, textTransform: 'uppercase' },
+  sourceLabel: {
+    ...Typography.caption, color: Colors.textTertiary,
+    marginTop: Spacing.sm, marginBottom: Spacing.xs,
+    letterSpacing: 0.5, textTransform: 'uppercase',
+  },
+  emptyCard: { padding: Spacing.xl, alignItems: 'center', marginTop: Spacing.lg },
+  emptyText: { ...Typography.body, color: Colors.textSecondary },
   genreGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
   genreCardWrapper: { width: '47%', borderRadius: Radius.lg, overflow: 'hidden' },
   genreCard: { borderRadius: Radius.lg, overflow: 'hidden', position: 'relative' },
