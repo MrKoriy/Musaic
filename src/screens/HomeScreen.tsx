@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,48 +9,97 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Play, Pause, Music } from 'lucide-react-native';
+import { Play, Pause, Music, Sparkles, Wifi, WifiOff } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Colors, Spacing, Typography, Radius } from '../theme';
 import { GlassCard } from '../components/GlassCard';
 import { TrackRow } from '../components/TrackRow';
+import { MoreLikeThisModal } from '../components/MoreLikeThisModal';
 import { usePlayerStore } from '../stores/usePlayerStore';
 import { useLibraryStore } from '../stores/useLibraryStore';
 import { api, serverTrackToAppTrack } from '../services/apiService';
-import { MOOD_TAGS, GENRE_COLORS } from '../data/mockData';
+import { MOOD_TAGS } from '../data/mockData';
 import { RootStackParamList, Track } from '../types';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 
 const CONTENT_TABS = ['Playlist', 'Artists', 'Albums', 'Streams', 'Favorites'];
 
+function getGreeting(): string {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+
+type ServerStatus = 'unknown' | 'connected' | 'disconnected';
+
 export function HomeScreen() {
   const navigation = useNavigation<NavProp>();
   const [activeTag, setActiveTag] = useState(0);
   const [activeTab, setActiveTab] = useState(0);
   const [tracks, setTracks] = useState<Track[]>([]);
+  const [recommendations, setRecommendations] = useState<Track[]>([]);
+  const [recoSource, setRecoSource] = useState<string>('');
   const [loading, setLoading] = useState(true);
-  const { currentTrack, isPlaying, setQueue, setIsPlaying } = usePlayerStore();
+  const [recoLoading, setRecoLoading] = useState(false);
+  const [moreLikeThis, setMoreLikeThis] = useState<Track | null>(null);
+  const [serverStatus, setServerStatus] = useState<ServerStatus>('unknown');
+  const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const { currentTrack, isPlaying, setQueue } = usePlayerStore();
   const { isLiked, toggleLike } = useLibraryStore();
+
+  const checkServer = useCallback(async () => {
+    const ok = await api.ping();
+    setServerStatus(ok ? 'connected' : 'disconnected');
+    return ok;
+  }, []);
 
   const loadTracks = useCallback(async () => {
     try {
       const res = await api.getTracks({ source: 'local', limit: 30 });
-      const mapped = res.tracks.map(serverTrackToAppTrack);
-      setTracks(mapped);
+      setTracks(res.tracks.map(serverTrackToAppTrack));
+      setServerStatus('connected');
     } catch {
-      // Server may not be running; show empty state
       setTracks([]);
+      setServerStatus('disconnected');
     }
     setLoading(false);
   }, []);
 
-  useEffect(() => { loadTracks(); }, [loadTracks]);
+  const loadRecommendations = useCallback(async () => {
+    setRecoLoading(true);
+    try {
+      const res = await api.getHomeRecommendations();
+      const mapped = (res.tracks as any[]).map(serverTrackToAppTrack);
+      setRecommendations(mapped);
+      setRecoSource(res.source as string);
+    } catch {
+      setRecommendations([]);
+    }
+    setRecoLoading(false);
+  }, []);
 
-  function playTrack(index: number) {
-    if (tracks.length === 0) return;
-    setQueue(tracks, index);
+  useEffect(() => {
+    loadTracks();
+    loadRecommendations();
+    // Ping every 30s to keep status indicator fresh
+    pingIntervalRef.current = setInterval(checkServer, 30_000);
+    return () => {
+      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+    };
+  }, [loadTracks, loadRecommendations, checkServer]);
+
+  function retryLoad() {
+    setLoading(true);
+    loadTracks();
+    loadRecommendations();
+  }
+
+  function playTrack(trackList: Track[], index: number) {
+    if (trackList.length === 0) return;
+    setQueue(trackList, index);
     navigation.navigate('NowPlaying');
   }
 
@@ -93,15 +142,25 @@ export function HomeScreen() {
         >
           {/* Header */}
           <View style={styles.header}>
-            <View>
-              <Text style={styles.heading}>Good evening</Text>
-              <Text style={styles.subHeading}>What do you want to listen to?</Text>
-            </View>
-            <GlassCard style={styles.avatar} borderRadius={Radius.full}>
-              <View style={styles.avatarInner}>
-                <Text style={styles.avatarText}>M</Text>
+            <View style={styles.headerLeft}>
+              <Text style={styles.heading}>{getGreeting()}</Text>
+              <View style={styles.subHeadingRow}>
+                <Text style={styles.subHeading}>What do you want to listen to?</Text>
+                {serverStatus !== 'unknown' && (
+                  <View style={[
+                    styles.statusDot,
+                    serverStatus === 'connected' ? styles.statusConnected : styles.statusDisconnected,
+                  ]} />
+                )}
               </View>
-            </GlassCard>
+            </View>
+            <TouchableOpacity onPress={() => navigation.navigate('AIChat')}>
+              <GlassCard style={styles.avatar} borderRadius={Radius.full}>
+                <View style={styles.avatarInner}>
+                  <Sparkles size={18} color={Colors.accentPrimary} />
+                </View>
+              </GlassCard>
+            </TouchableOpacity>
           </View>
 
           {/* Mood Tags */}
@@ -158,6 +217,38 @@ export function HomeScreen() {
             </GlassCard>
           </TouchableOpacity>
 
+          {/* For You — Personalized Recommendations */}
+          {(recoLoading || recommendations.length > 0) && (
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <Sparkles size={14} color={Colors.accentPrimary} />
+                <Text style={styles.sectionTitle}>For You</Text>
+                {recoSource === 'lastfm_similar' && (
+                  <Text style={styles.sectionBadge}>Last.fm</Text>
+                )}
+              </View>
+              {recoLoading ? (
+                <ActivityIndicator color={Colors.accentPrimary} style={{ marginVertical: Spacing.md }} />
+              ) : (
+                <View style={styles.trackList}>
+                  {recommendations.slice(0, 10).map((track, i) => (
+                    <TrackRow
+                      key={`reco-${track.id}-${i}`}
+                      track={track}
+                      index={i + 1}
+                      isCurrent={currentTrack?.id === track.id}
+                      isPlaying={isPlaying}
+                      isLiked={isLiked(track.id)}
+                      onPress={() => playTrack(recommendations, i)}
+                      onLike={() => toggleLike(track.id)}
+                      onMoreLikeThis={(t) => setMoreLikeThis(t)}
+                    />
+                  ))}
+                </View>
+              )}
+            </View>
+          )}
+
           {/* Content Tabs */}
           <ScrollView
             horizontal
@@ -181,6 +272,18 @@ export function HomeScreen() {
           {/* Track List */}
           {loading ? (
             <ActivityIndicator color={Colors.accentPrimary} style={{ marginTop: Spacing.xl }} />
+          ) : serverStatus === 'disconnected' && tracks.length === 0 ? (
+            <GlassCard style={styles.emptyState}>
+              <WifiOff size={32} color={Colors.textTertiary} />
+              <Text style={styles.emptyTitle}>Server unreachable</Text>
+              <Text style={styles.emptyText}>
+                Make sure the Musaic server is running on your Mac.{'\n'}
+                If you're on cellular, set the server IP in Profile → Server.
+              </Text>
+              <TouchableOpacity onPress={retryLoad} style={styles.retryBtn}>
+                <Text style={styles.retryText}>Retry</Text>
+              </TouchableOpacity>
+            </GlassCard>
           ) : tracks.length === 0 ? (
             <GlassCard style={styles.emptyState}>
               <Music size={32} color={Colors.textTertiary} />
@@ -197,14 +300,25 @@ export function HomeScreen() {
                   isCurrent={currentTrack?.id === track.id}
                   isPlaying={isPlaying}
                   isLiked={isLiked(track.id)}
-                  onPress={() => playTrack(i)}
+                  onPress={() => playTrack(tracks, i)}
                   onLike={() => toggleLike(track.id)}
+                  onMoreLikeThis={(t) => setMoreLikeThis(t)}
                 />
               ))}
             </View>
           )}
         </ScrollView>
       </SafeAreaView>
+
+      {/* More Like This Modal */}
+      <MoreLikeThisModal
+        track={moreLikeThis}
+        onClose={() => setMoreLikeThis(null)}
+        onPlay={(similarTracks, index) => {
+          setMoreLikeThis(null);
+          playTrack(similarTracks, index);
+        }}
+      />
     </View>
   );
 }
@@ -241,14 +355,33 @@ const styles = StyleSheet.create({
     marginTop: Spacing.lg,
     marginBottom: Spacing.xl,
   },
+  headerLeft: {
+    flex: 1,
+  },
   heading: {
     ...Typography.headingXl,
     color: Colors.textPrimary,
   },
+  subHeadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 2,
+    gap: Spacing.xs,
+  },
   subHeading: {
     ...Typography.bodySm,
     color: Colors.textSecondary,
-    marginTop: 2,
+  },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  statusConnected: {
+    backgroundColor: Colors.accentGreen,
+  },
+  statusDisconnected: {
+    backgroundColor: '#ef4444',
   },
   avatar: {},
   avatarInner: {
@@ -256,10 +389,6 @@ const styles = StyleSheet.create({
     height: 40,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  avatarText: {
-    ...Typography.headingSm,
-    color: Colors.accentPrimary,
   },
   tagsRow: {
     marginBottom: Spacing.xl,
@@ -328,6 +457,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  section: {
+    marginBottom: Spacing.xl,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    marginBottom: Spacing.md,
+  },
+  sectionTitle: {
+    ...Typography.headingSm,
+    color: Colors.textPrimary,
+    flex: 1,
+  },
+  sectionBadge: {
+    ...Typography.caption,
+    color: Colors.textTertiary,
+    borderWidth: 1,
+    borderColor: Colors.glassBorder,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 2,
+    borderRadius: Radius.sm,
+  },
   tabsRow: {
     marginBottom: Spacing.md,
     borderBottomWidth: 1,
@@ -369,5 +521,18 @@ const styles = StyleSheet.create({
     ...Typography.body,
     color: Colors.textSecondary,
     textAlign: 'center',
+  },
+  retryBtn: {
+    marginTop: Spacing.md,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.sm,
+    backgroundColor: 'rgba(233,30,140,0.15)',
+    borderRadius: Radius.full,
+    borderWidth: 1,
+    borderColor: 'rgba(233,30,140,0.35)',
+  },
+  retryText: {
+    ...Typography.button,
+    color: Colors.accentPrimary,
   },
 });
