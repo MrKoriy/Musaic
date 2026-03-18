@@ -37,6 +37,7 @@ export interface Playlist {
 export type RepeatMode = 'off' | 'track' | 'queue';
 
 export type RootStackParamList = {
+  Onboarding: undefined;
   MainTabs: undefined;
   PlaylistDetail: { playlist: Playlist };
   AlbumDetail: { album: Album };
