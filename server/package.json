@@ -1,0 +1,24 @@
+{
+  "name": "musaic-server",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "build": "bun build src/index.ts --target=bun --outfile=dist/server.js"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.11",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node-fetch": "2",
+    "better-sqlite3": "^12.8.0",
+    "hono": "^4.12.8",
+    "music-metadata": "^11.12.3",
+    "node-fetch": "2"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}
