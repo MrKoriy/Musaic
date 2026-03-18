@@ -12,6 +12,7 @@ import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Typography, Radius, Shadows } from '../theme';
 import { HeartButton } from '../components/HeartButton';
+import { WaveformBar } from '../components/WaveformBar';
 import { usePlayerStore } from '../stores/usePlayerStore';
 import { useLibraryStore } from '../stores/useLibraryStore';
 import { formatDuration } from '../data/mockData';
@@ -127,24 +128,32 @@ export function NowPlayingScreen() {
           />
         </View>
 
-        {/* Progress Bar */}
+        {/* Progress / Waveform */}
         <View style={styles.progressSection}>
-          <TouchableOpacity
-            style={styles.progressHitArea}
-            onPress={(e) => {
-              const x = e.nativeEvent.locationX;
-              const trackW = W - Spacing.xl * 2;
-              const newProgress = Math.max(0, Math.min(1, x / trackW));
-              seekTo(newProgress);
-            }}
-            activeOpacity={1}
-          >
-            <View style={styles.progressBg}>
-              <View style={[styles.progressFill, { width: progressWidth }]}>
-                <View style={styles.progressThumb} />
+          {currentTrack.source === 'soundcloud' ? (
+            <WaveformBar
+              trackId={currentTrack.id}
+              progress={progress ?? 0}
+              onSeek={seekTo}
+            />
+          ) : (
+            <TouchableOpacity
+              style={styles.progressHitArea}
+              onPress={(e) => {
+                const x = e.nativeEvent.locationX;
+                const trackW = W - Spacing.xl * 2;
+                const newProgress = Math.max(0, Math.min(1, x / trackW));
+                seekTo(newProgress);
+              }}
+              activeOpacity={1}
+            >
+              <View style={styles.progressBg}>
+                <View style={[styles.progressFill, { width: progressWidth }]}>
+                  <View style={styles.progressThumb} />
+                </View>
               </View>
-            </View>
-          </TouchableOpacity>
+            </TouchableOpacity>
+          )}
           <View style={styles.timeRow}>
             <Text style={styles.time}>{formatDuration(elapsed)}</Text>
             <Text style={styles.time}>-{formatDuration(remaining)}</Text>

@@ -167,16 +167,35 @@ export const api = {
   },
 };
 
+/** Get the playback URL for a track based on its source */
+function trackPlaybackUrl(track: ServerTrack): string {
+  if (track.source === 'soundcloud') {
+    // Use server proxy — server resolves SC stream URL and redirects
+    return `${SERVER_URL}/api/sc/proxy/${encodeURIComponent(track.id)}`;
+  }
+  if (track.source === 'vk' && track.local_path) {
+    return `${SERVER_URL}/audio/local/${encodeURIComponent(track.id)}`;
+  }
+  return `${SERVER_URL}/audio/local/${encodeURIComponent(track.id)}`;
+}
+
+/** Resolve artwork URL (absolute SC URLs pass through; local paths get prefixed) */
+function resolveArtwork(track: ServerTrack): string | undefined {
+  if (!track.cover_url) return undefined;
+  if (track.cover_url.startsWith('http')) return track.cover_url;
+  return `${SERVER_URL}${track.cover_url}`;
+}
+
 /** Convert a ServerTrack to a react-native-track-player Track shape */
 export function serverTrackToRNTP(track: ServerTrack): import('react-native-track-player').Track {
   return {
     id: track.id,
-    url: `${SERVER_URL}/audio/local/${encodeURIComponent(track.id)}`,
+    url: trackPlaybackUrl(track),
     title: track.title,
     artist: track.artist,
     album: track.album,
     duration: track.duration,
-    artwork: track.cover_url ? `${SERVER_URL}${track.cover_url}` : undefined,
+    artwork: resolveArtwork(track),
   };
 }
 
@@ -189,7 +208,12 @@ export function serverTrackToAppTrack(track: ServerTrack): import('../types').Tr
     artist: track.artist,
     album: track.album,
     duration: track.duration,
-    artwork: track.cover_url ? `${SERVER_URL}${track.cover_url}` : undefined,
-    url: `${SERVER_URL}/audio/local/${encodeURIComponent(track.id)}`,
+    artwork: resolveArtwork(track),
+    url: trackPlaybackUrl(track),
   };
+}
+
+/** Fetch SoundCloud waveform samples for visualization */
+export function getSCWaveform(trackId: string): Promise<{ samples: number[] }> {
+  return get<{ samples: number[] }>(`/api/sc/waveform/${encodeURIComponent(trackId)}`);
 }

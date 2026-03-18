@@ -29,7 +29,7 @@ export function SearchScreen() {
     if (q.length < 2) { setResults([]); return; }
     setLoading(true);
     try {
-      const res = await api.searchTracks(q, 'local');
+      const res = await api.searchTracks(q, 'local,soundcloud');
       setResults(res.tracks.map(serverTrackToAppTrack));
     } catch {
       setResults([]);
@@ -91,14 +91,27 @@ export function SearchScreen() {
             <>
               <Text style={styles.sectionTitle}>Results</Text>
               {results.map((track, i) => (
-                <TrackRow
-                  key={track.id}
-                  track={track}
-                  index={i + 1}
-                  isCurrent={currentTrack?.id === track.id}
-                  isPlaying={isPlaying}
-                  onPress={() => { setQueue(results, i); navigation.navigate('NowPlaying'); }}
-                />
+                <View key={track.id}>
+                  {track.source === 'soundcloud' && i > 0 && results[i - 1].source !== 'soundcloud' && (
+                    <Text style={styles.sourceLabel}>SoundCloud</Text>
+                  )}
+                  {track.source === 'soundcloud' && i === 0 && (
+                    <Text style={styles.sourceLabel}>SoundCloud</Text>
+                  )}
+                  {track.source === 'local' && i === 0 && (
+                    <Text style={styles.sourceLabel}>Local Library</Text>
+                  )}
+                  {track.source === 'local' && i > 0 && results[i - 1].source !== 'local' && (
+                    <Text style={styles.sourceLabel}>Local Library</Text>
+                  )}
+                  <TrackRow
+                    track={track}
+                    index={i + 1}
+                    isCurrent={currentTrack?.id === track.id}
+                    isPlaying={isPlaying}
+                    onPress={() => { setQueue(results, i); navigation.navigate('NowPlaying'); }}
+                  />
+                </View>
               ))}
             </>
           )}
@@ -159,6 +172,7 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, ...Typography.body, color: Colors.textPrimary },
   clearBtn: { color: Colors.textTertiary, fontSize: 14 },
   sectionTitle: { ...Typography.headingSm, color: Colors.textPrimary, marginBottom: Spacing.md },
+  sourceLabel: { ...Typography.caption, color: Colors.textTertiary, marginTop: Spacing.sm, marginBottom: Spacing.xs, letterSpacing: 0.5, textTransform: 'uppercase' },
   genreGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
   genreCardWrapper: { width: '47%', borderRadius: Radius.lg, overflow: 'hidden' },
   genreCard: { borderRadius: Radius.lg, overflow: 'hidden', position: 'relative' },
