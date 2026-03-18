@@ -1,55 +1,68 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, SafeAreaView,
-  TouchableOpacity, Image, Alert, ActivityIndicator,
-  TextInput, Modal,
+  TouchableOpacity, Alert, ActivityIndicator,
+  TextInput, Modal, RefreshControl,
 } from 'react-native';
-import { Plus, Music, ScanLine, FolderOpen, Download, Trash2 } from 'lucide-react-native';
+import { Plus, ScanLine, FolderOpen, ArrowUpDown } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Colors, Spacing, Typography, Radius } from '../theme';
 import { GlassCard } from '../components/GlassCard';
 import { TrackRow } from '../components/TrackRow';
-import { DownloadButton } from '../components/DownloadButton';
+import { AlbumCard } from '../components/AlbumCard';
+import { ArtistCard } from '../components/ArtistCard';
+import { PlaylistCard } from '../components/PlaylistCard';
 import { useLibraryStore } from '../stores/useLibraryStore';
 import { usePlayerStore } from '../stores/usePlayerStore';
-import { useDownloadStore } from '../stores/useDownloadStore';
 import { api, serverTrackToAppTrack } from '../services/apiService';
-import { RootStackParamList, Track, Album } from '../types';
-import { formatDuration } from '../data/mockData';
-import { formatBytes } from '../services/downloadService';
+import { RootStackParamList, Track, Album, Artist, Playlist } from '../types';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
-type LibraryTab = 'Tracks' | 'Albums' | 'Playlists' | 'Downloads';
+type LibraryTab = 'Playlists' | 'Albums' | 'Artists' | 'Liked';
+type SortOption = 'a-z' | 'recent' | 'most';
+
+const TABS: LibraryTab[] = ['Playlists', 'Albums', 'Artists', 'Liked'];
+const SORT_LABELS: Record<SortOption, string> = { 'a-z': 'A–Z', recent: 'Recent', most: 'Most' };
 
 export function LibraryScreen() {
   const navigation = useNavigation<NavProp>();
   const [activeTab, setActiveTab] = useState<LibraryTab>('Albums');
-  const [tracks, setTracks] = useState<Track[]>([]);
+  const [sort, setSort] = useState<SortOption>('a-z');
+  const [showSortMenu, setShowSortMenu] = useState(false);
+
   const [albums, setAlbums] = useState<Album[]>([]);
-  const [serverPlaylists, setServerPlaylists] = useState<import('../types').Playlist[]>([]);
+  const [artists, setArtists] = useState<Artist[]>([]);
+  const [serverPlaylists, setServerPlaylists] = useState<Playlist[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Scan state
   const [scanDir, setScanDir] = useState('');
   const [showScanModal, setShowScanModal] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState<string | null>(null);
+
+  // Create playlist modal
   const [showNewPlaylistModal, setShowNewPlaylistModal] = useState(false);
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [creatingPlaylist, setCreatingPlaylist] = useState(false);
 
+  const { likedTrackIds } = useLibraryStore();
+  const [likedTracks, setLikedTracks] = useState<Track[]>([]);
   const { currentTrack, isPlaying, setQueue, addToQueue } = usePlayerStore();
-  const { downloads, totalStorageBytes, removeDownload, clearAllDownloads, isOffline, refreshDownloads } = useDownloadStore();
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const loadData = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
-      const [trackRes, albumRes, playlistRes] = await Promise.all([
-        api.getTracks({ source: 'local', limit: 200 }),
+      const [albumRes, artistRes, playlistRes] = await Promise.all([
         api.getAlbums('local'),
+        api.getArtists('local'),
         api.getPlaylists(),
       ]);
-      setTracks(trackRes.tracks.map(serverTrackToAppTrack));
       setAlbums(albumRes.albums as Album[]);
+      setArtists(artistRes.artists as Artist[]);
       setServerPlaylists(
         playlistRes.playlists.map((p) => ({
           id: p.id,
@@ -62,9 +75,57 @@ export function LibraryScreen() {
     } catch (e) {
       console.warn('Library load failed:', e);
     }
-    setLoading(false);
+    if (!silent) setLoading(false);
   }, []);
 
+  const loadLiked = useCallback(async () => {
+    if (likedTrackIds.size === 0) { setLikedTracks([]); return; }
+    try {
+      const r = await api.getTracks({ source: 'local', limit: 500 });
+      const all = r.tracks.map(serverTrackToAppTrack);
+      setLikedTracks(all.filter((t) => likedTrackIds.has(t.id)));
+    } catch {}
+  }, [likedTrackIds]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadData(true);
+    setRefreshing(false);
+  }, [loadData]);
+
+  useEffect(() => { loadData(); }, []);
+  useEffect(() => { loadLiked(); }, [loadLiked]);
+
+  // ─── Sort helpers ─────────────────────────────────────────────────────────
+  function sortedAlbums(): Album[] {
+    const copy = [...albums];
+    if (sort === 'a-z') return copy.sort((a, b) => a.album.localeCompare(b.album));
+    if (sort === 'most') return copy.sort((a, b) => b.track_count - a.track_count);
+    return copy;
+  }
+
+  function sortedArtists(): Artist[] {
+    const copy = [...artists];
+    if (sort === 'a-z') return copy.sort((a, b) => a.artist.localeCompare(b.artist));
+    if (sort === 'most') return copy.sort((a, b) => b.track_count - a.track_count);
+    return copy;
+  }
+
+  function sortedPlaylists(): Playlist[] {
+    const copy = [...serverPlaylists];
+    if (sort === 'a-z') return copy.sort((a, b) => a.name.localeCompare(b.name));
+    if (sort === 'recent') return copy.sort((a, b) => b.createdAt - a.createdAt);
+    if (sort === 'most') return copy.sort((a, b) => b.tracks.length - a.tracks.length);
+    return copy;
+  }
+
+  function sortedLiked(): Track[] {
+    const copy = [...likedTracks];
+    if (sort === 'a-z') return copy.sort((a, b) => a.title.localeCompare(b.title));
+    return copy;
+  }
+
+  // ─── Actions ──────────────────────────────────────────────────────────────
   async function handleCreatePlaylist() {
     if (!newPlaylistName.trim()) return;
     setCreatingPlaylist(true);
@@ -72,39 +133,52 @@ export function LibraryScreen() {
       await api.createPlaylist(newPlaylistName.trim());
       setNewPlaylistName('');
       setShowNewPlaylistModal(false);
-      loadData();
+      await loadData(true);
     } catch (e: any) {
       Alert.alert('Error', e.message);
     }
     setCreatingPlaylist(false);
   }
 
-  useEffect(() => { loadData(); }, [loadData]);
-
-  useEffect(() => {
-    if (activeTab === 'Downloads') refreshDownloads();
-  }, [activeTab, refreshDownloads]);
-
   async function handleScan() {
     if (!scanDir.trim()) return;
     setScanning(true);
+    setScanProgress('Starting scan…');
     try {
       await api.scanFolder(scanDir.trim());
-      setShowScanModal(false);
-      // Poll for completion
       const poll = setInterval(async () => {
-        const status = await api.getScanStatus();
-        if (!status.scanning) {
+        try {
+          const status = await api.getScanStatus();
+          if (status.scanning) {
+            setScanProgress('Scanning…');
+          } else {
+            clearInterval(poll);
+            setScanning(false);
+            setScanProgress(null);
+            setShowScanModal(false);
+            loadData(true);
+          }
+        } catch {
           clearInterval(poll);
           setScanning(false);
-          loadData();
+          setScanProgress(null);
         }
       }, 1500);
     } catch (e: any) {
       Alert.alert('Scan failed', e.message);
       setScanning(false);
+      setScanProgress(null);
     }
   }
+
+  const refreshControl = (
+    <RefreshControl
+      refreshing={refreshing}
+      onRefresh={onRefresh}
+      tintColor={Colors.accentPrimary}
+      colors={[Colors.accentPrimary]}
+    />
+  );
 
   return (
     <View style={styles.root}>
@@ -115,204 +189,177 @@ export function LibraryScreen() {
         end={{ x: 0.6, y: 0 }}
         pointerEvents="none"
       />
+
       <SafeAreaView style={styles.safeArea}>
+        {/* Header */}
+        <View style={styles.header}>
+          <Text style={styles.heading}>Your Library</Text>
+          <TouchableOpacity style={styles.iconBtn} onPress={() => setShowScanModal(true)}>
+            <ScanLine size={20} color={Colors.textPrimary} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Tabs */}
         <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.tabsScroll}
+          contentContainerStyle={styles.tabsContent}
         >
-          <View style={styles.header}>
-            <Text style={styles.heading}>Your Library</Text>
-            <View style={{ flexDirection: 'row', gap: Spacing.sm }}>
-              {activeTab === 'Playlists' && (
-                <TouchableOpacity style={styles.iconBtn} onPress={() => setShowNewPlaylistModal(true)}>
-                  <Plus size={20} color={Colors.textPrimary} />
-                </TouchableOpacity>
-              )}
-              <TouchableOpacity style={styles.iconBtn} onPress={() => setShowScanModal(true)}>
-                <ScanLine size={20} color={Colors.textPrimary} />
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* Offline indicator */}
-          {isOffline && (
-            <View style={styles.offlineBanner}>
-              <Text style={styles.offlineText}>Offline — showing downloads only</Text>
-            </View>
-          )}
-
-          {/* Filter Tabs */}
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabsScroll}>
-            {(['Tracks', 'Albums', 'Playlists', 'Downloads'] as LibraryTab[]).map((tab) => (
-              <TouchableOpacity key={tab} onPress={() => setActiveTab(tab)}>
-                <GlassCard style={styles.tabChip} borderRadius={Radius.sm} intensity={activeTab === tab ? 60 : 30}>
-                  <Text style={[styles.tabText, activeTab === tab && styles.tabTextActive]}>{tab}</Text>
-                </GlassCard>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-
-          {loading ? (
-            <ActivityIndicator color={Colors.accentPrimary} style={{ marginTop: Spacing.xl }} />
-          ) : (
-            <>
-              {/* Tracks Tab */}
-              {activeTab === 'Tracks' && (
-                tracks.length === 0 ? (
-                  <EmptyState onScan={() => setShowScanModal(true)} />
-                ) : (
-                  tracks.map((track, i) => (
-                    <TrackRow
-                      key={track.id}
-                      track={track}
-                      index={i + 1}
-                      isCurrent={currentTrack?.id === track.id}
-                      isPlaying={isPlaying}
-                      showDownload
-                      onPress={() => { setQueue(tracks, i); navigation.navigate('NowPlaying'); }}
-                      onAddToQueue={(t) => addToQueue(t)}
-                    />
-                  ))
-                )
-              )}
-
-              {/* Albums Tab */}
-              {activeTab === 'Albums' && (
-                albums.length === 0 ? (
-                  <EmptyState onScan={() => setShowScanModal(true)} />
-                ) : (
-                  <View style={styles.albumGrid}>
-                    {albums.map((album) => (
-                      <TouchableOpacity
-                        key={`${album.album}__${album.artist}`}
-                        style={styles.albumCard}
-                        activeOpacity={0.8}
-                        onPress={() => navigation.navigate('AlbumDetail', { album })}
-                      >
-                        {album.cover_url ? (
-                          <Image source={{ uri: album.cover_url }} style={styles.albumArt} />
-                        ) : (
-                          <View style={[styles.albumArt, styles.albumArtPlaceholder]}>
-                            <Music size={28} color={Colors.textTertiary} />
-                          </View>
-                        )}
-                        <Text style={styles.albumName} numberOfLines={2}>{album.album}</Text>
-                        <Text style={styles.albumArtist} numberOfLines={1}>{album.artist}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                )
-              )}
-
-              {/* Playlists Tab */}
-              {activeTab === 'Playlists' && (
-                serverPlaylists.length === 0 ? (
-                  <GlassCard style={styles.emptyState}>
-                    <Plus size={32} color={Colors.textTertiary} />
-                    <Text style={styles.emptyTitle}>No playlists yet</Text>
-                    <Text style={styles.emptyText}>Tap + to create a new playlist</Text>
-                  </GlassCard>
-                ) : (
-                  serverPlaylists.map((playlist) => (
-                    <TouchableOpacity
-                      key={playlist.id}
-                      activeOpacity={0.8}
-                      onPress={() => navigation.navigate('PlaylistDetail', { playlist })}
-                    >
-                      <GlassCard style={styles.playlistItem}>
-                        <View style={styles.playlistRow}>
-                          <View style={styles.artworkPlaceholder}>
-                            <Music size={20} color={Colors.textTertiary} />
-                          </View>
-                          <View style={styles.playlistInfo}>
-                            <Text style={styles.playlistName}>{playlist.name}</Text>
-                            <Text style={styles.playlistMeta}>{playlist.tracks.length} tracks · Playlist</Text>
-                          </View>
-                        </View>
-                      </GlassCard>
-                    </TouchableOpacity>
-                  ))
-                )
-              )}
-
-              {/* Downloads Tab */}
-              {activeTab === 'Downloads' && (
-                <>
-                  {/* Storage header */}
-                  <GlassCard style={styles.storageCard}>
-                    <View style={styles.storageRow}>
-                      <View>
-                        <Text style={styles.storageTitle}>Downloaded Music</Text>
-                        <Text style={styles.storageMeta}>
-                          {downloads.length} tracks · {formatBytes(totalStorageBytes)}
-                        </Text>
-                      </View>
-                      {downloads.length > 0 && (
-                        <TouchableOpacity
-                          onPress={() =>
-                            Alert.alert(
-                              'Clear Downloads',
-                              'Remove all downloaded tracks from this device?',
-                              [
-                                { text: 'Cancel', style: 'cancel' },
-                                { text: 'Clear All', style: 'destructive', onPress: clearAllDownloads },
-                              ]
-                            )
-                          }
-                          style={styles.clearBtn}
-                        >
-                          <Trash2 size={16} color={Colors.textTertiary} />
-                          <Text style={styles.clearBtnText}>Clear All</Text>
-                        </TouchableOpacity>
-                      )}
-                    </View>
-                  </GlassCard>
-
-                  {downloads.length === 0 ? (
-                    <GlassCard style={styles.emptyState}>
-                      <Download size={32} color={Colors.textTertiary} />
-                      <Text style={styles.emptyTitle}>No downloads yet</Text>
-                      <Text style={styles.emptyText}>
-                        Tap the download icon on any track to save it for offline listening
-                      </Text>
-                    </GlassCard>
-                  ) : (
-                    downloads.map((record, i) => {
-                      const track: Track = {
-                        id: record.trackId,
-                        title: record.title,
-                        artist: record.artist,
-                        album: record.album,
-                        artwork: record.artwork,
-                        url: record.localUri,
-                        source: record.source as Track['source'],
-                      };
-                      return (
-                        <TrackRow
-                          key={record.trackId}
-                          track={track}
-                          index={i + 1}
-                          isCurrent={currentTrack?.id === record.trackId}
-                          isPlaying={isPlaying}
-                          onPress={() => {
-                            setQueue([track], 0);
-                            navigation.navigate('NowPlaying');
-                          }}
-                          onAddToQueue={(t) => addToQueue(t)}
-                        />
-                      );
-                    })
-                  )}
-                </>
-              )}
-            </>
-          )}
+          {TABS.map((tab) => (
+            <TouchableOpacity key={tab} onPress={() => setActiveTab(tab)}>
+              <GlassCard
+                style={styles.tabChip}
+                borderRadius={Radius.sm}
+                intensity={activeTab === tab ? 60 : 25}
+              >
+                <Text style={[styles.tabText, activeTab === tab && styles.tabTextActive]}>{tab}</Text>
+              </GlassCard>
+            </TouchableOpacity>
+          ))}
         </ScrollView>
+
+        {/* Sort bar */}
+        <View style={styles.sortBar}>
+          <TouchableOpacity style={styles.sortBtn} onPress={() => setShowSortMenu(!showSortMenu)}>
+            <ArrowUpDown size={13} color={Colors.textSecondary} />
+            <Text style={styles.sortLabel}>{SORT_LABELS[sort]}</Text>
+          </TouchableOpacity>
+
+          {showSortMenu && (
+            <View style={styles.sortMenu}>
+              {(Object.keys(SORT_LABELS) as SortOption[]).map((opt) => (
+                <TouchableOpacity
+                  key={opt}
+                  style={styles.sortMenuItem}
+                  onPress={() => { setSort(opt); setShowSortMenu(false); }}
+                >
+                  <Text style={[styles.sortMenuText, sort === opt && styles.sortMenuTextActive]}>
+                    {SORT_LABELS[opt]}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+        </View>
+
+        {loading ? (
+          <ActivityIndicator color={Colors.accentPrimary} style={{ marginTop: Spacing.xl }} />
+        ) : (
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+            refreshControl={refreshControl}
+          >
+            {/* Playlists Tab */}
+            {activeTab === 'Playlists' && (
+              sortedPlaylists().length === 0 ? (
+                <EmptyState
+                  title="No playlists yet"
+                  subtitle="Tap + to create a new playlist"
+                  action="New Playlist"
+                  onAction={() => setShowNewPlaylistModal(true)}
+                />
+              ) : (
+                <View style={styles.grid}>
+                  {sortedPlaylists().map((pl) => (
+                    <PlaylistCard
+                      key={pl.id}
+                      playlist={pl}
+                      onPress={() => navigation.navigate('PlaylistDetail', { playlist: pl })}
+                    />
+                  ))}
+                </View>
+              )
+            )}
+
+            {/* Albums Tab */}
+            {activeTab === 'Albums' && (
+              sortedAlbums().length === 0 ? (
+                <EmptyState
+                  title="No albums found"
+                  action="Scan Folder"
+                  onAction={() => setShowScanModal(true)}
+                />
+              ) : (
+                <View style={styles.grid}>
+                  {sortedAlbums().map((album) => (
+                    <AlbumCard
+                      key={`${album.album}__${album.artist}`}
+                      album={album}
+                      onPress={() => navigation.navigate('AlbumDetail', { album })}
+                    />
+                  ))}
+                </View>
+              )
+            )}
+
+            {/* Artists Tab */}
+            {activeTab === 'Artists' && (
+              sortedArtists().length === 0 ? (
+                <EmptyState
+                  title="No artists found"
+                  action="Scan Folder"
+                  onAction={() => setShowScanModal(true)}
+                />
+              ) : (
+                <View style={styles.artistList}>
+                  {sortedArtists().map((artist) => (
+                    <ArtistCard
+                      key={artist.artist}
+                      artist={artist}
+                      onPress={() => navigation.navigate('ArtistDetail', { artistName: artist.artist })}
+                    />
+                  ))}
+                </View>
+              )
+            )}
+
+            {/* Liked Songs Tab */}
+            {activeTab === 'Liked' && (
+              sortedLiked().length === 0 ? (
+                <EmptyState
+                  title="No liked songs"
+                  subtitle="Tap the heart icon on any track to save it here"
+                />
+              ) : (
+                sortedLiked().map((track, i) => (
+                  <TrackRow
+                    key={track.id}
+                    track={track}
+                    index={i + 1}
+                    isCurrent={currentTrack?.id === track.id}
+                    isPlaying={isPlaying}
+                    showDownload
+                    onPress={() => { setQueue(sortedLiked(), i); navigation.navigate('NowPlaying'); }}
+                    onAddToQueue={(t) => addToQueue(t)}
+                  />
+                ))
+              )
+            )}
+          </ScrollView>
+        )}
       </SafeAreaView>
 
+      {/* FAB — Create Playlist (Playlists tab only) */}
+      {activeTab === 'Playlists' && (
+        <TouchableOpacity
+          style={styles.fab}
+          onPress={() => setShowNewPlaylistModal(true)}
+          activeOpacity={0.85}
+        >
+          <Plus size={24} color={Colors.textPrimary} />
+        </TouchableOpacity>
+      )}
+
       {/* Scan Modal */}
-      <Modal visible={showScanModal} transparent animationType="fade" onRequestClose={() => setShowScanModal(false)}>
+      <Modal
+        visible={showScanModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !scanning && setShowScanModal(false)}
+      >
         <View style={styles.modalOverlay}>
           <GlassCard style={styles.modalCard}>
             <View style={styles.modalHeader}>
@@ -320,28 +367,39 @@ export function LibraryScreen() {
               <Text style={styles.modalTitle}>Scan Music Folder</Text>
             </View>
             <Text style={styles.modalDesc}>Enter the full path to your FLAC/MP3 library on your Mac</Text>
-            <TextInput
-              value={scanDir}
-              onChangeText={setScanDir}
-              placeholder="/Users/you/Music/FLAC"
-              placeholderTextColor={Colors.textTertiary}
-              style={styles.dirInput}
-              autoCorrect={false}
-              autoCapitalize="none"
-            />
+            {scanning && scanProgress ? (
+              <View style={styles.scanProgressRow}>
+                <ActivityIndicator color={Colors.accentPrimary} size="small" />
+                <Text style={styles.scanProgressText}>{scanProgress}</Text>
+              </View>
+            ) : (
+              <TextInput
+                value={scanDir}
+                onChangeText={setScanDir}
+                placeholder="/Users/you/Music/FLAC"
+                placeholderTextColor={Colors.textTertiary}
+                style={styles.dirInput}
+                autoCorrect={false}
+                autoCapitalize="none"
+              />
+            )}
             <View style={styles.modalBtns}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => setShowScanModal(false)}>
+              <TouchableOpacity
+                style={styles.cancelBtn}
+                onPress={() => setShowScanModal(false)}
+                disabled={scanning}
+              >
                 <Text style={styles.cancelBtnText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.scanBtn, scanning && { opacity: 0.6 }]}
+                style={[styles.actionBtn, scanning && styles.btnDisabled]}
                 onPress={handleScan}
                 disabled={scanning}
               >
                 {scanning ? (
                   <ActivityIndicator color={Colors.bgPrimary} size="small" />
                 ) : (
-                  <Text style={styles.scanBtnText}>Scan</Text>
+                  <Text style={styles.actionBtnText}>Scan</Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -350,7 +408,12 @@ export function LibraryScreen() {
       </Modal>
 
       {/* New Playlist Modal */}
-      <Modal visible={showNewPlaylistModal} transparent animationType="fade" onRequestClose={() => setShowNewPlaylistModal(false)}>
+      <Modal
+        visible={showNewPlaylistModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowNewPlaylistModal(false)}
+      >
         <View style={styles.modalOverlay}>
           <GlassCard style={styles.modalCard}>
             <View style={styles.modalHeader}>
@@ -364,20 +427,25 @@ export function LibraryScreen() {
               placeholderTextColor={Colors.textTertiary}
               style={styles.dirInput}
               autoCorrect={false}
+              autoFocus
+              onSubmitEditing={handleCreatePlaylist}
             />
             <View style={styles.modalBtns}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => { setShowNewPlaylistModal(false); setNewPlaylistName(''); }}>
+              <TouchableOpacity
+                style={styles.cancelBtn}
+                onPress={() => { setShowNewPlaylistModal(false); setNewPlaylistName(''); }}
+              >
                 <Text style={styles.cancelBtnText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.scanBtn, creatingPlaylist && { opacity: 0.6 }]}
+                style={[styles.actionBtn, creatingPlaylist && styles.btnDisabled]}
                 onPress={handleCreatePlaylist}
                 disabled={creatingPlaylist}
               >
                 {creatingPlaylist ? (
                   <ActivityIndicator color={Colors.bgPrimary} size="small" />
                 ) : (
-                  <Text style={styles.scanBtnText}>Create</Text>
+                  <Text style={styles.actionBtnText}>Create</Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -388,32 +456,23 @@ export function LibraryScreen() {
   );
 }
 
-function EmptyState({ onScan }: { onScan: () => void }) {
+function EmptyState({ icon, title, subtitle, action, onAction }: {
+  icon?: React.ReactNode;
+  title: string;
+  subtitle?: string;
+  action?: string;
+  onAction?: () => void;
+}) {
   return (
-    <GlassCard style={{ padding: Spacing.xl, alignItems: 'center', gap: Spacing.sm, marginTop: Spacing.xl }}>
-      <Music size={32} color={Colors.textTertiary} />
-      <Text style={{ ...Typography.headingSm, color: Colors.textPrimary, marginTop: Spacing.sm }}>
-        No music yet
-      </Text>
-      <Text style={{ ...Typography.body, color: Colors.textSecondary, textAlign: 'center' }}>
-        Scan a local FLAC folder to get started
-      </Text>
-      <TouchableOpacity
-        onPress={onScan}
-        style={{
-          marginTop: Spacing.md,
-          backgroundColor: Colors.accentPrimary,
-          paddingHorizontal: Spacing.xl,
-          paddingVertical: Spacing.sm + 2,
-          borderRadius: Radius.full,
-          flexDirection: 'row',
-          gap: Spacing.sm,
-          alignItems: 'center',
-        }}
-      >
-        <ScanLine size={16} color={Colors.bgPrimary} />
-        <Text style={{ ...Typography.headingSm, color: Colors.bgPrimary }}>Scan Folder</Text>
-      </TouchableOpacity>
+    <GlassCard style={styles.emptyState}>
+      {icon}
+      <Text style={styles.emptyTitle}>{title}</Text>
+      {subtitle && <Text style={styles.emptyText}>{subtitle}</Text>}
+      {action && onAction && (
+        <TouchableOpacity onPress={onAction} style={styles.emptyBtn}>
+          <Text style={styles.emptyBtnText}>{action}</Text>
+        </TouchableOpacity>
+      )}
     </GlassCard>
   );
 }
@@ -422,71 +481,83 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.bgPrimary },
   ambientWarm: { position: 'absolute', bottom: 0, left: 0, width: '70%', height: '60%' },
   safeArea: { flex: 1 },
-  scroll: { flex: 1 },
-  scrollContent: { paddingHorizontal: Spacing.lg, paddingBottom: Spacing['3xl'] },
+
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    marginTop: Spacing.lg, marginBottom: Spacing.xl,
+    paddingHorizontal: Spacing.lg, marginTop: Spacing.lg, marginBottom: Spacing.md,
   },
   heading: { ...Typography.headingXl, color: Colors.textPrimary },
   iconBtn: { padding: Spacing.sm },
-  tabsScroll: { marginBottom: Spacing.lg },
-  tabChip: { marginRight: Spacing.sm },
+
+  tabsScroll: { flexGrow: 0 },
+  tabsContent: { paddingHorizontal: Spacing.lg, gap: Spacing.sm },
+  tabChip: { marginBottom: Spacing.md },
   tabText: {
     ...Typography.bodySm, color: Colors.textSecondary,
     paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs + 2,
   },
   tabTextActive: { color: Colors.textPrimary },
+
+  sortBar: {
+    paddingHorizontal: Spacing.lg,
+    marginBottom: Spacing.sm,
+    zIndex: 10,
+  },
+  sortBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    alignSelf: 'flex-start',
+    paddingVertical: Spacing.xs, paddingHorizontal: Spacing.sm,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.glassBg,
+    borderWidth: 1, borderColor: Colors.glassBorder,
+  },
+  sortLabel: { ...Typography.caption, color: Colors.textSecondary },
+  sortMenu: {
+    marginTop: 4,
+    backgroundColor: Colors.bgSecondary,
+    borderWidth: 1, borderColor: Colors.glassBorder,
+    borderRadius: Radius.md,
+    overflow: 'hidden',
+    alignSelf: 'flex-start',
+    minWidth: 100,
+  },
+  sortMenuItem: { paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm + 2 },
+  sortMenuText: { ...Typography.bodySm, color: Colors.textSecondary },
+  sortMenuTextActive: { color: Colors.accentPrimary, fontWeight: '600' },
+
+  scroll: { flex: 1 },
+  scrollContent: { paddingHorizontal: Spacing.lg, paddingBottom: Spacing['3xl'] + 80 },
+
+  grid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
+  artistList: {},
+
   emptyState: { padding: Spacing.xl, alignItems: 'center', gap: Spacing.sm, marginTop: Spacing.xl },
   emptyTitle: { ...Typography.headingSm, color: Colors.textPrimary, marginTop: Spacing.sm },
   emptyText: { ...Typography.body, color: Colors.textSecondary, textAlign: 'center' },
-
-  // Album grid
-  albumGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
-  albumCard: { width: '47%' },
-  albumArt: { width: '100%', aspectRatio: 1, borderRadius: Radius.lg, marginBottom: Spacing.sm },
-  albumArtPlaceholder: {
-    backgroundColor: Colors.bgTertiary, alignItems: 'center', justifyContent: 'center',
+  emptyBtn: {
+    marginTop: Spacing.md,
+    backgroundColor: Colors.accentPrimary,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.sm + 2,
+    borderRadius: Radius.full,
   },
-  albumName: { ...Typography.bodySm, color: Colors.textPrimary, fontWeight: '600' },
-  albumArtist: { ...Typography.caption, color: Colors.textSecondary, marginTop: 2 },
+  emptyBtnText: { ...Typography.headingSm, color: Colors.bgPrimary },
 
-  // Playlists
-  playlistItem: { marginBottom: Spacing.sm },
-  playlistRow: { flexDirection: 'row', alignItems: 'center', padding: Spacing.md, gap: Spacing.md },
-  artworkPlaceholder: {
-    width: 48, height: 48, borderRadius: Radius.sm,
-    backgroundColor: Colors.glassBgActive, alignItems: 'center', justifyContent: 'center',
+  fab: {
+    position: 'absolute',
+    bottom: 100,
+    right: Spacing.xl,
+    width: 56, height: 56,
+    borderRadius: Radius.full,
+    backgroundColor: Colors.accentPrimary,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: Colors.accentPrimary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 12,
+    elevation: 8,
   },
-  playlistInfo: { flex: 1 },
-  playlistName: { ...Typography.body, color: Colors.textPrimary, fontWeight: '600' },
-  playlistMeta: { ...Typography.bodySm, color: Colors.textSecondary, marginTop: 2 },
 
-  // Offline banner
-  offlineBanner: {
-    backgroundColor: 'rgba(124,58,237,0.2)',
-    borderWidth: 1, borderColor: Colors.accentPurple,
-    borderRadius: Radius.sm, padding: Spacing.sm,
-    marginBottom: Spacing.sm, alignItems: 'center',
-  },
-  offlineText: { ...Typography.bodySm, color: Colors.accentPurple },
-
-  // Downloads
-  storageCard: { marginBottom: Spacing.md },
-  storageRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    padding: Spacing.md,
-  },
-  storageTitle: { ...Typography.headingSm, color: Colors.textPrimary },
-  storageMeta: { ...Typography.bodySm, color: Colors.textSecondary, marginTop: 2 },
-  clearBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.xs,
-    padding: Spacing.sm, borderRadius: Radius.sm,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-  },
-  clearBtnText: { ...Typography.bodySm, color: Colors.textTertiary },
-
-  // Scan Modal
   modalOverlay: {
     flex: 1, backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'center', alignItems: 'center', padding: Spacing.xl,
@@ -502,6 +573,11 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md, padding: Spacing.md,
     marginBottom: Spacing.lg,
   },
+  scanProgressRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
+    padding: Spacing.md, marginBottom: Spacing.lg,
+  },
+  scanProgressText: { ...Typography.body, color: Colors.textSecondary },
   modalBtns: { flexDirection: 'row', gap: Spacing.md },
   cancelBtn: {
     flex: 1, alignItems: 'center', justifyContent: 'center',
@@ -510,10 +586,11 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.glassBorder,
   },
   cancelBtnText: { ...Typography.headingSm, color: Colors.textSecondary },
-  scanBtn: {
+  actionBtn: {
     flex: 1, alignItems: 'center', justifyContent: 'center',
     height: 44, borderRadius: Radius.full,
     backgroundColor: Colors.accentPrimary,
   },
-  scanBtnText: { ...Typography.headingSm, color: Colors.bgPrimary },
+  actionBtnText: { ...Typography.headingSm, color: Colors.bgPrimary },
+  btnDisabled: { opacity: 0.6 },
 });
