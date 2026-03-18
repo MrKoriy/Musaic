@@ -1,7 +1,7 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, Animated,
-  Dimensions, PanResponder, Image,
+  Dimensions, PanResponder, Image, Modal, SafeAreaView,
 } from 'react-native';
 import {
   ChevronDown, Play, Pause, SkipBack, SkipForward,
@@ -13,6 +13,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Typography, Radius, Shadows } from '../theme';
 import { HeartButton } from '../components/HeartButton';
 import { WaveformBar } from '../components/WaveformBar';
+import { LyricsView } from '../components/LyricsView';
 import { usePlayerStore } from '../stores/usePlayerStore';
 import { useLibraryStore } from '../stores/useLibraryStore';
 import { formatDuration } from '../data/mockData';
@@ -23,6 +24,7 @@ const ART_SIZE = W - Spacing.xl * 4;
 export function NowPlayingScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
+  const [showLyrics, setShowLyrics] = useState(false);
   const {
     currentTrack, isPlaying, progress, duration,
     setIsPlaying, skipNext, skipPrevious, seekTo,
@@ -206,7 +208,7 @@ export function NowPlayingScreen() {
             <AlignJustify size={20} color={Colors.textSecondary} />
             <Text style={styles.bottomLabel}>Queue</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.bottomBtn}>
+          <TouchableOpacity style={styles.bottomBtn} onPress={() => setShowLyrics(true)}>
             <Mic2 size={20} color={Colors.textSecondary} />
             <Text style={styles.bottomLabel}>Lyrics</Text>
           </TouchableOpacity>
@@ -216,6 +218,44 @@ export function NowPlayingScreen() {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Lyrics Modal */}
+      <Modal
+        visible={showLyrics}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowLyrics(false)}
+      >
+        <SafeAreaView style={styles.lyricsModal}>
+          {/* Modal header */}
+          <View style={styles.lyricsHeader}>
+            <View style={{ width: 60 }} />
+            <View style={{ alignItems: 'center' }}>
+              <Text style={styles.lyricsTitle} numberOfLines={1}>
+                {currentTrack.title}
+              </Text>
+              <Text style={styles.lyricsArtist} numberOfLines={1}>
+                {currentTrack.artist}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={{ width: 60, alignItems: 'flex-end', paddingRight: Spacing.lg }}
+              onPress={() => setShowLyrics(false)}
+            >
+              <Text style={{ color: Colors.accentPrimary, fontSize: 15 }}>Done</Text>
+            </TouchableOpacity>
+          </View>
+
+          <LyricsView
+            trackId={currentTrack.id}
+            artist={currentTrack.artist}
+            title={currentTrack.title}
+            duration={duration ?? 0}
+            progress={progress ?? 0}
+            onSeek={seekTo}
+          />
+        </SafeAreaView>
+      </Modal>
     </View>
   );
 }
@@ -363,5 +403,26 @@ const styles = StyleSheet.create({
   bottomLabel: {
     ...Typography.caption,
     color: Colors.textTertiary,
+  },
+  lyricsModal: {
+    flex: 1,
+    backgroundColor: Colors.bgPrimary,
+  },
+  lyricsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.glassBorder,
+  },
+  lyricsTitle: {
+    ...Typography.bodySm,
+    color: Colors.textPrimary,
+    fontWeight: '600',
+  },
+  lyricsArtist: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
   },
 });

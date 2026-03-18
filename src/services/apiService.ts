@@ -165,6 +165,36 @@ export const api = {
       // Silently fail — don't block playback if history fails
     });
   },
+
+  // AI Recommendations
+  getTasteProfile() {
+    return get<{ topArtists: string[]; topTracks: Array<{ artist: string; title: string }>; playCount: number }>(
+      '/api/recommendations/taste-profile'
+    );
+  },
+
+  getSimilarTracks(artist: string, track: string) {
+    return get<{ tracks: ServerTrack[]; similar: Array<{ artist: string; track: string }> }>(
+      `/api/recommendations/similar?artist=${encodeURIComponent(artist)}&track=${encodeURIComponent(track)}`
+    );
+  },
+
+  getHomeRecommendations() {
+    return get<{ tracks: ServerTrack[]; profile: unknown; source: string }>(
+      '/api/recommendations/home'
+    );
+  },
+
+  chatWithAI(message: string, history: Array<{ role: string; content: string }> = []) {
+    return post<{ reply: string; error?: string }>(
+      '/api/recommendations/chat',
+      { message, history }
+    );
+  },
+
+  scrobble(trackId: string, action: 'play' | 'complete' | 'skip' = 'play') {
+    return post<{ ok: boolean }>('/api/recommendations/scrobble', { trackId, action }).catch(() => {});
+  },
 };
 
 /** Get the playback URL for a track based on its source */
@@ -216,4 +246,59 @@ export function serverTrackToAppTrack(track: ServerTrack): import('../types').Tr
 /** Fetch SoundCloud waveform samples for visualization */
 export function getSCWaveform(trackId: string): Promise<{ samples: number[] }> {
   return get<{ samples: number[] }>(`/api/sc/waveform/${encodeURIComponent(trackId)}`);
+}
+
+// ─── Lyrics API ───────────────────────────────────────────────────────────────
+
+export interface LyricsResult {
+  trackId: string;
+  lrc: string | null;
+  source: 'lrclib' | 'ai' | 'manual' | null;
+  cached: boolean;
+}
+
+export interface LyricsJobStatus {
+  trackId: string;
+  status: 'not_started' | 'running' | 'done' | 'failed';
+  startedAt?: number;
+  error?: string;
+  cached?: boolean;
+}
+
+/** Fetch lyrics for a track (LRCLIB first, then cache). */
+export function getLyrics(
+  trackId: string,
+  opts: { artist?: string; title?: string; duration?: number } = {}
+): Promise<LyricsResult> {
+  const q = new URLSearchParams();
+  if (opts.artist) q.set('artist', opts.artist);
+  if (opts.title) q.set('title', opts.title);
+  if (opts.duration) q.set('duration', String(opts.duration));
+  const qs = q.toString();
+  return get<LyricsResult>(`/api/lyrics/${encodeURIComponent(trackId)}${qs ? `?${qs}` : ''}`);
+}
+
+/** Start AI transcription pipeline for a track (async, poll status). */
+export function generateLyrics(trackId: string, audioPath?: string): Promise<LyricsJobStatus> {
+  return post<LyricsJobStatus>(`/api/lyrics/${encodeURIComponent(trackId)}/generate`, { audioPath });
+}
+
+/** Poll AI job status. */
+export function getLyricsJobStatus(trackId: string): Promise<LyricsJobStatus> {
+  return get<LyricsJobStatus>(`/api/lyrics/${encodeURIComponent(trackId)}/status`);
+}
+
+/** Save manually edited lyrics. */
+export function saveLyrics(trackId: string, lrc: string): Promise<{ ok: boolean }> {
+  return put<{ ok: boolean }>(`/api/lyrics/${encodeURIComponent(trackId)}`, { lrc });
+}
+
+async function put<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${SERVER_URL}${path}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`PUT ${path} failed: ${res.status}`);
+  return res.json() as Promise<T>;
 }

@@ -6,6 +6,8 @@ import vkRoutes from "./routes/vk.js";
 import scRoutes from "./routes/soundcloud.js";
 import searchRoutes from "./routes/search.js";
 import { localRouter, coversRouter, albumsRouter, artistsRouter, playlistsRouter } from "./routes/local.js";
+import { recommendationsRouter } from "./routes/recommendations.js";
+import lyricsRoutes from "./routes/lyrics.js";
 import { getDb } from "./db/index.js";
 import { getLocalProvider } from "./providers/local.js";
 import fs from "fs";
@@ -32,6 +34,8 @@ app.route("/api/covers", coversRouter);
 app.route("/api/albums", albumsRouter);
 app.route("/api/artists", artistsRouter);
 app.route("/api/playlists", playlistsRouter);
+app.route("/api/recommendations", recommendationsRouter);
+app.route("/api/lyrics", lyricsRoutes);
 
 /**
  * Serve local audio files

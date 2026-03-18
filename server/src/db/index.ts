@@ -77,6 +77,13 @@ function initSchema(db: Database): void {
       mime_type TEXT NOT NULL DEFAULT 'image/jpeg'
     );
 
+    CREATE TABLE IF NOT EXISTS lyrics_cache (
+      track_id TEXT PRIMARY KEY,
+      lrc TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'lrclib',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
     CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(
       title, artist, album,
       content='tracks',
@@ -270,4 +277,25 @@ export function removeTrackFromPlaylist(playlistId: string, trackId: string): vo
   const db = getDb();
   db.prepare("DELETE FROM playlist_tracks WHERE playlist_id = $pid AND track_id = $tid")
     .run({ $pid: playlistId, $tid: trackId });
+}
+
+// Lyrics cache
+export function getCachedLyrics(trackId: string): { lrc: string; source: string } | null {
+  const db = getDb();
+  return db.prepare("SELECT lrc, source FROM lyrics_cache WHERE track_id = $id")
+    .get({ $id: trackId }) as { lrc: string; source: string } | null;
+}
+
+export function setCachedLyrics(trackId: string, lrc: string, source: string): void {
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO lyrics_cache (track_id, lrc, source)
+    VALUES ($id, $lrc, $source)
+    ON CONFLICT(track_id) DO UPDATE SET lrc = excluded.lrc, source = excluded.source, created_at = unixepoch()
+  `).run({ $id: trackId, $lrc: lrc, $source: source });
+}
+
+export function deleteCachedLyrics(trackId: string): void {
+  const db = getDb();
+  db.prepare("DELETE FROM lyrics_cache WHERE track_id = $id").run({ $id: trackId });
 }
