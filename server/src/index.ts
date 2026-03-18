@@ -5,7 +5,7 @@ import { serve } from "@hono/node-server";
 import vkRoutes from "./routes/vk.js";
 import scRoutes from "./routes/soundcloud.js";
 import searchRoutes from "./routes/search.js";
-import { localRouter, coversRouter, albumsRouter, artistsRouter, playlistsRouter } from "./routes/local.js";
+import { localRouter, coversRouter, albumsRouter, artistsRouter, playlistsRouter, downloadsRouter } from "./routes/local.js";
 import { recommendationsRouter } from "./routes/recommendations.js";
 import lyricsRoutes from "./routes/lyrics.js";
 import { getDb } from "./db/index.js";
@@ -34,6 +34,7 @@ app.route("/api/covers", coversRouter);
 app.route("/api/albums", albumsRouter);
 app.route("/api/artists", artistsRouter);
 app.route("/api/playlists", playlistsRouter);
+app.route("/api/downloads", downloadsRouter);
 app.route("/api/recommendations", recommendationsRouter);
 app.route("/api/lyrics", lyricsRoutes);
 
@@ -128,6 +129,6 @@ console.log(`[Musaic] Starting server on port ${PORT}...`);
 console.log(`[Musaic] DB: ${process.env.DB_PATH ?? "musaic.db"}`);
 console.log(`[Musaic] Downloads: ${process.env.DOWNLOADS_DIR ?? "downloads/"}`);
 
-serve({ fetch: app.fetch, port: PORT }, (info) => {
-  console.log(`[Musaic] Server running at http://localhost:${info.port}`);
+serve({ fetch: app.fetch, hostname: "0.0.0.0", port: PORT }, (info) => {
+  console.log(`[Musaic] Server running at http://0.0.0.0:${info.port}`);
 });

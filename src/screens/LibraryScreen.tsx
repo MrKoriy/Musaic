@@ -4,21 +4,24 @@ import {
   TouchableOpacity, Image, Alert, ActivityIndicator,
   TextInput, Modal,
 } from 'react-native';
-import { Plus, Music, Grid, List, ScanLine, FolderOpen } from 'lucide-react-native';
+import { Plus, Music, ScanLine, FolderOpen, Download, Trash2 } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Colors, Spacing, Typography, Radius } from '../theme';
 import { GlassCard } from '../components/GlassCard';
 import { TrackRow } from '../components/TrackRow';
+import { DownloadButton } from '../components/DownloadButton';
 import { useLibraryStore } from '../stores/useLibraryStore';
 import { usePlayerStore } from '../stores/usePlayerStore';
+import { useDownloadStore } from '../stores/useDownloadStore';
 import { api, serverTrackToAppTrack } from '../services/apiService';
 import { RootStackParamList, Track, Album } from '../types';
 import { formatDuration } from '../data/mockData';
+import { formatBytes } from '../services/downloadService';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
-type LibraryTab = 'Tracks' | 'Albums' | 'Playlists';
+type LibraryTab = 'Tracks' | 'Albums' | 'Playlists' | 'Downloads';
 
 export function LibraryScreen() {
   const navigation = useNavigation<NavProp>();
@@ -34,7 +37,8 @@ export function LibraryScreen() {
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [creatingPlaylist, setCreatingPlaylist] = useState(false);
 
-  const { currentTrack, isPlaying, setQueue } = usePlayerStore();
+  const { currentTrack, isPlaying, setQueue, addToQueue } = usePlayerStore();
+  const { downloads, totalStorageBytes, removeDownload, clearAllDownloads, isOffline, refreshDownloads } = useDownloadStore();
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -76,6 +80,10 @@ export function LibraryScreen() {
   }
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  useEffect(() => {
+    if (activeTab === 'Downloads') refreshDownloads();
+  }, [activeTab, refreshDownloads]);
 
   async function handleScan() {
     if (!scanDir.trim()) return;
@@ -127,9 +135,16 @@ export function LibraryScreen() {
             </View>
           </View>
 
+          {/* Offline indicator */}
+          {isOffline && (
+            <View style={styles.offlineBanner}>
+              <Text style={styles.offlineText}>Offline — showing downloads only</Text>
+            </View>
+          )}
+
           {/* Filter Tabs */}
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabsScroll}>
-            {(['Tracks', 'Albums', 'Playlists'] as LibraryTab[]).map((tab) => (
+            {(['Tracks', 'Albums', 'Playlists', 'Downloads'] as LibraryTab[]).map((tab) => (
               <TouchableOpacity key={tab} onPress={() => setActiveTab(tab)}>
                 <GlassCard style={styles.tabChip} borderRadius={Radius.sm} intensity={activeTab === tab ? 60 : 30}>
                   <Text style={[styles.tabText, activeTab === tab && styles.tabTextActive]}>{tab}</Text>
@@ -154,7 +169,9 @@ export function LibraryScreen() {
                       index={i + 1}
                       isCurrent={currentTrack?.id === track.id}
                       isPlaying={isPlaying}
+                      showDownload
                       onPress={() => { setQueue(tracks, i); navigation.navigate('NowPlaying'); }}
+                      onAddToQueue={(t) => addToQueue(t)}
                     />
                   ))
                 )
@@ -217,6 +234,77 @@ export function LibraryScreen() {
                     </TouchableOpacity>
                   ))
                 )
+              )}
+
+              {/* Downloads Tab */}
+              {activeTab === 'Downloads' && (
+                <>
+                  {/* Storage header */}
+                  <GlassCard style={styles.storageCard}>
+                    <View style={styles.storageRow}>
+                      <View>
+                        <Text style={styles.storageTitle}>Downloaded Music</Text>
+                        <Text style={styles.storageMeta}>
+                          {downloads.length} tracks · {formatBytes(totalStorageBytes)}
+                        </Text>
+                      </View>
+                      {downloads.length > 0 && (
+                        <TouchableOpacity
+                          onPress={() =>
+                            Alert.alert(
+                              'Clear Downloads',
+                              'Remove all downloaded tracks from this device?',
+                              [
+                                { text: 'Cancel', style: 'cancel' },
+                                { text: 'Clear All', style: 'destructive', onPress: clearAllDownloads },
+                              ]
+                            )
+                          }
+                          style={styles.clearBtn}
+                        >
+                          <Trash2 size={16} color={Colors.textTertiary} />
+                          <Text style={styles.clearBtnText}>Clear All</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  </GlassCard>
+
+                  {downloads.length === 0 ? (
+                    <GlassCard style={styles.emptyState}>
+                      <Download size={32} color={Colors.textTertiary} />
+                      <Text style={styles.emptyTitle}>No downloads yet</Text>
+                      <Text style={styles.emptyText}>
+                        Tap the download icon on any track to save it for offline listening
+                      </Text>
+                    </GlassCard>
+                  ) : (
+                    downloads.map((record, i) => {
+                      const track: Track = {
+                        id: record.trackId,
+                        title: record.title,
+                        artist: record.artist,
+                        album: record.album,
+                        artwork: record.artwork,
+                        url: record.localUri,
+                        source: record.source as Track['source'],
+                      };
+                      return (
+                        <TrackRow
+                          key={record.trackId}
+                          track={track}
+                          index={i + 1}
+                          isCurrent={currentTrack?.id === record.trackId}
+                          isPlaying={isPlaying}
+                          onPress={() => {
+                            setQueue([track], 0);
+                            navigation.navigate('NowPlaying');
+                          }}
+                          onAddToQueue={(t) => addToQueue(t)}
+                        />
+                      );
+                    })
+                  )}
+                </>
               )}
             </>
           )}
@@ -373,6 +461,30 @@ const styles = StyleSheet.create({
   playlistInfo: { flex: 1 },
   playlistName: { ...Typography.body, color: Colors.textPrimary, fontWeight: '600' },
   playlistMeta: { ...Typography.bodySm, color: Colors.textSecondary, marginTop: 2 },
+
+  // Offline banner
+  offlineBanner: {
+    backgroundColor: 'rgba(124,58,237,0.2)',
+    borderWidth: 1, borderColor: Colors.accentPurple,
+    borderRadius: Radius.sm, padding: Spacing.sm,
+    marginBottom: Spacing.sm, alignItems: 'center',
+  },
+  offlineText: { ...Typography.bodySm, color: Colors.accentPurple },
+
+  // Downloads
+  storageCard: { marginBottom: Spacing.md },
+  storageRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    padding: Spacing.md,
+  },
+  storageTitle: { ...Typography.headingSm, color: Colors.textPrimary },
+  storageMeta: { ...Typography.bodySm, color: Colors.textSecondary, marginTop: 2 },
+  clearBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.xs,
+    padding: Spacing.sm, borderRadius: Radius.sm,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  clearBtnText: { ...Typography.bodySm, color: Colors.textTertiary },
 
   // Scan Modal
   modalOverlay: {

@@ -1,11 +1,11 @@
 import React from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet, ViewStyle, Image,
+  View, Text, TouchableOpacity, StyleSheet, ViewStyle, Image, Alert,
 } from 'react-native';
-import { MoreHorizontal } from 'lucide-react-native';
 import { Track } from '../types';
 import { PlayingIndicator } from './PlayingIndicator';
 import { HeartButton } from './HeartButton';
+import { DownloadButton } from './DownloadButton';
 import { Colors, Spacing, Typography, Radius } from '../theme';
 import { formatDuration } from '../data/mockData';
 
@@ -15,20 +15,31 @@ type Props = {
   isPlaying?: boolean;
   isCurrent?: boolean;
   isLiked?: boolean;
+  showDownload?: boolean;
   onPress?: () => void;
   onLike?: (liked: boolean) => void;
   onMoreLikeThis?: (track: Track) => void;
+  onAddToQueue?: (track: Track) => void;
   style?: ViewStyle;
 };
 
 export function TrackRow({
-  track, index, isPlaying, isCurrent, isLiked, onPress, onLike, onMoreLikeThis, style,
+  track, index, isPlaying, isCurrent, isLiked, showDownload, onPress, onLike, onMoreLikeThis, onAddToQueue, style,
 }: Props) {
+  function handleLongPress() {
+    if (!onMoreLikeThis && !onAddToQueue) return;
+    const buttons: Array<{ text: string; onPress?: () => void; style?: 'cancel' | 'destructive' }> = [];
+    if (onMoreLikeThis) buttons.push({ text: 'More Like This', onPress: () => onMoreLikeThis(track) });
+    if (onAddToQueue) buttons.push({ text: 'Add to Queue', onPress: () => onAddToQueue(track) });
+    buttons.push({ text: 'Cancel', style: 'cancel' });
+    Alert.alert(track.title, track.artist, buttons);
+  }
+
   return (
     <TouchableOpacity
       style={[styles.row, isCurrent && styles.rowActive, style]}
       onPress={onPress}
-      onLongPress={onMoreLikeThis ? () => onMoreLikeThis(track) : undefined}
+      onLongPress={(onMoreLikeThis || onAddToQueue) ? handleLongPress : undefined}
       activeOpacity={0.7}
       delayLongPress={400}
     >
@@ -67,6 +78,9 @@ export function TrackRow({
       {track.duration !== undefined && (
         <Text style={styles.duration}>{formatDuration(track.duration)}</Text>
       )}
+
+      {/* Download button (opt-in) */}
+      {showDownload && <DownloadButton track={track} size={16} />}
 
       {/* Heart */}
       <HeartButton liked={isLiked} onToggle={onLike} size={16} />

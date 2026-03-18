@@ -19,6 +19,9 @@
  *   GET  /api/playlists/:id/tracks
  *   POST /api/playlists/:id/tracks
  *   DELETE /api/playlists/:id/tracks/:trackId
+ *
+ * downloadsRouter → mounted at /api/downloads
+ *   GET  /api/downloads/stream/:trackId - Stream any track for offline download
  */
 
 import { Hono } from "hono";
@@ -26,6 +29,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { parseFile } from "music-metadata";
+import { createReadStream } from "fs";
 import {
   getDb,
   upsertTrack,
@@ -40,6 +44,7 @@ import {
   removeTrackFromPlaylist,
 } from "../db/index.js";
 import { fetchOnlineArtwork } from "../providers/artwork.js";
+import { getLocalProvider } from "../providers/local.js";
 
 const AUDIO_EXTENSIONS = new Set([".flac", ".mp3", ".m4a", ".wav", ".ogg", ".opus", ".aiff", ".aif"]);
 
@@ -316,4 +321,80 @@ playlistsRouter.post("/:id/tracks", async (c) => {
 playlistsRouter.delete("/:id/tracks/:trackId", (c) => {
   removeTrackFromPlaylist(c.req.param("id"), c.req.param("trackId"));
   return c.json({ ok: true });
+});
+
+// ─── Downloads Router ─────────────────────────────────────────────────────────
+
+export const downloadsRouter = new Hono();
+
+const MIME_TYPES: Record<string, string> = {
+  ".mp3": "audio/mpeg", ".flac": "audio/flac", ".m4a": "audio/mp4",
+  ".wav": "audio/wav", ".ogg": "audio/ogg", ".opus": "audio/opus",
+  ".aiff": "audio/aiff", ".aif": "audio/aiff",
+};
+
+/**
+ * GET /api/downloads/stream/:trackId
+ * Pipe any track's audio bytes to the client for offline download.
+ * - local: streams from disk
+ * - vk/soundcloud: fetches from upstream URL and pipes
+ */
+downloadsRouter.get("/stream/:trackId", async (c) => {
+  const trackId = decodeURIComponent(c.req.param("trackId"));
+  const db = getDb();
+  const track = db.prepare("SELECT * FROM tracks WHERE id = $id").get({ $id: trackId }) as {
+    id: string; source: string; title: string; local_path?: string;
+  } | null;
+
+  if (!track) return c.json({ error: "Track not found" }, 404);
+
+  if (track.source === "local") {
+    const filePath = getLocalProvider().getFilePath(trackId);
+    if (!filePath || !fs.existsSync(filePath)) {
+      return c.json({ error: "Local file not found" }, 404);
+    }
+    const stat = fs.statSync(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const stream = createReadStream(filePath);
+    const safeName = encodeURIComponent(track.title) + (ext || ".mp3");
+    return new Response(stream as unknown as ReadableStream, {
+      headers: {
+        "Content-Length": String(stat.size),
+        "Content-Type": MIME_TYPES[ext] ?? "audio/mpeg",
+        "Content-Disposition": `attachment; filename="${safeName}"`,
+        "Accept-Ranges": "bytes",
+      },
+    });
+  }
+
+  // For VK and SoundCloud: fetch from upstream and pipe
+  try {
+    let upstreamUrl: string;
+    if (track.source === "vk") {
+      const { getVKProvider } = await import("../providers/vk.js");
+      upstreamUrl = await getVKProvider().getStreamUrl(trackId);
+    } else {
+      const { getSoundCloudProvider } = await import("../providers/soundcloud.js");
+      upstreamUrl = await getSoundCloudProvider().getStreamUrl(trackId);
+    }
+
+    const upstream = await fetch(upstreamUrl);
+    if (!upstream.ok) {
+      return c.json({ error: `Upstream fetch failed: ${upstream.status}` }, 502);
+    }
+
+    const contentType = upstream.headers.get("content-type") ?? "audio/mpeg";
+    const contentLength = upstream.headers.get("content-length");
+    const safeName = encodeURIComponent(track.title) + ".mp3";
+
+    const headers: Record<string, string> = {
+      "Content-Type": contentType,
+      "Content-Disposition": `attachment; filename="${safeName}"`,
+    };
+    if (contentLength) headers["Content-Length"] = contentLength;
+
+    return new Response(upstream.body, { headers });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : "Stream error" }, 500);
+  }
 });
