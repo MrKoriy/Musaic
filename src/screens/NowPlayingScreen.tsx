@@ -270,6 +270,9 @@ export function NowPlayingScreen() {
           usePlayerStore.getState().setQueue(similarTracks, index);
         }}
       />
+
+      {/* Queue */}
+      <QueueSheet visible={showQueue} onClose={() => setShowQueue(false)} />
     </View>
   );
 }

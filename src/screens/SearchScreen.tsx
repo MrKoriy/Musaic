@@ -22,7 +22,7 @@ export function SearchScreen() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Track[]>([]);
   const [loading, setLoading] = useState(false);
-  const { currentTrack, isPlaying, setQueue } = usePlayerStore();
+  const { currentTrack, isPlaying, setQueue, addToQueue } = usePlayerStore();
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const doSearch = useCallback(async (q: string) => {
@@ -110,6 +110,7 @@ export function SearchScreen() {
                     isCurrent={currentTrack?.id === track.id}
                     isPlaying={isPlaying}
                     onPress={() => { setQueue(results, i); navigation.navigate('NowPlaying'); }}
+                    onAddToQueue={(t) => addToQueue(t)}
                   />
                 </View>
               ))}

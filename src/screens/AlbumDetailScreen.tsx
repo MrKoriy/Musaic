@@ -21,7 +21,7 @@ export function AlbumDetailScreen() {
   const navigation = useNavigation<NavProp>();
   const route = useRoute<RouteP>();
   const { album } = route.params;
-  const { currentTrack, isPlaying, setQueue } = usePlayerStore();
+  const { currentTrack, isPlaying, setQueue, addToQueue } = usePlayerStore();
 
   const [tracks, setTracks] = useState<Track[]>([]);
   const [loading, setLoading] = useState(true);
@@ -98,6 +98,7 @@ export function AlbumDetailScreen() {
                 isCurrent={currentTrack?.id === track.id}
                 isPlaying={isPlaying}
                 onPress={() => { setQueue(tracks, i); navigation.navigate('NowPlaying'); }}
+                onAddToQueue={(t) => addToQueue(t)}
               />
             ))
           )}

@@ -22,7 +22,7 @@ export function PlaylistDetailScreen() {
   const navigation = useNavigation<NavProp>();
   const route = useRoute<RouteP>();
   const { playlist } = route.params;
-  const { currentTrack, isPlaying, setQueue } = usePlayerStore();
+  const { currentTrack, isPlaying, setQueue, addToQueue } = usePlayerStore();
 
   const [tracks, setTracks] = useState<Track[]>(playlist.tracks);
   const [loading, setLoading] = useState(false);
@@ -104,6 +104,7 @@ export function PlaylistDetailScreen() {
                 isCurrent={currentTrack?.id === track.id}
                 isPlaying={isPlaying}
                 onPress={() => { setQueue(tracks, idx); navigation.navigate('NowPlaying'); }}
+                onAddToQueue={(t) => addToQueue(t)}
               />
             ))
           )}

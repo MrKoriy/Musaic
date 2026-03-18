@@ -47,7 +47,7 @@ export function HomeScreen() {
   const [moreLikeThis, setMoreLikeThis] = useState<Track | null>(null);
   const [serverStatus, setServerStatus] = useState<ServerStatus>('unknown');
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const { currentTrack, isPlaying, setQueue } = usePlayerStore();
+  const { currentTrack, isPlaying, setQueue, addToQueue } = usePlayerStore();
   const { isLiked, toggleLike } = useLibraryStore();
 
   const checkServer = useCallback(async () => {
@@ -242,6 +242,7 @@ export function HomeScreen() {
                       onPress={() => playTrack(recommendations, i)}
                       onLike={() => toggleLike(track.id)}
                       onMoreLikeThis={(t) => setMoreLikeThis(t)}
+                      onAddToQueue={(t) => addToQueue(t)}
                     />
                   ))}
                 </View>
@@ -303,6 +304,7 @@ export function HomeScreen() {
                   onPress={() => playTrack(tracks, i)}
                   onLike={() => toggleLike(track.id)}
                   onMoreLikeThis={(t) => setMoreLikeThis(t)}
+                  onAddToQueue={(t) => addToQueue(t)}
                 />
               ))}
             </View>
