@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import TrackPlayer from 'react-native-track-player';
 import { Track, RepeatMode } from '../types';
-import { serverTrackToRNTP } from '../services/apiService';
+import { appTrackToRNTP } from '../services/apiService';
 
 interface PlayerState {
   currentTrack: Track | null;
@@ -16,6 +16,8 @@ interface PlayerState {
   playTrack: (track: Track) => Promise<void>;
   setQueue: (tracks: Track[], startIndex?: number) => Promise<void>;
   addToQueue: (track: Track) => Promise<void>;
+  removeFromQueue: (trackId: string) => Promise<void>;
+  reorderQueue: (fromIndex: number, toIndex: number) => Promise<void>;
   setIsPlaying: (playing: boolean) => void;
   setProgress: (progress: number) => void;
   setDuration: (duration: number) => void;
@@ -42,7 +44,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   playTrack: async (track) => {
     try {
       await TrackPlayer.reset();
-      await TrackPlayer.add(serverTrackToRNTP(track as any));
+      await TrackPlayer.add(appTrackToRNTP(track));
       await TrackPlayer.play();
       set({ queue: [track], queueIndex: 0, currentTrack: track, isPlaying: true });
     } catch (e) {
@@ -54,7 +56,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   setQueue: async (tracks, startIndex = 0) => {
     try {
       await TrackPlayer.reset();
-      await TrackPlayer.add(tracks.map((t) => serverTrackToRNTP(t as any)));
+      await TrackPlayer.add(tracks.map(appTrackToRNTP));
       await TrackPlayer.skip(startIndex);
       await TrackPlayer.play();
       set({ queue: tracks, queueIndex: startIndex, currentTrack: tracks[startIndex] ?? null, isPlaying: true });
@@ -66,11 +68,49 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   addToQueue: async (track) => {
     try {
-      await TrackPlayer.add(serverTrackToRNTP(track as any));
+      await TrackPlayer.add(appTrackToRNTP(track));
     } catch (e) {
       console.warn('[player] addToQueue error:', e);
     }
     set((state) => ({ queue: [...state.queue, track] }));
+  },
+
+  removeFromQueue: async (trackId) => {
+    const { queue, queueIndex } = get();
+    const idx = queue.findIndex((t) => t.id === trackId);
+    if (idx === -1) return;
+    try {
+      await TrackPlayer.remove(idx);
+    } catch (e) {
+      console.warn('[player] removeFromQueue error:', e);
+    }
+    const newQueue = queue.filter((_, i) => i !== idx);
+    const newIndex = idx < queueIndex
+      ? queueIndex - 1
+      : Math.min(queueIndex, newQueue.length - 1);
+    set({
+      queue: newQueue,
+      queueIndex: Math.max(0, newIndex),
+      currentTrack: newQueue[Math.max(0, newIndex)] ?? null,
+    });
+  },
+
+  reorderQueue: async (fromIndex, toIndex) => {
+    if (fromIndex === toIndex) return;
+    const { queue, queueIndex } = get();
+    try {
+      await TrackPlayer.move(fromIndex, toIndex);
+    } catch (e) {
+      console.warn('[player] reorderQueue error:', e);
+    }
+    const newQueue = [...queue];
+    const [moved] = newQueue.splice(fromIndex, 1);
+    newQueue.splice(toIndex, 0, moved);
+    let newIndex = queueIndex;
+    if (fromIndex === queueIndex) newIndex = toIndex;
+    else if (fromIndex < queueIndex && toIndex >= queueIndex) newIndex = queueIndex - 1;
+    else if (fromIndex > queueIndex && toIndex <= queueIndex) newIndex = queueIndex + 1;
+    set({ queue: newQueue, queueIndex: newIndex });
   },
 
   setIsPlaying: (playing) => {

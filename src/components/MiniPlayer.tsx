@@ -53,7 +53,7 @@ export function MiniPlayer() {
           <View
             style={[
               styles.progressFill,
-              { width: `${Math.round((progress ?? 0) * 100)}%` as any },
+              { width: `${Math.round((progress ?? 0) * 100)}%` },
             ]}
           />
         </View>
@@ -63,7 +63,7 @@ export function MiniPlayer() {
           {currentTrack.artwork ? (
             <Image source={{ uri: currentTrack.artwork }} style={styles.artwork} />
           ) : (
-            <View style={[styles.artwork, { backgroundColor: (currentTrack as any).artworkColor ?? Colors.bgTertiary }]}>
+            <View style={[styles.artwork, { backgroundColor: currentTrack.artworkColor ?? Colors.bgTertiary }]}>
               <Text style={styles.artworkNote}>♪</Text>
             </View>
           )}

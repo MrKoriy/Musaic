@@ -274,6 +274,19 @@ export function serverTrackToRNTP(track: ServerTrack): import('react-native-trac
   };
 }
 
+/** Convert the app's Track type to a react-native-track-player Track shape */
+export function appTrackToRNTP(track: import('../types').Track): import('react-native-track-player').Track {
+  return {
+    id: track.id,
+    url: track.url,
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    duration: track.duration,
+    artwork: track.artwork,
+  };
+}
+
 /** Convert a ServerTrack to the app's Track type */
 export function serverTrackToAppTrack(track: ServerTrack): import('../types').Track {
   return {

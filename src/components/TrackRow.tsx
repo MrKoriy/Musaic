@@ -17,17 +17,20 @@ type Props = {
   isLiked?: boolean;
   onPress?: () => void;
   onLike?: (liked: boolean) => void;
+  onMoreLikeThis?: (track: Track) => void;
   style?: ViewStyle;
 };
 
 export function TrackRow({
-  track, index, isPlaying, isCurrent, isLiked, onPress, onLike, style,
+  track, index, isPlaying, isCurrent, isLiked, onPress, onLike, onMoreLikeThis, style,
 }: Props) {
   return (
     <TouchableOpacity
       style={[styles.row, isCurrent && styles.rowActive, style]}
       onPress={onPress}
+      onLongPress={onMoreLikeThis ? () => onMoreLikeThis(track) : undefined}
       activeOpacity={0.7}
+      delayLongPress={400}
     >
       {/* Left: index or playing indicator */}
       <View style={styles.indexBox}>
@@ -42,7 +45,7 @@ export function TrackRow({
       {track.artwork ? (
         <Image source={{ uri: track.artwork }} style={styles.artwork} />
       ) : (
-        <View style={[styles.artwork, { backgroundColor: (track as any).artworkColor ?? Colors.bgTertiary }]}>
+        <View style={[styles.artwork, { backgroundColor: track.artworkColor ?? Colors.bgTertiary }]}>
           <Text style={styles.artworkNote}>♪</Text>
         </View>
       )}

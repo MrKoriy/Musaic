@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import {
   ChevronDown, Play, Pause, SkipBack, SkipForward,
-  Shuffle, Repeat, AlignJustify, Mic2, Share2,
+  Shuffle, Repeat, AlignJustify, Mic2, Sparkles,
 } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
@@ -14,8 +14,10 @@ import { Colors, Spacing, Typography, Radius, Shadows } from '../theme';
 import { HeartButton } from '../components/HeartButton';
 import { WaveformBar } from '../components/WaveformBar';
 import { LyricsView } from '../components/LyricsView';
+import { QueueSheet } from '../components/QueueSheet';
 import { usePlayerStore } from '../stores/usePlayerStore';
 import { useLibraryStore } from '../stores/useLibraryStore';
+import { MoreLikeThisModal } from '../components/MoreLikeThisModal';
 import { formatDuration } from '../data/mockData';
 
 const { width: W } = Dimensions.get('window');
@@ -25,6 +27,8 @@ export function NowPlayingScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const [showLyrics, setShowLyrics] = useState(false);
+  const [showMoreLikeThis, setShowMoreLikeThis] = useState(false);
+  const [showQueue, setShowQueue] = useState(false);
   const {
     currentTrack, isPlaying, progress, duration,
     setIsPlaying, skipNext, skipPrevious, seekTo,
@@ -43,10 +47,10 @@ export function NowPlayingScreen() {
     }).start();
   }, [isPlaying]);
 
-  const artColor = (currentTrack as any)?.artworkColor ?? Colors.bgTertiary;
+  const artColor = currentTrack?.artworkColor ?? Colors.bgTertiary;
   const elapsed = Math.floor((progress ?? 0) * (duration ?? 0));
   const remaining = Math.max(0, (duration ?? 0) - elapsed);
-  const progressWidth = `${Math.round((progress ?? 0) * 100)}%` as any;
+  const progressWidth = `${Math.round((progress ?? 0) * 100)}%` as `${number}%`;
 
   if (!currentTrack) {
     return (
@@ -204,7 +208,7 @@ export function NowPlayingScreen() {
 
         {/* Bottom Row */}
         <View style={[styles.bottomRow, { paddingBottom: insets.bottom + Spacing.sm }]}>
-          <TouchableOpacity style={styles.bottomBtn}>
+          <TouchableOpacity style={styles.bottomBtn} onPress={() => setShowQueue(true)}>
             <AlignJustify size={20} color={Colors.textSecondary} />
             <Text style={styles.bottomLabel}>Queue</Text>
           </TouchableOpacity>
@@ -212,9 +216,9 @@ export function NowPlayingScreen() {
             <Mic2 size={20} color={Colors.textSecondary} />
             <Text style={styles.bottomLabel}>Lyrics</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.bottomBtn}>
-            <Share2 size={20} color={Colors.textSecondary} />
-            <Text style={styles.bottomLabel}>Share</Text>
+          <TouchableOpacity style={styles.bottomBtn} onPress={() => setShowMoreLikeThis(true)}>
+            <Sparkles size={20} color={Colors.textSecondary} />
+            <Text style={styles.bottomLabel}>Similar</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -256,6 +260,16 @@ export function NowPlayingScreen() {
           />
         </SafeAreaView>
       </Modal>
+
+      {/* More Like This */}
+      <MoreLikeThisModal
+        track={showMoreLikeThis ? currentTrack : null}
+        onClose={() => setShowMoreLikeThis(false)}
+        onPlay={(similarTracks, index) => {
+          setShowMoreLikeThis(false);
+          usePlayerStore.getState().setQueue(similarTracks, index);
+        }}
+      />
     </View>
   );
 }

@@ -91,7 +91,7 @@ export function useRNTPSync() {
 
   useTrackPlayerEvents([Event.PlaybackActiveTrackChanged], async ({ track }) => {
     if (track?.id) {
-      const trackId = track.id as string;
+      const trackId = track.id;
       setCurrentTrackById(trackId);
 
       // Scrobble play event for new track (avoid duplicate on same track)

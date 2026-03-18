@@ -4,6 +4,7 @@ export interface Track {
   artist: string;
   album?: string;
   artwork?: string;
+  artworkColor?: string;
   url: string;
   duration?: number;
   source: 'local' | 'vk' | 'soundcloud';
@@ -41,6 +42,7 @@ export type RootStackParamList = {
   AlbumDetail: { album: Album };
   ArtistDetail: { artistName: string };
   NowPlaying: undefined;
+  AIChat: undefined;
 };
 
 export type TabParamList = {

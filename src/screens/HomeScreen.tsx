@@ -72,9 +72,9 @@ export function HomeScreen() {
     setRecoLoading(true);
     try {
       const res = await api.getHomeRecommendations();
-      const mapped = (res.tracks as any[]).map(serverTrackToAppTrack);
+      const mapped = res.tracks.map(serverTrackToAppTrack);
       setRecommendations(mapped);
-      setRecoSource(res.source as string);
+      setRecoSource(res.source);
     } catch {
       setRecommendations([]);
     }
