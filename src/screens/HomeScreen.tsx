@@ -42,8 +42,12 @@ export function HomeScreen() {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [recommendations, setRecommendations] = useState<Track[]>([]);
   const [recoSource, setRecoSource] = useState<string>('');
+  const [dailyMix, setDailyMix] = useState<Track[]>([]);
+  const [dailyMixName, setDailyMixName] = useState('Daily Mix');
+  const [moodTracks, setMoodTracks] = useState<Track[]>([]);
   const [loading, setLoading] = useState(true);
   const [recoLoading, setRecoLoading] = useState(false);
+  const [dailyMixLoading, setDailyMixLoading] = useState(false);
   const [moreLikeThis, setMoreLikeThis] = useState<Track | null>(null);
   const [serverStatus, setServerStatus] = useState<ServerStatus>('unknown');
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -81,20 +85,45 @@ export function HomeScreen() {
     setRecoLoading(false);
   }, []);
 
+  const loadDailyMix = useCallback(async () => {
+    setDailyMixLoading(true);
+    try {
+      const res = await api.getDailyMix();
+      setDailyMix(res.tracks.map(serverTrackToAppTrack));
+      setDailyMixName(res.name ?? 'Daily Mix');
+    } catch {
+      setDailyMix([]);
+    }
+    setDailyMixLoading(false);
+  }, []);
+
+  // Load mood tracks when mood tag changes (skip "All" / index 0)
+  useEffect(() => {
+    if (activeTag > 0) {
+      api.getMoodTracks(MOOD_TAGS[activeTag] ?? '', 15)
+        .then((res) => setMoodTracks(res.tracks.map(serverTrackToAppTrack)))
+        .catch(() => setMoodTracks([]));
+    } else {
+      setMoodTracks([]);
+    }
+  }, [activeTag]);
+
   useEffect(() => {
     loadTracks();
     loadRecommendations();
+    loadDailyMix();
     // Ping every 30s to keep status indicator fresh
     pingIntervalRef.current = setInterval(checkServer, 30_000);
     return () => {
       if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
     };
-  }, [loadTracks, loadRecommendations, checkServer]);
+  }, [loadTracks, loadRecommendations, loadDailyMix, checkServer]);
 
   function retryLoad() {
     setLoading(true);
     loadTracks();
     loadRecommendations();
+    loadDailyMix();
   }
 
   function playTrack(trackList: Track[], index: number) {
@@ -216,6 +245,63 @@ export function HomeScreen() {
               </View>
             </GlassCard>
           </TouchableOpacity>
+
+          {/* Daily Mix */}
+          {(dailyMixLoading || dailyMix.length > 0) && (
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <Sparkles size={14} color={Colors.accentPrimary} />
+                <Text style={styles.sectionTitle}>{dailyMixName}</Text>
+                <Text style={styles.sectionBadge}>Daily Mix</Text>
+              </View>
+              {dailyMixLoading ? (
+                <ActivityIndicator color={Colors.accentPrimary} style={{ marginVertical: Spacing.md }} />
+              ) : (
+                <View style={styles.trackList}>
+                  {dailyMix.slice(0, 8).map((track, i) => (
+                    <TrackRow
+                      key={`mix-${track.id}-${i}`}
+                      track={track}
+                      index={i + 1}
+                      isCurrent={currentTrack?.id === track.id}
+                      isPlaying={isPlaying}
+                      isLiked={isLiked(track.id)}
+                      onPress={() => playTrack(dailyMix, i)}
+                      onLike={() => toggleLike(track.id)}
+                      onMoreLikeThis={(t) => setMoreLikeThis(t)}
+                      onAddToQueue={(t) => addToQueue(t)}
+                    />
+                  ))}
+                </View>
+              )}
+            </View>
+          )}
+
+          {/* Mood Tracks (when mood tag selected) */}
+          {activeTag > 0 && moodTracks.length > 0 && (
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>{MOOD_TAGS[activeTag]}</Text>
+                <Text style={styles.sectionBadge}>Mood</Text>
+              </View>
+              <View style={styles.trackList}>
+                {moodTracks.map((track, i) => (
+                  <TrackRow
+                    key={`mood-${track.id}-${i}`}
+                    track={track}
+                    index={i + 1}
+                    isCurrent={currentTrack?.id === track.id}
+                    isPlaying={isPlaying}
+                    isLiked={isLiked(track.id)}
+                    onPress={() => playTrack(moodTracks, i)}
+                    onLike={() => toggleLike(track.id)}
+                    onMoreLikeThis={(t) => setMoreLikeThis(t)}
+                    onAddToQueue={(t) => addToQueue(t)}
+                  />
+                ))}
+              </View>
+            </View>
+          )}
 
           {/* For You — Personalized Recommendations */}
           {(recoLoading || recommendations.length > 0) && (

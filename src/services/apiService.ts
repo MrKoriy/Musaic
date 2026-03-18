@@ -230,6 +230,24 @@ export const api = {
     );
   },
 
+  getDailyMix() {
+    return get<{ name: string; tracks: ServerTrack[]; source: string; refreshAt: string }>(
+      '/api/recommendations/daily-mix'
+    );
+  },
+
+  getDiscover() {
+    return get<{ tracks: ServerTrack[]; source: string; description: string }>(
+      '/api/recommendations/discover'
+    );
+  },
+
+  getMoodTracks(mood: string, limit = 20) {
+    return get<{ tracks: ServerTrack[]; mood: string; count: number }>(
+      `/api/recommendations/mood?mood=${encodeURIComponent(mood)}&limit=${limit}`
+    );
+  },
+
   chatWithAI(message: string, history: Array<{ role: string; content: string }> = []) {
     return post<{ reply: string; error?: string }>(
       '/api/recommendations/chat',

@@ -1,0 +1,301 @@
+/**
+ * Taste Engine — ML-like taste profiling from listening history.
+ *
+ * Computes weighted scores for artists, genres, moods based on:
+ *   - Action type: complete > like > play > skip
+ *   - Recency: recent listens weighted higher (exponential decay over 30 days)
+ *   - Frequency: more listens = higher score
+ *   - Time-of-day context for recommendations
+ */
+
+import { getDb } from "../db/index.js";
+
+// ─── Types ─────────────────────────────────────────────────────────────────────
+
+export interface TasteProfile {
+  topArtists: Array<{ artist: string; score: number }>;
+  topTracks: Array<{ id: string; artist: string; title: string; score: number }>;
+  topGenres: Array<{ genre: string; score: number }>;
+  topMoods: Array<{ mood: string; score: number }>;
+  playCount: number;
+  completionRate: number;
+  timeOfDayProfile: TimeOfDayProfile;
+}
+
+interface TimeOfDayProfile {
+  morning: string[];   // 6-12h — artist names for this time slot
+  afternoon: string[]; // 12-18h
+  evening: string[];   // 18-22h
+  night: string[];     // 22-6h
+}
+
+// ─── Scoring constants ─────────────────────────────────────────────────────────
+
+const ACTION_WEIGHT: Record<string, number> = {
+  like: 3.0,
+  complete: 2.0,
+  play: 1.0,
+  pause: 0.3,
+  skip: -0.5,
+  dislike: -2.0,
+};
+
+const DECAY_HALF_LIFE_DAYS = 14; // Listens from 14 days ago are worth half as much
+const LOG_BASE = Math.LN2 / (DECAY_HALF_LIFE_DAYS * 86400);
+
+function recencyScore(playedAtSec: number): number {
+  const ageSec = Date.now() / 1000 - playedAtSec;
+  return Math.exp(-LOG_BASE * Math.max(0, ageSec));
+}
+
+// ─── Recommendation cache ─────────────────────────────────────────────────────
+
+interface CacheEntry {
+  data: unknown;
+  expiry: number;
+}
+
+const cache = new Map<string, CacheEntry>();
+const CACHE_TTL_MS = 10 * 60_000; // 10 minutes
+
+export function getCached<T>(key: string): T | null {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiry) {
+    cache.delete(key);
+    return null;
+  }
+  return entry.data as T;
+}
+
+export function setCached(key: string, data: unknown, ttlMs = CACHE_TTL_MS): void {
+  cache.set(key, { data, expiry: Date.now() + ttlMs });
+}
+
+// ─── Taste engine ─────────────────────────────────────────────────────────────
+
+/**
+ * Build a weighted taste profile from listening history.
+ */
+export function buildWeightedProfile(): TasteProfile {
+  const db = getDb();
+
+  // Fetch listening history with track metadata (last 90 days)
+  const cutoff = Math.floor(Date.now() / 1000) - 90 * 86400;
+  const history = db.prepare(`
+    SELECT lh.action, lh.played_at,
+           t.id as track_id, t.artist, t.title, t.genre, t.mood
+    FROM listening_history lh
+    JOIN tracks t ON lh.track_id = t.id
+    WHERE lh.played_at > $cutoff
+    ORDER BY lh.played_at DESC
+    LIMIT 10000
+  `).all({ $cutoff: cutoff }) as Array<{
+    action: string;
+    played_at: number;
+    track_id: string;
+    artist: string;
+    title: string;
+    genre: string | null;
+    mood: string | null;
+  }>;
+
+  const artistScores = new Map<string, number>();
+  const trackScores = new Map<string, { id: string; artist: string; title: string; score: number }>();
+  const genreScores = new Map<string, number>();
+  const moodScores = new Map<string, number>();
+
+  // Time-of-day: count plays per artist per time slot
+  const timeSlots = { morning: new Map<string, number>(), afternoon: new Map<string, number>(), evening: new Map<string, number>(), night: new Map<string, number>() };
+
+  let totalPlays = 0;
+  let totalCompletes = 0;
+
+  for (const event of history) {
+    const weight = ACTION_WEIGHT[event.action] ?? 0.5;
+    if (weight <= 0) continue; // skip negative-weight events for scoring (but count them)
+
+    const recency = recencyScore(event.played_at);
+    const score = weight * recency;
+
+    // Artist score
+    artistScores.set(event.artist, (artistScores.get(event.artist) ?? 0) + score);
+
+    // Track score
+    const trackKey = event.track_id;
+    const existing = trackScores.get(trackKey);
+    if (existing) {
+      existing.score += score;
+    } else {
+      trackScores.set(trackKey, { id: event.track_id, artist: event.artist, title: event.title, score });
+    }
+
+    // Genre score
+    if (event.genre) {
+      for (const g of event.genre.split(",").map((s) => s.trim())) {
+        if (g) genreScores.set(g, (genreScores.get(g) ?? 0) + score);
+      }
+    }
+
+    // Mood score
+    if (event.mood) {
+      for (const m of event.mood.split(",").map((s) => s.trim())) {
+        if (m) moodScores.set(m, (moodScores.get(m) ?? 0) + score);
+      }
+    }
+
+    // Time of day (using played_at as local time approximation)
+    const hour = new Date(event.played_at * 1000).getHours();
+    const slot =
+      hour >= 6 && hour < 12 ? "morning" :
+      hour >= 12 && hour < 18 ? "afternoon" :
+      hour >= 18 && hour < 22 ? "evening" : "night";
+    const slotMap = timeSlots[slot];
+    slotMap.set(event.artist, (slotMap.get(event.artist) ?? 0) + score);
+
+    if (event.action === "play") totalPlays++;
+    if (event.action === "complete") totalCompletes++;
+  }
+
+  // Sort by score (descending)
+  const topArtists = [...artistScores.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 20)
+    .map(([artist, score]) => ({ artist, score }));
+
+  const topTracks = [...trackScores.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 30);
+
+  const topGenres = [...genreScores.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([genre, score]) => ({ genre, score }));
+
+  const topMoods = [...moodScores.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([mood, score]) => ({ mood, score }));
+
+  // Top 3 artists per time slot
+  function topForSlot(slotMap: Map<string, number>): string[] {
+    return [...slotMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([a]) => a);
+  }
+
+  return {
+    topArtists,
+    topTracks,
+    topGenres,
+    topMoods,
+    playCount: totalPlays + totalCompletes,
+    completionRate: totalPlays > 0 ? totalCompletes / (totalPlays + totalCompletes) : 0,
+    timeOfDayProfile: {
+      morning: topForSlot(timeSlots.morning),
+      afternoon: topForSlot(timeSlots.afternoon),
+      evening: topForSlot(timeSlots.evening),
+      night: topForSlot(timeSlots.night),
+    },
+  };
+}
+
+/**
+ * Get time-of-day appropriate artist suggestions.
+ */
+export function getTimeContextArtists(profile: TasteProfile): string[] {
+  const hour = new Date().getHours();
+  const slot =
+    hour >= 6 && hour < 12 ? "morning" :
+    hour >= 12 && hour < 18 ? "afternoon" :
+    hour >= 18 && hour < 22 ? "evening" : "night";
+
+  const slotArtists = profile.timeOfDayProfile[slot];
+  if (slotArtists.length > 0) return slotArtists;
+
+  // Fallback to overall top artists
+  return profile.topArtists.slice(0, 3).map((a) => a.artist);
+}
+
+/**
+ * Build a Daily Mix playlist (20 tracks) from taste profile.
+ * Mixes top favorites with some discovery candidates.
+ */
+export function buildDailyMix(
+  profile: TasteProfile,
+  discoverArtists: string[] = []
+): Array<Record<string, unknown>> {
+  const db = getDb();
+
+  const contextArtists = getTimeContextArtists(profile);
+  const topArtistNames = profile.topArtists.slice(0, 8).map((a) => a.artist);
+
+  // Mix: 70% favorites, 30% discovery
+  const favoriteArtists = [...new Set([...contextArtists, ...topArtistNames])];
+  const candidates: Record<string, unknown>[] = [];
+
+  // Favorites: pick less-recently-played tracks
+  for (const artist of favoriteArtists.slice(0, 6)) {
+    const rows = db.prepare(`
+      SELECT t.* FROM tracks t
+      WHERE lower(t.artist) LIKE lower($a)
+        AND t.id NOT IN (
+          SELECT lh.track_id FROM listening_history lh
+          WHERE lh.played_at > $recent AND lh.action IN ('play', 'complete')
+        )
+      ORDER BY RANDOM()
+      LIMIT 3
+    `).all({
+      $a: `%${artist}%`,
+      $recent: Math.floor(Date.now() / 1000) - 7 * 86400,
+    }) as Record<string, unknown>[];
+
+    // Fallback: any track from this artist
+    const available = rows.length > 0 ? rows : db.prepare(
+      "SELECT * FROM tracks WHERE lower(artist) LIKE lower($a) ORDER BY RANDOM() LIMIT 2"
+    ).all({ $a: `%${artist}%` }) as Record<string, unknown>[];
+
+    candidates.push(...available);
+  }
+
+  // Discovery: tracks from similar artists not in library top
+  for (const artist of discoverArtists.slice(0, 4)) {
+    const rows = db.prepare(
+      "SELECT * FROM tracks WHERE lower(artist) LIKE lower($a) ORDER BY RANDOM() LIMIT 2"
+    ).all({ $a: `%${artist}%` }) as Record<string, unknown>[];
+    candidates.push(...rows);
+  }
+
+  // Deduplicate and shuffle
+  const seen = new Set<string>();
+  const deduped = candidates.filter((t) => {
+    const id = t.id as string;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+
+  return shuffled(deduped).slice(0, 20);
+}
+
+/**
+ * Get tracks matching a mood tag.
+ */
+export function getTracksByMood(mood: string, limit = 20): Record<string, unknown>[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT * FROM tracks
+    WHERE lower(mood) LIKE lower($mood)
+       OR lower(genre) LIKE lower($mood)
+       OR lower(title) LIKE lower($mood)
+    ORDER BY RANDOM()
+    LIMIT $limit
+  `).all({ $mood: `%${mood}%`, $limit: limit }) as Record<string, unknown>[];
+}
+
+function shuffled<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
