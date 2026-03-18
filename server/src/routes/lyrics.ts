@@ -1,26 +1,32 @@
 /**
  * Lyrics routes
  *
- * GET  /api/lyrics/:trackId         — get cached lyrics or fetch from LRCLIB
+ * GET  /api/lyrics/:trackId         — get cached lyrics or fetch from LRCLIB → Genius → lyrics.ovh
  * POST /api/lyrics/:trackId/generate — trigger AI pipeline (async)
  * GET  /api/lyrics/:trackId/status   — poll AI job status
  * PUT  /api/lyrics/:trackId          — save manually edited lyrics
  * DELETE /api/lyrics/:trackId        — clear cached lyrics
+ * POST /api/lyrics/prefetch-all      — background pre-fetch for all tracks without lyrics
  */
 
 import { Hono } from "hono";
 import { getCachedLyrics, setCachedLyrics, deleteCachedLyrics, getTrack } from "../db/index.js";
 import { fetchLrclib, searchLrclib } from "../providers/lrclib.js";
+import { fetchPlainLyrics } from "../providers/genius.js";
 import { startTranscription, getJobStatus } from "../providers/lyrics-pipeline.js";
+import { getDb } from "../db/index.js";
 
 const router = new Hono();
 
 /**
  * GET /api/lyrics/:trackId?artist=&title=&duration=
  *
- * 1. Check SQLite cache
- * 2. Try LRCLIB (by artist+title, then by search query)
- * 3. Return null if not found (client should trigger /generate)
+ * Fetch chain:
+ *   1. SQLite cache (instant)
+ *   2. LRCLIB exact match (synced LRC preferred)
+ *   3. LRCLIB search fallback
+ *   4. Genius API or lyrics.ovh (plain text, no timestamps)
+ *   5. Return null — client should trigger /generate
  */
 router.get("/:trackId", async (c) => {
   const trackId = decodeURIComponent(c.req.param("trackId"));
@@ -31,13 +37,12 @@ router.get("/:trackId", async (c) => {
     return c.json({ trackId, lrc: cached.lrc, source: cached.source, cached: true });
   }
 
-  // 2. Get artist/title from query params or DB
+  // 2. Resolve artist/title
   const artist = c.req.query("artist") ?? "";
   const title = c.req.query("title") ?? "";
   const duration = c.req.query("duration") ? Number(c.req.query("duration")) : undefined;
 
   if (!artist || !title) {
-    // Try to look up from DB
     const track = getTrack(trackId) as { artist?: string; title?: string; duration?: number } | null;
     if (!track) {
       return c.json({ trackId, lrc: null, source: null, cached: false });
@@ -49,16 +54,16 @@ router.get("/:trackId", async (c) => {
 });
 
 async function fetchAndRespond(
-  c: Parameters<Parameters<typeof router.get>[1]>[0],
+  c: any,
   trackId: string,
   artist: string,
   title: string,
   duration?: number
 ) {
-  // Try LRCLIB exact match
+  // 1. LRCLIB exact match
   let result = await fetchLrclib(artist, title, duration);
 
-  // Fallback: LRCLIB search
+  // 2. LRCLIB search fallback
   if (!result) {
     result = await searchLrclib(`${artist} ${title}`);
   }
@@ -66,6 +71,13 @@ async function fetchAndRespond(
   if (result) {
     setCachedLyrics(trackId, result.lrc, result.source);
     return c.json({ trackId, lrc: result.lrc, source: result.source, cached: false });
+  }
+
+  // 3. Genius / lyrics.ovh plain-text fallback
+  const plain = await fetchPlainLyrics(artist, title);
+  if (plain) {
+    setCachedLyrics(trackId, plain.lyrics, plain.source);
+    return c.json({ trackId, lrc: plain.lyrics, source: plain.source, cached: false });
   }
 
   return c.json({ trackId, lrc: null, source: null, cached: false });
@@ -78,9 +90,8 @@ async function fetchAndRespond(
  */
 router.post("/:trackId/generate", async (c) => {
   const trackId = decodeURIComponent(c.req.param("trackId"));
-  const body = await c.req.json<{ audioPath?: string }>().catch(() => ({}));
+  const body = await c.req.json<{ audioPath?: string }>().catch(() => ({} as { audioPath?: string }));
 
-  // Resolve audio path from DB if not provided
   let audioPath = body.audioPath;
   if (!audioPath) {
     const track = getTrack(trackId) as { local_path?: string } | null;
@@ -103,7 +114,6 @@ router.get("/:trackId/status", (c) => {
   const job = getJobStatus(trackId);
 
   if (!job) {
-    // Check if we have cached lyrics (job may have completed in a previous run)
     const cached = getCachedLyrics(trackId);
     if (cached) {
       return c.json({ trackId, status: "done", cached: true });
@@ -140,5 +150,79 @@ router.delete("/:trackId", (c) => {
   deleteCachedLyrics(trackId);
   return c.json({ ok: true, trackId });
 });
+
+/**
+ * POST /api/lyrics/prefetch-all
+ * Background pre-fetch lyrics for all local tracks that don't have cached lyrics yet.
+ * Returns immediately; runs in background.
+ */
+router.post("/prefetch-all", (c) => {
+  const db = getDb();
+  const tracks = db
+    .prepare(`
+      SELECT t.id, t.artist, t.title, t.duration
+      FROM tracks t
+      WHERE t.source = 'local'
+        AND NOT EXISTS (SELECT 1 FROM lyrics_cache lc WHERE lc.track_id = t.id)
+      LIMIT 200
+    `)
+    .all() as Array<{ id: string; artist: string; title: string; duration: number }>;
+
+  const total = tracks.length;
+  if (total === 0) {
+    return c.json({ ok: true, queued: 0, message: "All local tracks already have lyrics cached" });
+  }
+
+  // Fire-and-forget background prefetch
+  prefetchLyricsInBackground(tracks);
+
+  return c.json({ ok: true, queued: total, message: `Prefetching lyrics for ${total} tracks in background` });
+});
+
+async function prefetchLyricsInBackground(
+  tracks: Array<{ id: string; artist: string; title: string; duration: number }>
+): Promise<void> {
+  console.log(`[lyrics] Background prefetch started for ${tracks.length} tracks`);
+  let fetched = 0;
+  let failed = 0;
+
+  for (const track of tracks) {
+    if (!track.artist || !track.title) continue;
+
+    try {
+      // Check cache again (may have been filled since query)
+      const cached = getCachedLyrics(track.id);
+      if (cached) continue;
+
+      // Try LRCLIB first
+      let result = await fetchLrclib(track.artist, track.title, track.duration);
+      if (!result) {
+        result = await searchLrclib(`${track.artist} ${track.title}`);
+      }
+
+      if (result) {
+        setCachedLyrics(track.id, result.lrc, result.source);
+        fetched++;
+      } else {
+        // Try plain lyrics fallback
+        const plain = await fetchPlainLyrics(track.artist, track.title);
+        if (plain) {
+          setCachedLyrics(track.id, plain.lyrics, plain.source);
+          fetched++;
+        } else {
+          failed++;
+        }
+      }
+
+      // Small delay to avoid hammering APIs
+      await new Promise((r) => setTimeout(r, 300));
+    } catch (err: unknown) {
+      console.warn(`[lyrics] Prefetch failed for "${track.artist} - ${track.title}":`, err instanceof Error ? err.message : String(err));
+      failed++;
+    }
+  }
+
+  console.log(`[lyrics] Background prefetch done — fetched: ${fetched}, not found: ${failed}`);
+}
 
 export default router;

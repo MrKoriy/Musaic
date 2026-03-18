@@ -54,11 +54,13 @@ type Props = {
   onSeek?: (progress: number) => void;
 };
 
-type LoadState = 'loading' | 'found' | 'not_found' | 'generating' | 'error';
+type LoadState = 'loading' | 'found' | 'plain' | 'not_found' | 'generating' | 'error';
 
 export function LyricsView({ trackId, artist, title, duration, progress, onSeek }: Props) {
   const [lines, setLines] = useState<LrcLine[]>([]);
   const [rawLrc, setRawLrc] = useState('');
+  const [plainText, setPlainText] = useState('');
+  const [lyricsSource, setLyricsSource] = useState<string | null>(null);
   const [loadState, setLoadState] = useState<LoadState>('loading');
   const [editMode, setEditMode] = useState(false);
   const [editText, setEditText] = useState('');
@@ -84,9 +86,18 @@ export function LyricsView({ trackId, artist, title, duration, progress, onSeek 
         if (cancelled) return;
         if (res.lrc) {
           const parsed = parseLrc(res.lrc);
-          setLines(parsed);
-          setRawLrc(res.lrc);
-          setLoadState('found');
+          if (parsed.length > 0) {
+            // Synced LRC lyrics
+            setLines(parsed);
+            setRawLrc(res.lrc);
+            setLyricsSource(res.source);
+            setLoadState('found');
+          } else {
+            // Plain text lyrics (Genius / lyrics.ovh — no timestamps)
+            setPlainText(res.lrc);
+            setLyricsSource(res.source);
+            setLoadState('plain');
+          }
         } else {
           setLoadState('not_found');
         }
@@ -120,9 +131,17 @@ export function LyricsView({ trackId, artist, title, duration, progress, onSeek 
           // Reload lyrics from cache
           const res = await getLyrics(trackId, { artist, title, duration });
           if (res.lrc) {
-            setLines(parseLrc(res.lrc));
-            setRawLrc(res.lrc);
-            setLoadState('found');
+            const parsed = parseLrc(res.lrc);
+            if (parsed.length > 0) {
+              setLines(parsed);
+              setRawLrc(res.lrc);
+              setLyricsSource(res.source);
+              setLoadState('found');
+            } else {
+              setPlainText(res.lrc);
+              setLyricsSource(res.source);
+              setLoadState('plain');
+            }
           }
         } else if (status.status === 'failed') {
           clearInterval(pollRef.current!);
@@ -170,6 +189,32 @@ export function LyricsView({ trackId, artist, title, duration, progress, onSeek 
         <Text style={[styles.statusText, { fontSize: 12, marginTop: 4 }]}>
           ~3-5 min • Demucs + Parakeet TDT v3
         </Text>
+      </View>
+    );
+  }
+
+  if (loadState === 'plain') {
+    const sourceLabel = lyricsSource === 'genius' ? 'Genius' : lyricsSource === 'lyricsovh' ? 'Lyrics.ovh' : 'Web';
+    return (
+      <View style={styles.container}>
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <Text style={styles.plainSourceLabel}>Lyrics from {sourceLabel} · no sync available</Text>
+          <Text style={styles.plainText}>{plainText}</Text>
+          <View style={{ height: 200 }} />
+        </ScrollView>
+        <TouchableOpacity
+          style={styles.editFloatBtn}
+          onPress={() => {
+            setEditText(plainText);
+            setEditMode(true);
+          }}
+        >
+          <Text style={styles.editFloatBtnText}>Edit</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -382,5 +427,18 @@ const styles = StyleSheet.create({
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     fontSize: 13,
     lineHeight: 20,
+  },
+  plainSourceLabel: {
+    ...Typography.caption,
+    color: Colors.textTertiary,
+    textAlign: 'center',
+    marginBottom: Spacing.xl,
+  },
+  plainText: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    fontSize: 17,
+    lineHeight: 28,
+    textAlign: 'left',
   },
 });

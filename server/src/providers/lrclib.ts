@@ -6,6 +6,7 @@
  */
 
 const LRCLIB_BASE = "https://lrclib.net/api";
+const MAX_RETRIES = 2;
 
 interface LrclibResponse {
   id: number;
@@ -18,9 +19,14 @@ interface LrclibResponse {
   syncedLyrics: string | null;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Fetch synced LRC lyrics from LRCLIB.
  * Returns LRC string (with timestamps) if found, null otherwise.
+ * Retries up to MAX_RETRIES times on 5xx errors.
  */
 export async function fetchLrclib(
   artist: string,
@@ -35,40 +41,52 @@ export async function fetchLrclib(
     params.set("duration", String(Math.round(durationSec)));
   }
 
-  try {
-    const res = await fetch(`${LRCLIB_BASE}/get?${params}`, {
-      headers: { "Lrclib-Client": "Musaic/0.1 (https://github.com/musaic-app)" },
-      signal: AbortSignal.timeout(8000),
-    });
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(`${LRCLIB_BASE}/get?${params}`, {
+        headers: { "Lrclib-Client": "Musaic/0.1 (https://github.com/musaic-app)" },
+        signal: AbortSignal.timeout(8000),
+      });
 
-    if (res.status === 404) return null;
-    if (!res.ok) {
-      console.warn(`[lrclib] API error: ${res.status}`);
+      if (res.status === 404) return null;
+
+      if (res.status >= 500 && attempt < MAX_RETRIES) {
+        console.warn(`[lrclib] Server error ${res.status} for "${artist} - ${title}" — retry ${attempt + 1}/${MAX_RETRIES}`);
+        await sleep(1000 * (attempt + 1));
+        continue;
+      }
+
+      if (!res.ok) {
+        console.warn(`[lrclib] API error ${res.status} for "${artist} - ${title}"`);
+        return null;
+      }
+
+      const data = (await res.json()) as LrclibResponse;
+
+      if (data.instrumental) return null;
+
+      if (data.syncedLyrics) {
+        return { lrc: data.syncedLyrics, source: "lrclib" };
+      }
+
+      if (data.plainLyrics) {
+        const lrc = plainToLrc(data.plainLyrics);
+        return { lrc, source: "lrclib" };
+      }
+
       return null;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (attempt < MAX_RETRIES) {
+        console.warn(`[lrclib] Fetch error for "${artist} - ${title}": ${msg} — retry ${attempt + 1}/${MAX_RETRIES}`);
+        await sleep(1000 * (attempt + 1));
+      } else {
+        console.warn(`[lrclib] Fetch failed for "${artist} - ${title}" after ${MAX_RETRIES + 1} attempts: ${msg}`);
+      }
     }
-
-    const data = (await res.json()) as LrclibResponse;
-
-    if (data.instrumental) {
-      // Instrumental — no lyrics
-      return null;
-    }
-
-    if (data.syncedLyrics) {
-      return { lrc: data.syncedLyrics, source: "lrclib" };
-    }
-
-    if (data.plainLyrics) {
-      // Convert plain lyrics to minimal LRC (no timestamps, but still displayable)
-      const lrc = plainToLrc(data.plainLyrics);
-      return { lrc, source: "lrclib" };
-    }
-
-    return null;
-  } catch (err: unknown) {
-    console.warn(`[lrclib] Fetch failed for "${artist} - ${title}":`, err instanceof Error ? err.message : String(err));
-    return null;
   }
+
+  return null;
 }
 
 /**
@@ -77,22 +95,34 @@ export async function fetchLrclib(
 export async function searchLrclib(
   query: string
 ): Promise<{ lrc: string; source: "lrclib" } | null> {
-  try {
-    const res = await fetch(`${LRCLIB_BASE}/search?q=${encodeURIComponent(query)}`, {
-      headers: { "Lrclib-Client": "Musaic/0.1" },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) return null;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(`${LRCLIB_BASE}/search?q=${encodeURIComponent(query)}`, {
+        headers: { "Lrclib-Client": "Musaic/0.1" },
+        signal: AbortSignal.timeout(8000),
+      });
 
-    const results = (await res.json()) as LrclibResponse[];
-    const first = results.find((r) => r.syncedLyrics || r.plainLyrics);
-    if (!first) return null;
+      if (res.status >= 500 && attempt < MAX_RETRIES) {
+        console.warn(`[lrclib] Search server error ${res.status} — retry ${attempt + 1}/${MAX_RETRIES}`);
+        await sleep(1000 * (attempt + 1));
+        continue;
+      }
 
-    const lrc = first.syncedLyrics ?? plainToLrc(first.plainLyrics ?? "");
-    return { lrc, source: "lrclib" };
-  } catch {
-    return null;
+      if (!res.ok) return null;
+
+      const results = (await res.json()) as LrclibResponse[];
+      const first = results.find((r) => r.syncedLyrics || r.plainLyrics);
+      if (!first) return null;
+
+      const lrc = first.syncedLyrics ?? plainToLrc(first.plainLyrics ?? "");
+      return { lrc, source: "lrclib" };
+    } catch {
+      if (attempt >= MAX_RETRIES) return null;
+      await sleep(1000 * (attempt + 1));
+    }
   }
+
+  return null;
 }
 
 /** Convert plain text lyrics to a minimal LRC without timestamps */

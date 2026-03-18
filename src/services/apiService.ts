@@ -311,7 +311,7 @@ export function getSCWaveform(trackId: string): Promise<{ samples: number[] }> {
 export interface LyricsResult {
   trackId: string;
   lrc: string | null;
-  source: 'lrclib' | 'ai' | 'manual' | null;
+  source: 'lrclib' | 'genius' | 'lyricsovh' | 'ai' | 'manual' | null;
   cached: boolean;
 }
 
