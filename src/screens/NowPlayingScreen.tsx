@@ -6,7 +6,7 @@ import {
 import {
   ChevronDown, Play, Pause, SkipBack, SkipForward,
   Shuffle, Repeat, Repeat1, AlignJustify, Mic2, Sparkles, Disc3,
-  ImagePlay, Volume2,
+  ImagePlay, Volume2, SlidersHorizontal, Moon, Share2,
 } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
@@ -22,12 +22,25 @@ import { VinylAnimation } from '../components/VinylAnimation';
 import { usePlayerStore } from '../stores/usePlayerStore';
 import { useLibraryStore } from '../stores/useLibraryStore';
 import { MoreLikeThisModal } from '../components/MoreLikeThisModal';
+import { EqualizerSheet } from '../components/EqualizerSheet';
+import { SleepTimerSheet } from '../components/SleepTimerSheet';
+import { useAudioStore } from '../stores/useAudioStore';
 import { formatDuration } from '../data/mockData';
 import TrackPlayer from 'react-native-track-player';
+import { haptics } from '../utils/haptics';
+import { shareTrack } from '../utils/share';
 
 const { width: W, height: H } = Dimensions.get('window');
 const ART_SIZE = W - Spacing.xl * 4;
 const DISMISS_THRESHOLD = 80;
+
+function formatSleepCountdown(ms: number): string {
+  if (ms <= 0) return '0:00';
+  const totalSec = Math.ceil(ms / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${min}:${sec.toString().padStart(2, '0')}`;
+}
 
 export function NowPlayingScreen() {
   const navigation = useNavigation();
@@ -35,13 +48,18 @@ export function NowPlayingScreen() {
   const [showLyrics, setShowLyrics] = useState(false);
   const [showMoreLikeThis, setShowMoreLikeThis] = useState(false);
   const [showQueue, setShowQueue] = useState(false);
+  const [showEqualizer, setShowEqualizer] = useState(false);
+  const [showSleepTimer, setShowSleepTimer] = useState(false);
   const [vinylMode, setVinylMode] = useState(false);
+  const [, forceUpdate] = useState(0);
   const [volume, setVolume] = useState(1);
+  const { eqEnabled } = useAudioStore();
 
   const {
     currentTrack, isPlaying, progress, duration,
     setIsPlaying, skipNext, skipPrevious, seekTo,
     repeatMode, isShuffled, toggleRepeat, toggleShuffle,
+    sleepTimerEndsAt, setSleepTimer,
   } = usePlayerStore();
   const { isLiked, toggleLike } = useLibraryStore();
 
@@ -87,6 +105,34 @@ export function NowPlayingScreen() {
     }).start();
   }, [isPlaying, artScale]);
 
+  // ── Sleep timer tick ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!sleepTimerEndsAt) return;
+
+    const interval = setInterval(() => {
+      const remaining = sleepTimerEndsAt - Date.now();
+
+      // Force countdown re-render
+      forceUpdate((n) => n + 1);
+
+      if (remaining <= 0) {
+        // Timer expired — stop playback and clear
+        TrackPlayer.pause().catch(() => {});
+        setSleepTimer(null);
+        clearInterval(interval);
+        return;
+      }
+
+      // Fade out in last 30 seconds
+      if (remaining <= 30000) {
+        const vol = Math.max(0, remaining / 30000);
+        TrackPlayer.setVolume(vol).catch(() => {});
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [sleepTimerEndsAt, setSleepTimer]);
+
   // ── Draggable progress bar ─────────────────────────────────────────
   const progressBarWidth = useRef(W - Spacing.xl * 2);
   const isDraggingProgress = useRef(false);
@@ -97,6 +143,7 @@ export function NowPlayingScreen() {
       onStartShouldSetPanResponder: () => true,
       onPanResponderGrant: (e) => {
         isDraggingProgress.current = true;
+        haptics.light();
         const x = e.nativeEvent.locationX;
         draggedProgress.current = Math.max(0, Math.min(1, x / progressBarWidth.current));
         seekTo(draggedProgress.current);
@@ -134,16 +181,18 @@ export function NowPlayingScreen() {
   ).current;
 
   const handleSkipNext = useCallback(() => {
+    haptics.medium();
     skipNext();
   }, [skipNext]);
 
   const handleSkipPrev = useCallback(() => {
+    haptics.medium();
     skipPrevious();
   }, [skipPrevious]);
 
   const artColor = currentTrack?.artworkColor ?? Colors.bgTertiary;
   const elapsed = Math.floor((progress ?? 0) * (duration ?? 0));
-  const remaining = Math.max(0, (duration ?? 0) - elapsed);
+  const remaining = Math.floor(Math.max(0, (duration ?? 0) - elapsed));
   const progressPct = Math.round((progress ?? 0) * 100);
 
   if (!currentTrack) {
@@ -189,6 +238,14 @@ export function NowPlayingScreen() {
           </TouchableOpacity>
           <View style={styles.headerCenter}>
             <Text style={styles.headerLabel}>NOW PLAYING</Text>
+            {sleepTimerEndsAt && (
+              <View style={styles.sleepCountdown}>
+                <Moon size={10} color={Colors.accentPurple} />
+                <Text style={styles.sleepCountdownText}>
+                  {formatSleepCountdown(sleepTimerEndsAt - Date.now())}
+                </Text>
+              </View>
+            )}
           </View>
           {/* Art / Vinyl toggle */}
           <TouchableOpacity
@@ -284,7 +341,7 @@ export function NowPlayingScreen() {
           </TouchableOpacity>
 
           <TouchableOpacity
-            onPress={() => setIsPlaying(!isPlaying)}
+            onPress={() => { haptics.light(); setIsPlaying(!isPlaying); }}
             style={styles.playBtn}
             activeOpacity={0.85}
           >
@@ -332,9 +389,21 @@ export function NowPlayingScreen() {
             <Mic2 size={20} color={Colors.textSecondary} />
             <Text style={styles.bottomLabel}>Lyrics</Text>
           </TouchableOpacity>
+          <TouchableOpacity style={styles.bottomBtn} onPress={() => setShowEqualizer(true)}>
+            <SlidersHorizontal size={20} color={eqEnabled ? Colors.accentPrimary : Colors.textSecondary} />
+            <Text style={[styles.bottomLabel, eqEnabled && { color: Colors.accentPrimary }]}>EQ</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={styles.bottomBtn} onPress={() => setShowMoreLikeThis(true)}>
             <Sparkles size={20} color={Colors.textSecondary} />
             <Text style={styles.bottomLabel}>Similar</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.bottomBtn} onPress={() => setShowSleepTimer(true)}>
+            <Moon size={20} color={sleepTimerEndsAt ? Colors.accentPurple : Colors.textSecondary} />
+            <Text style={[styles.bottomLabel, sleepTimerEndsAt !== null && { color: Colors.accentPurple }]}>Sleep</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.bottomBtn} onPress={() => shareTrack(currentTrack)}>
+            <Share2 size={20} color={Colors.textSecondary} />
+            <Text style={styles.bottomLabel}>Share</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -387,6 +456,12 @@ export function NowPlayingScreen() {
 
       {/* Queue */}
       <QueueSheet visible={showQueue} onClose={() => setShowQueue(false)} />
+
+      {/* Equalizer */}
+      <EqualizerSheet visible={showEqualizer} onClose={() => setShowEqualizer(false)} />
+
+      {/* Sleep Timer */}
+      <SleepTimerSheet visible={showSleepTimer} onClose={() => setShowSleepTimer(false)} />
     </Animated.View>
   );
 }
@@ -416,6 +491,17 @@ const styles = StyleSheet.create({
     ...Typography.caption,
     color: Colors.textSecondary,
     letterSpacing: 1.5,
+  },
+  sleepCountdown: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginTop: 2,
+  },
+  sleepCountdownText: {
+    ...Typography.caption,
+    color: Colors.accentPurple,
+    fontSize: 10,
   },
   artContainer: {
     alignItems: 'center',
