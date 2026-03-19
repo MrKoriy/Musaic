@@ -12,6 +12,7 @@ interface PlayerState {
   duration: number;
   repeatMode: RepeatMode;
   isShuffled: boolean;
+  sleepTimerEndsAt: number | null;
 
   playTrack: (track: Track) => Promise<void>;
   setQueue: (tracks: Track[], startIndex?: number) => Promise<void>;
@@ -29,6 +30,7 @@ interface PlayerState {
   clearQueue: () => Promise<void>;
   setCurrentTrackById: (id: string) => void;
   setCurrentTrack: (track: Track) => void;
+  setSleepTimer: (minutes: number | null) => void;
 }
 
 export const usePlayerStore = create<PlayerState>((set, get) => ({
@@ -40,16 +42,22 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   duration: 0,
   repeatMode: 'off',
   isShuffled: false,
+  sleepTimerEndsAt: null,
 
   playTrack: async (track) => {
+    if (!track.url || (!track.url.startsWith('http') && !track.url.startsWith('file'))) {
+      console.error('[player] playTrack: invalid URL for track', track.id, track.url);
+      return;
+    }
     try {
       await TrackPlayer.reset();
       await TrackPlayer.add(appTrackToRNTP(track));
       await TrackPlayer.play();
       set({ queue: [track], queueIndex: 0, currentTrack: track, isPlaying: true });
     } catch (e) {
-      console.warn('[player] playTrack error:', e);
-      set({ queue: [track], queueIndex: 0, currentTrack: track });
+      console.error('[player] playTrack error:', e);
+      set({ queue: [track], queueIndex: 0, currentTrack: track, isPlaying: false });
+      throw e;
     }
   },
 
@@ -171,4 +179,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   setCurrentTrack: (track) => set({ currentTrack: track }),
+
+  setSleepTimer: (minutes) => {
+    if (minutes === null) {
+      set({ sleepTimerEndsAt: null });
+    } else {
+      set({ sleepTimerEndsAt: Date.now() + minutes * 60 * 1000 });
+    }
+  },
 }));

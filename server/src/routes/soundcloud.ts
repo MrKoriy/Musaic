@@ -99,11 +99,54 @@ router.get("/proxy/:trackId", async (c) => {
   const trackId = c.req.param("trackId");
   try {
     const url = await getSoundCloudProvider().getStreamUrl(trackId);
-    // For HLS streams, return URL directly (can't redirect HLS)
-    if (url.includes(".m3u8")) {
-      return c.json({ url, type: "hls" });
-    }
+    // Redirect to the stream URL — RNTP handles both HLS (.m3u8) and progressive streams natively
     return c.redirect(url, 302);
+  } catch (err: unknown) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+/**
+ * GET /api/sc/trending?genre=soundcloud:genres:all-music&limit=20
+ * GET /api/sc/trending?kind=top&genre=...
+ */
+router.get("/trending", async (c) => {
+  const kind = (c.req.query("kind") ?? "trending") as "trending" | "top";
+  const genre = c.req.query("genre") ?? "soundcloud:genres:all-music";
+  const limit = Math.min(Number(c.req.query("limit") ?? 20), 50);
+  try {
+    const tracks = await getSoundCloudProvider().getCharts(kind, genre, limit);
+    return c.json({ tracks, kind, genre });
+  } catch (err: unknown) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+/**
+ * GET /api/sc/charts?kind=trending&genre=...&limit=20
+ * Alias for /trending
+ */
+router.get("/charts", async (c) => {
+  const kind = (c.req.query("kind") ?? "trending") as "trending" | "top";
+  const genre = c.req.query("genre") ?? "soundcloud:genres:all-music";
+  const limit = Math.min(Number(c.req.query("limit") ?? 20), 50);
+  try {
+    const tracks = await getSoundCloudProvider().getCharts(kind, genre, limit);
+    return c.json({ tracks, kind, genre });
+  } catch (err: unknown) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+/**
+ * GET /api/sc/likes/:userId
+ */
+router.get("/likes/:userId", async (c) => {
+  const userId = decodeURIComponent(c.req.param("userId"));
+  const limit = Math.min(Number(c.req.query("limit") ?? 50), 200);
+  try {
+    const tracks = await getSoundCloudProvider().getUserLikes(userId, limit);
+    return c.json({ tracks });
   } catch (err: unknown) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }

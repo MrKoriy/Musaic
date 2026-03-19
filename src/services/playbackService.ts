@@ -22,12 +22,38 @@ export async function PlaybackService() {
       await TrackPlayer.play();
     }
   });
+
+  // Surface playback errors — retry once, then stop to avoid silent garbage-audio loop
+  const retried = new Set<string>();
+  TrackPlayer.addEventListener(Event.PlaybackError, async ({ message, code }) => {
+    console.error('[player] PlaybackError', code, message);
+    try {
+      const track = await TrackPlayer.getActiveTrack();
+      const trackId = track?.id;
+      if (trackId && !retried.has(trackId)) {
+        retried.add(trackId);
+        // Wait briefly, then retry playback once
+        await new Promise((r) => setTimeout(r, 1500));
+        await TrackPlayer.retry();
+      } else {
+        // Second failure — stop and clear to avoid garbage-audio loop
+        await TrackPlayer.stop();
+      }
+    } catch {
+      await TrackPlayer.stop().catch(() => {});
+    }
+  });
 }
 
 export async function setupPlayer() {
   try {
     await TrackPlayer.setupPlayer({
       maxCacheSize: 1024 * 50, // 50MB cache
+      // HLS / network stream buffering
+      minBuffer: 15,        // seconds to buffer before playback starts
+      maxBuffer: 50,        // max seconds to keep buffered
+      backBuffer: 30,       // seconds to keep behind current position
+      playBuffer: 2.5,      // seconds needed to resume after rebuffer
     });
 
     await TrackPlayer.updateOptions({
