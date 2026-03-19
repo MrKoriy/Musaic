@@ -17,6 +17,28 @@ import { getDb } from "../db/index.js";
 
 const execFileAsync = promisify(execFile);
 
+// Cached dependency check result (null = not checked yet)
+let depsAvailable: boolean | null = null;
+let depsError: string | null = null;
+
+async function checkDependencies(pythonPath: string): Promise<void> {
+  if (depsAvailable === true) return;
+  if (depsAvailable === false) throw new Error(depsError!);
+
+  try {
+    await execFileAsync(pythonPath, ["-c", "import demucs, nemo.collections.asr"], {
+      timeout: 30_000,
+    });
+    depsAvailable = true;
+  } catch {
+    depsAvailable = false;
+    depsError =
+      "AI lyrics pipeline not set up. Missing Python dependencies (demucs, nemo_toolkit). " +
+      "Run: chmod +x server/scripts/setup-lyrics.sh && ./server/scripts/setup-lyrics.sh";
+    throw new Error(depsError);
+  }
+}
+
 const SCRIPT_PATH = path.resolve(
   new URL("../../scripts/transcribe.py", import.meta.url).pathname
 );
@@ -33,6 +55,16 @@ const jobs = new Map<string, PipelineJob>();
 
 export function getJobStatus(trackId: string): PipelineJob | null {
   return jobs.get(trackId) ?? null;
+}
+
+export async function getPipelineStatus(): Promise<{ ready: boolean; error?: string }> {
+  const pythonPath = process.env.PYTHON_PATH ?? "python3";
+  try {
+    await checkDependencies(pythonPath);
+    return { ready: true };
+  } catch (err: unknown) {
+    return { ready: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 export function listJobs(): PipelineJob[] {
@@ -77,6 +109,9 @@ async function runPipeline(
 ): Promise<void> {
   const pythonPath = process.env.PYTHON_PATH ?? "python3";
   const openrouterKey = process.env.OPENROUTER_API_KEY ?? "";
+
+  // Check dependencies first — fail fast with a clear message
+  await checkDependencies(pythonPath);
 
   // Output LRC to a temp file, then read it back
   const lrcPath = path.join(

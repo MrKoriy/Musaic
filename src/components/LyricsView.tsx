@@ -20,6 +20,7 @@ import {
 import { Colors, Spacing, Typography } from '../theme';
 import { getLyrics, generateLyrics, getLyricsJobStatus, saveLyrics } from '../services/apiService';
 import type { LyricsResult, LyricsJobStatus } from '../services/apiService';
+import { shareLyrics } from '../utils/share';
 
 // ─── LRC Parser ──────────────────────────────────────────────────────────────
 
@@ -62,6 +63,7 @@ export function LyricsView({ trackId, artist, title, duration, progress, onSeek 
   const [plainText, setPlainText] = useState('');
   const [lyricsSource, setLyricsSource] = useState<string | null>(null);
   const [loadState, setLoadState] = useState<LoadState>('loading');
+  const [pipelineError, setPipelineError] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [editText, setEditText] = useState('');
   const scrollRef = useRef<ScrollView>(null);
@@ -120,35 +122,43 @@ export function LyricsView({ trackId, artist, title, duration, progress, onSeek 
 
   // Trigger AI generation
   const handleGenerate = useCallback(async () => {
+    setPipelineError(null);
     setLoadState('generating');
     try {
       await generateLyrics(trackId);
       // Poll for completion
       pollRef.current = setInterval(async () => {
-        const status: LyricsJobStatus = await getLyricsJobStatus(trackId);
-        if (status.status === 'done') {
-          clearInterval(pollRef.current!);
-          // Reload lyrics from cache
-          const res = await getLyrics(trackId, { artist, title, duration });
-          if (res.lrc) {
-            const parsed = parseLrc(res.lrc);
-            if (parsed.length > 0) {
-              setLines(parsed);
-              setRawLrc(res.lrc);
-              setLyricsSource(res.source);
-              setLoadState('found');
-            } else {
-              setPlainText(res.lrc);
-              setLyricsSource(res.source);
-              setLoadState('plain');
+        try {
+          const status: LyricsJobStatus = await getLyricsJobStatus(trackId);
+          if (status.status === 'done') {
+            clearInterval(pollRef.current!);
+            // Reload lyrics from cache
+            const res = await getLyrics(trackId, { artist, title, duration });
+            if (res.lrc) {
+              const parsed = parseLrc(res.lrc);
+              if (parsed.length > 0) {
+                setLines(parsed);
+                setRawLrc(res.lrc);
+                setLyricsSource(res.source);
+                setLoadState('found');
+              } else {
+                setPlainText(res.lrc);
+                setLyricsSource(res.source);
+                setLoadState('plain');
+              }
             }
+          } else if (status.status === 'failed') {
+            clearInterval(pollRef.current!);
+            setPipelineError(status.error ?? 'Pipeline failed');
+            setLoadState('error');
           }
-        } else if (status.status === 'failed') {
-          clearInterval(pollRef.current!);
-          setLoadState('error');
+        } catch {
+          // poll error — keep polling
         }
       }, 5000);
-    } catch {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setPipelineError(msg);
       setLoadState('error');
     }
   }, [trackId, artist, title, duration]);
@@ -206,28 +216,48 @@ export function LyricsView({ trackId, artist, title, duration, progress, onSeek 
           <Text style={styles.plainText}>{plainText}</Text>
           <View style={{ height: 200 }} />
         </ScrollView>
-        <TouchableOpacity
-          style={styles.editFloatBtn}
-          onPress={() => {
-            setEditText(plainText);
-            setEditMode(true);
-          }}
-        >
-          <Text style={styles.editFloatBtnText}>Edit</Text>
-        </TouchableOpacity>
+        <View style={styles.floatBtnRow}>
+          <TouchableOpacity
+            style={styles.editFloatBtn}
+            onPress={() => shareLyrics(title, artist, plainText)}
+          >
+            <Text style={styles.editFloatBtnText}>Copy</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.editFloatBtn}
+            onPress={() => {
+              setEditText(plainText);
+              setEditMode(true);
+            }}
+          >
+            <Text style={styles.editFloatBtnText}>Edit</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     );
   }
 
   if (loadState === 'not_found' || loadState === 'error') {
+    const isSetupError = pipelineError?.includes('setup-lyrics.sh') || pipelineError?.includes('not set up');
     return (
       <View style={styles.center}>
         <Text style={styles.statusText}>
-          {loadState === 'error' ? 'Failed to load lyrics' : 'No lyrics found'}
+          {loadState === 'error'
+            ? (isSetupError ? 'AI generation not available' : 'Generation failed')
+            : 'No lyrics found'}
         </Text>
-        <TouchableOpacity style={styles.actionBtn} onPress={handleGenerate}>
-          <Text style={styles.actionBtnText}>Generate with AI</Text>
-        </TouchableOpacity>
+        {pipelineError ? (
+          <Text style={[styles.statusText, { fontSize: 12, color: Colors.textTertiary, marginTop: -8 }]}>
+            {isSetupError
+              ? 'Run setup-lyrics.sh to install AI dependencies'
+              : pipelineError}
+          </Text>
+        ) : null}
+        {!isSetupError && (
+          <TouchableOpacity style={styles.actionBtn} onPress={handleGenerate}>
+            <Text style={styles.actionBtnText}>Generate with AI</Text>
+          </TouchableOpacity>
+        )}
         <TouchableOpacity
           style={[styles.actionBtn, { backgroundColor: 'transparent', borderWidth: 1, borderColor: Colors.glassBorder }]}
           onPress={() => {
@@ -313,16 +343,24 @@ export function LyricsView({ trackId, artist, title, duration, progress, onSeek 
         <View style={{ height: 200 }} />
       </ScrollView>
 
-      {/* Edit button */}
-      <TouchableOpacity
-        style={styles.editFloatBtn}
-        onPress={() => {
-          setEditText(rawLrc);
-          setEditMode(true);
-        }}
-      >
-        <Text style={styles.editFloatBtnText}>Edit</Text>
-      </TouchableOpacity>
+      {/* Copy + Edit buttons */}
+      <View style={styles.floatBtnRow}>
+        <TouchableOpacity
+          style={styles.editFloatBtn}
+          onPress={() => shareLyrics(title, artist, lines.map((l) => l.text).join('\n'))}
+        >
+          <Text style={styles.editFloatBtnText}>Copy</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.editFloatBtn}
+          onPress={() => {
+            setEditText(rawLrc);
+            setEditMode(true);
+          }}
+        >
+          <Text style={styles.editFloatBtnText}>Edit</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -380,10 +418,14 @@ const styles = StyleSheet.create({
   lyricFuture: {
     color: 'rgba(255,255,255,0.35)',
   },
-  editFloatBtn: {
+  floatBtnRow: {
     position: 'absolute',
     bottom: Spacing.xl,
     right: Spacing.xl,
+    flexDirection: 'row',
+    gap: Spacing.sm,
+  },
+  editFloatBtn: {
     backgroundColor: Colors.glassBgActive,
     paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.sm,

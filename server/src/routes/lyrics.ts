@@ -13,10 +13,18 @@ import { Hono } from "hono";
 import { getCachedLyrics, setCachedLyrics, deleteCachedLyrics, getTrack } from "../db/index.js";
 import { fetchLrclib, searchLrclib } from "../providers/lrclib.js";
 import { fetchPlainLyrics } from "../providers/genius.js";
-import { startTranscription, getJobStatus } from "../providers/lyrics-pipeline.js";
+import { startTranscription, getJobStatus, getPipelineStatus } from "../providers/lyrics-pipeline.js";
 import { getDb } from "../db/index.js";
 
 const router = new Hono();
+
+/**
+ * GET /api/lyrics/pipeline/ready — check if AI pipeline dependencies are available
+ */
+router.get("/pipeline/ready", async (c) => {
+  const status = await getPipelineStatus();
+  return c.json(status, status.ready ? 200 : 503);
+});
 
 /**
  * GET /api/lyrics/:trackId?artist=&title=&duration=
