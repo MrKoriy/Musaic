@@ -78,6 +78,16 @@ async function del<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function patch<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${SERVER_URL}${path}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`PATCH ${path} failed: ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
 // ─── Track types matching server schema ──────────────────────────────────────
 
 export interface ServerTrack {
@@ -204,6 +214,48 @@ export const api = {
     return del<{ ok: boolean }>(`/api/playlists/${playlistId}/tracks/${trackId}`);
   },
 
+  updatePlaylist(id: string, data: { name?: string; description?: string }) {
+    return patch<{ ok: boolean }>(`/api/playlists/${id}`, data);
+  },
+
+  getPlaylistCovers(playlistId: string) {
+    return get<{ covers: string[] }>(`/api/playlists/${playlistId}/cover`);
+  },
+
+  // Smart Playlists
+  generateSmartPlaylist(opts: {
+    name?: string;
+    rules?: Array<{ field: string; op: string; value: string | number }>;
+    limit?: number;
+    sort?: string;
+    sortDir?: 'ASC' | 'DESC';
+    save?: boolean;
+  }) {
+    return post<{ tracks: ServerTrack[]; count: number; playlistId?: string }>(
+      '/api/smart-playlists/generate',
+      opts
+    );
+  },
+
+  generateAIPlaylist(opts: { prompt: string; limit?: number; save?: boolean }) {
+    return post<{ tracks: ServerTrack[]; count: number; name: string; playlistId?: string }>(
+      '/api/smart-playlists/ai',
+      opts
+    );
+  },
+
+  importPlaylist(opts: { name?: string; text?: string; lines?: string[]; save?: boolean }) {
+    return post<{ matched: Array<{ input: string; track: ServerTrack }>; unmatched: string[]; count: number; playlistId?: string }>(
+      '/api/smart-playlists/import',
+      opts
+    );
+  },
+
+  getDuplicates(playlistId?: string) {
+    const q = playlistId ? `?playlistId=${encodeURIComponent(playlistId)}` : '';
+    return get<{ duplicates: ServerTrack[] }>(`/api/smart-playlists/duplicates${q}`);
+  },
+
   // History
   logPlay(trackId: string, action: 'play' | 'pause' | 'skip' | 'complete' = 'play') {
     return post<{ ok: boolean }>('/api/history', { trackId, action }).catch(() => {
@@ -255,8 +307,86 @@ export const api = {
     );
   },
 
+  // VK Auth
+  async vkLogin(username: string, password: string): Promise<{ ok: boolean }> {
+    const res = await fetch(`${SERVER_URL}/api/vk/auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await res.json() as { ok?: boolean; error?: string; requires2FA?: boolean };
+    if (!res.ok) {
+      const err = new Error(data.error ?? `VK login failed: ${res.status}`);
+      (err as any).requires2FA = data.requires2FA ?? false;
+      throw err;
+    }
+    return { ok: true };
+  },
+
+  vkLogout() {
+    return post<{ ok: boolean }>('/api/vk/logout', {});
+  },
+
+  vkMe() {
+    return get<{ authenticated: boolean; username: string | null }>('/api/vk/me');
+  },
+
+  vkPlaylists(offset = 0, count = 50) {
+    return get<{ playlists: Array<{ id: number; owner_id: number; title: string; description?: string; count: number; photo?: { photo_270?: string } }> }>(
+      `/api/vk/playlists?offset=${offset}&count=${count}`
+    );
+  },
+
+  vkPlaylistTracks(playlistId: number, ownerId?: number) {
+    const q = ownerId !== undefined ? `?ownerId=${ownerId}` : '';
+    return get<{ tracks: Array<{ id: string; title: string; artist: string; album?: string; duration: number; coverUrl?: string }> }>(
+      `/api/vk/playlists/${playlistId}/tracks${q}`
+    );
+  },
+
   scrobble(trackId: string, action: 'play' | 'complete' | 'skip' = 'play') {
     return post<{ ok: boolean }>('/api/recommendations/scrobble', { trackId, action }).catch(() => {});
+  },
+
+  // Stats
+  getStatsOverview() {
+    return get<{
+      listens: { today: number; week: number; month: number; allTime: number };
+      listeningTime: { todaySecs: number; weekSecs: number; monthSecs: number; allTimeSecs: number };
+      streak: number;
+      topTrack: { track_id: string; title: string; artist: string; play_count: number } | null;
+      topArtist: { artist: string; play_count: number } | null;
+    }>('/api/stats/overview');
+  },
+
+  getTopTracks(period: 'today' | 'week' | 'month' | 'alltime' = 'alltime', limit = 20) {
+    return get<{ tracks: Array<{ track_id: string; title: string; artist: string; album: string | null; cover_url: string | null; duration: number; play_count: number }> }>(
+      `/api/stats/top-tracks?period=${period}&limit=${limit}`
+    );
+  },
+
+  getTopArtists(period: 'today' | 'week' | 'month' | 'alltime' = 'alltime') {
+    return get<{ artists: Array<{ artist: string; play_count: number; unique_tracks: number; cover_url: string | null }> }>(
+      `/api/stats/top-artists?period=${period}`
+    );
+  },
+
+  getTopAlbums(period: 'today' | 'week' | 'month' | 'alltime' = 'alltime') {
+    return get<{ albums: Array<{ album: string; artist: string; play_count: number; cover_url: string | null }> }>(
+      `/api/stats/top-albums?period=${period}`
+    );
+  },
+
+  getListeningHeatmap(period: 'week' | 'month' | 'alltime' = 'month') {
+    return get<{ heatmap: Array<{ hour: number; play_count: number }> }>(
+      `/api/stats/heatmap?period=${period}`
+    );
+  },
+
+  getGenreStats(period: 'today' | 'week' | 'month' | 'alltime' = 'alltime') {
+    return get<{ genres: Array<{ genre: string; play_count: number; percentage: number }> }>(
+      `/api/stats/genres?period=${period}`
+    );
   },
 };
 
@@ -266,8 +396,13 @@ function trackPlaybackUrl(track: ServerTrack): string {
     // Use server proxy — server resolves SC stream URL and redirects
     return `${SERVER_URL}/api/sc/proxy/${encodeURIComponent(track.id)}`;
   }
-  if (track.source === 'vk' && track.local_path) {
-    return `${SERVER_URL}/audio/local/${encodeURIComponent(track.id)}`;
+  if (track.source === 'vk') {
+    // Downloaded tracks: serve from local file
+    if (track.local_path) {
+      return `${SERVER_URL}/audio/local/${encodeURIComponent(track.id)}`;
+    }
+    // Use VK proxy so server auto-refreshes expired IP-bound URLs (23h TTL)
+    return `${SERVER_URL}/api/vk/proxy/${encodeURIComponent(track.id)}`;
   }
   return `${SERVER_URL}/audio/local/${encodeURIComponent(track.id)}`;
 }

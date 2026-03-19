@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,75 +10,267 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  Switch,
+  ActivityIndicator,
 } from 'react-native';
-import { User, Settings, Bell, ChevronRight, Server, Check, X } from 'lucide-react-native';
+import {
+  User, Server, Check, X, Wifi, Radio, HardDrive, Trash2,
+  Music2, Settings, ChevronRight, Bug,
+  Key, Volume2, Sliders, LogIn, LogOut, List, Download,
+} from 'lucide-react-native';
 import { Colors, Spacing, Typography, Radius } from '../theme';
 import { GlassCard } from '../components/GlassCard';
-import { SERVER_URL, setServerUrl, clearServerUrl, getStoredServerUrl } from '../services/apiService';
+import { SERVER_URL, setServerUrl, clearServerUrl, getStoredServerUrl, api } from '../services/apiService';
+import { useSettingsStore, StreamQuality } from '../stores/useSettingsStore';
+import * as FileSystem from 'expo-file-system/legacy';
 
-const MENU_ITEMS = [
-  { icon: Bell, label: 'Notifications' },
-];
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function SectionLabel({ label }: { label: string }) {
+  return <Text style={styles.sectionLabel}>{label}</Text>;
+}
+
+function RowItem({
+  icon: Icon,
+  label,
+  value,
+  onPress,
+  danger,
+  right,
+  iconColor,
+}: {
+  icon: React.FC<{ size: number; color: string }>;
+  label: string;
+  value?: string;
+  onPress?: () => void;
+  danger?: boolean;
+  right?: React.ReactNode;
+  iconColor?: string;
+}) {
+  const content = (
+    <GlassCard style={styles.rowCard}>
+      <View style={styles.rowInner}>
+        <Icon size={18} color={iconColor ?? (danger ? Colors.accentPrimary : Colors.textSecondary)} />
+        <Text style={[styles.rowLabel, danger && styles.dangerText]}>{label}</Text>
+        <View style={styles.rowRight}>
+          {value ? <Text style={styles.rowValue}>{value}</Text> : null}
+          {right ?? (onPress ? <ChevronRight size={14} color={Colors.textTertiary} /> : null)}
+        </View>
+      </View>
+    </GlassCard>
+  );
+
+  return onPress ? (
+    <TouchableOpacity onPress={onPress} activeOpacity={0.7}>{content}</TouchableOpacity>
+  ) : content;
+}
+
+// ── Main Component ────────────────────────────────────────────────────────────
 
 export function ProfileScreen() {
-  const [customUrl, setCustomUrl] = useState(getStoredServerUrl() ?? '');
-  const [isEditing, setIsEditing] = useState(false);
-  const [draft, setDraft] = useState('');
+  const [serverDraft, setServerDraft] = useState('');
+  const [editingServer, setEditingServer] = useState(false);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [connectionOk, setConnectionOk] = useState<boolean | null>(null);
+
+  // VK auth local UI state (vkAuthenticated/vkLoggedInUser live in the store)
+  const [vkUsername, setVkUsername] = useState('');
+  const [vkPassword, setVkPassword] = useState('');
+  const [showVkLogin, setShowVkLogin] = useState(false);
+  const [vkLoggingIn, setVkLoggingIn] = useState(false);
+  const [vkPlaylists, setVkPlaylists] = useState<Array<{ id: number; owner_id: number; title: string; count: number }>>([]);
+  const [loadingPlaylists, setLoadingPlaylists] = useState(false);
+  const [importingPlaylist, setImportingPlaylist] = useState<number | null>(null);
+
+  const [cacheSize, setCacheSize] = useState<string | null>(null);
+
+  const {
+    sources, toggleSource,
+    vkAuthenticated, vkLoggedInUser, setVkAuth, clearVkAuth,
+    streamQuality, setStreamQuality,
+    crossfadeSec, setCrossfadeSec,
+    gapless, setGapless,
+    normalization, setNormalization,
+    resetOnboarding,
+  } = useSettingsStore();
 
   const currentUrl = SERVER_URL;
   const isCustom = !!getStoredServerUrl();
 
-  const startEditing = useCallback(() => {
-    setDraft(getStoredServerUrl() ?? '');
-    setIsEditing(true);
+  // ── Server ────────────────────────────────────────────────────────────────
+
+  const startEditingServer = useCallback(() => {
+    setServerDraft(getStoredServerUrl() ?? '');
+    setConnectionOk(null);
+    setEditingServer(true);
   }, []);
 
-  const cancelEditing = useCallback(() => {
-    setIsEditing(false);
-    setDraft('');
+  const saveServer = useCallback(() => {
+    const trimmed = serverDraft.trim();
+    if (!trimmed) { Alert.alert('Invalid URL', 'Please enter a valid IP or URL.'); return; }
+    let url = trimmed;
+    if (!url.startsWith('http')) url = `http://${url}`;
+    if (!/:\d+$/.test(url.replace(/^https?:\/\//, ''))) url = `${url}:3001`;
+    setServerUrl(url);
+    setEditingServer(false);
+    setConnectionOk(null);
+    Alert.alert('Saved', `Server: ${url}`);
+  }, [serverDraft]);
+
+  const testConnection = useCallback(async () => {
+    setTestingConnection(true);
+    setConnectionOk(null);
+    try {
+      const ok = await api.ping();
+      setConnectionOk(ok);
+    } catch {
+      setConnectionOk(false);
+    } finally {
+      setTestingConnection(false);
+    }
   }, []);
 
-  const saveUrl = useCallback(() => {
-    const trimmed = draft.trim();
-    if (!trimmed) {
-      Alert.alert('Invalid URL', 'Please enter a valid IP or URL.');
+  const resetServer = useCallback(() => {
+    Alert.alert('Reset Server URL', 'Reset to auto-detection?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Reset', style: 'destructive',
+        onPress: () => { clearServerUrl(); setEditingServer(false); setConnectionOk(null); },
+      },
+    ]);
+  }, []);
+
+  // ── VK Auth ───────────────────────────────────────────────────────────────
+
+  const checkVkStatus = useCallback(async () => {
+    try {
+      const res = await api.vkMe();
+      setVkAuth(res.authenticated, res.username);
+    } catch {
+      setVkAuth(false, null);
+    }
+  }, [setVkAuth]);
+
+  useEffect(() => {
+    checkVkStatus();
+  }, [checkVkStatus]);
+
+  const doVkLogin = useCallback(async () => {
+    if (!vkUsername.trim() || !vkPassword.trim()) {
+      Alert.alert('Missing fields', 'Enter your VK username and password.');
       return;
     }
-    // Normalize: if no protocol, prepend http://
-    let url = trimmed;
-    if (!url.startsWith('http')) {
-      // If it looks like "192.168.x.x" or "192.168.x.x:3001"
-      url = `http://${url}`;
+    setVkLoggingIn(true);
+    try {
+      await api.vkLogin(vkUsername.trim(), vkPassword.trim());
+      setVkAuth(true, vkUsername.trim());
+      setShowVkLogin(false);
+      setVkPassword('');
+      Alert.alert('Connected', 'VK account connected.');
+    } catch (e: any) {
+      if ((e as any).requires2FA) {
+        const urlMatch = (e.message ?? '').match(/Open: (https?:\/\/\S+)/);
+        Alert.alert(
+          '2FA Required',
+          urlMatch
+            ? `VK requires approval in the VK app (or open the link below), then try again.\n\n${urlMatch[1]}`
+            : 'VK requires 2-factor authentication. Approve the login in the VK app, then try again.',
+        );
+      } else {
+        Alert.alert('Login failed', e.message ?? String(e));
+      }
+    } finally {
+      setVkLoggingIn(false);
     }
-    // If no port, append default port 3001
-    if (!/:\d+$/.test(url.replace(/^https?:\/\//, ''))) {
-      url = `${url}:3001`;
-    }
-    setServerUrl(url);
-    setCustomUrl(url);
-    setIsEditing(false);
-    setDraft('');
-    Alert.alert('Saved', `Server set to:\n${url}`);
-  }, [draft]);
+  }, [vkUsername, vkPassword]);
 
-  const clearUrl = useCallback(() => {
-    Alert.alert(
-      'Clear Server URL',
-      'Reset to auto-detection (same WiFi required)?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reset',
-          style: 'destructive',
-          onPress: () => {
-            clearServerUrl();
-            setCustomUrl('');
-            setIsEditing(false);
-          },
+  const doVkLogout = useCallback(() => {
+    Alert.alert('Disconnect VK', 'Remove VK account?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Disconnect', style: 'destructive',
+        onPress: async () => {
+          try { await api.vkLogout(); } catch {}
+          clearVkAuth();
+          setVkPlaylists([]);
         },
-      ]
-    );
+      },
+    ]);
+  }, [clearVkAuth]);
+
+  const loadVkPlaylists = useCallback(async () => {
+    setLoadingPlaylists(true);
+    try {
+      const res = await api.vkPlaylists();
+      setVkPlaylists(res.playlists.map(p => ({ id: p.id, owner_id: p.owner_id, title: p.title, count: p.count })));
+    } catch (e: any) {
+      Alert.alert('Error', 'Could not load VK playlists: ' + (e.message ?? String(e)));
+    } finally {
+      setLoadingPlaylists(false);
+    }
   }, []);
+
+  const importVkPlaylist = useCallback(async (playlistId: number, ownerId: number, title: string) => {
+    setImportingPlaylist(playlistId);
+    try {
+      await api.vkPlaylistTracks(playlistId, ownerId);
+      Alert.alert('Imported', `"${title}" tracks cached locally.`);
+    } catch (e: any) {
+      Alert.alert('Error', 'Import failed: ' + (e.message ?? String(e)));
+    } finally {
+      setImportingPlaylist(null);
+    }
+  }, []);
+
+  // ── Storage ───────────────────────────────────────────────────────────────
+
+  const loadCacheSize = useCallback(async () => {
+    try {
+      const info = await FileSystem.getInfoAsync(FileSystem.cacheDirectory ?? '');
+      if (info.exists && 'size' in info) {
+        const mb = ((info.size as number) / 1024 / 1024).toFixed(1);
+        setCacheSize(`${mb} MB`);
+      } else {
+        setCacheSize('Unknown');
+      }
+    } catch {
+      setCacheSize('Unknown');
+    }
+  }, []);
+
+  const clearCache = useCallback(() => {
+    Alert.alert('Clear Cache', 'Delete all cached files?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Clear', style: 'destructive',
+        onPress: async () => {
+          try {
+            const dir = FileSystem.cacheDirectory;
+            if (dir) {
+              const items = await FileSystem.readDirectoryAsync(dir);
+              await Promise.all(
+                items.map((name: string) =>
+                  FileSystem.deleteAsync(`${dir}${name}`, { idempotent: true }).catch(() => {}),
+                ),
+              );
+            }
+            setCacheSize('0 MB');
+            Alert.alert('Done', 'Cache cleared.');
+          } catch {
+            Alert.alert('Error', 'Could not clear cache.');
+          }
+        },
+      },
+    ]);
+  }, []);
+
+  // ── Crossfade ─────────────────────────────────────────────────────────────
+
+  const cycleCrossfade = useCallback(() => {
+    const opts = [0, 2, 5, 10];
+    const cur = opts.indexOf(crossfadeSec);
+    setCrossfadeSec(opts[(cur + 1) % opts.length]);
+  }, [crossfadeSec, setCrossfadeSec]);
 
   return (
     <KeyboardAvoidingView
@@ -92,87 +284,294 @@ export function ProfileScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          <Text style={styles.heading}>Profile</Text>
+          <Text style={styles.heading}>Settings</Text>
 
-          {/* Avatar */}
-          <View style={styles.avatarSection}>
-            <GlassCard style={styles.avatar} borderRadius={Radius.full}>
-              <View style={styles.avatarInner}>
-                <User size={40} color={Colors.textSecondary} />
-              </View>
-            </GlassCard>
-            <Text style={styles.userName}>Music Lover</Text>
-            <Text style={styles.userMeta}>Personal Library</Text>
-          </View>
+          {/* ── Server Connection ── */}
+          <SectionLabel label="Server" />
 
-          {/* Server Configuration */}
-          <Text style={styles.sectionLabel}>Server</Text>
           <GlassCard style={styles.serverCard}>
             <View style={styles.serverHeader}>
               <Server size={18} color={Colors.accentPrimary} />
               <Text style={styles.serverTitle}>Mac Server</Text>
-              {isCustom ? (
-                <TouchableOpacity onPress={clearUrl} style={styles.clearBtn}>
-                  <Text style={styles.clearBtnText}>Reset</Text>
-                </TouchableOpacity>
-              ) : null}
+              <View style={styles.serverBadgeRow}>
+                {connectionOk === true && (
+                  <View style={[styles.statusDot, { backgroundColor: Colors.accentGreen }]} />
+                )}
+                {connectionOk === false && (
+                  <View style={[styles.statusDot, { backgroundColor: Colors.accentPrimary }]} />
+                )}
+                {isCustom && (
+                  <TouchableOpacity onPress={resetServer} style={styles.badgeBtn}>
+                    <Text style={styles.badgeBtnText}>Reset</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
 
-            {isEditing ? (
+            {editingServer ? (
               <View style={styles.inputRow}>
                 <TextInput
                   style={styles.input}
-                  value={draft}
-                  onChangeText={setDraft}
-                  placeholder="192.168.x.x or http://192.168.x.x:3001"
+                  value={serverDraft}
+                  onChangeText={setServerDraft}
+                  placeholder="192.168.x.x:3001"
                   placeholderTextColor={Colors.textTertiary}
                   autoCapitalize="none"
                   autoCorrect={false}
                   keyboardType="url"
                   returnKeyType="done"
-                  onSubmitEditing={saveUrl}
+                  onSubmitEditing={saveServer}
                   autoFocus
                 />
-                <TouchableOpacity onPress={saveUrl} style={styles.iconBtn}>
-                  <Check size={18} color={Colors.accentGreen} />
+                <TouchableOpacity onPress={saveServer} style={styles.iconBtn}>
+                  <Check size={16} color={Colors.accentGreen} />
                 </TouchableOpacity>
-                <TouchableOpacity onPress={cancelEditing} style={styles.iconBtn}>
-                  <X size={18} color={Colors.textSecondary} />
+                <TouchableOpacity onPress={() => setEditingServer(false)} style={styles.iconBtn}>
+                  <X size={16} color={Colors.textSecondary} />
                 </TouchableOpacity>
               </View>
             ) : (
-              <TouchableOpacity onPress={startEditing} style={styles.urlRow}>
-                <Text style={styles.urlText} numberOfLines={1}>
-                  {isCustom ? customUrl || currentUrl : currentUrl}
-                </Text>
-                {isCustom && (
-                  <View style={styles.customBadge}>
-                    <Text style={styles.customBadgeText}>Custom</Text>
-                  </View>
-                )}
+              <TouchableOpacity onPress={startEditingServer} style={styles.urlRow}>
+                <Text style={styles.urlText} numberOfLines={1}>{currentUrl}</Text>
+                {isCustom && <View style={styles.customBadge}><Text style={styles.customBadgeText}>Custom</Text></View>}
               </TouchableOpacity>
             )}
 
-            <Text style={styles.serverHint}>
-              {isCustom
-                ? 'Using custom server address. Tap URL to edit.'
-                : 'Auto-detected. Tap to set a manual IP if on cellular/different network.'}
-            </Text>
+            <TouchableOpacity onPress={testConnection} style={styles.testBtn} disabled={testingConnection}>
+              <Wifi size={14} color={Colors.textSecondary} />
+              <Text style={styles.testBtnText}>
+                {testingConnection ? 'Testing…' : connectionOk === true ? 'Connected' : connectionOk === false ? 'Failed' : 'Test Connection'}
+              </Text>
+            </TouchableOpacity>
           </GlassCard>
 
-          {/* Menu Items */}
-          <Text style={styles.sectionLabel}>Settings</Text>
-          {MENU_ITEMS.map(({ icon: Icon, label }) => (
-            <TouchableOpacity key={label}>
-              <GlassCard style={styles.menuItem}>
-                <View style={styles.menuRow}>
-                  <Icon size={20} color={Colors.textSecondary} />
-                  <Text style={styles.menuLabel}>{label}</Text>
-                  <ChevronRight size={16} color={Colors.textTertiary} />
+          {/* ── Music Sources ── */}
+          <SectionLabel label="Music Sources" />
+
+          <GlassCard style={styles.toggleCard}>
+            {(['local', 'vk', 'soundcloud'] as const).map((src, i: number, arr) => (
+              <View key={src} style={[styles.toggleRow, i < arr.length - 1 && styles.toggleDivider]}>
+                <Radio size={16} color={Colors.textSecondary} />
+                <Text style={styles.toggleLabel}>
+                  {src === 'local' ? 'Local Library' : src === 'vk' ? 'VK Music' : 'SoundCloud'}
+                </Text>
+                <Switch
+                  value={sources[src]}
+                  onValueChange={() => toggleSource(src)}
+                  trackColor={{ false: 'rgba(255,255,255,0.1)', true: Colors.accentPrimary + '66' }}
+                  thumbColor={sources[src] ? Colors.accentPrimary : Colors.textTertiary}
+                />
+              </View>
+            ))}
+          </GlassCard>
+
+          {/* ── VK Auth ── */}
+          {sources.vk && (
+            <>
+              <SectionLabel label="VK Music" />
+              <GlassCard style={styles.serverCard}>
+                <View style={styles.serverHeader}>
+                  <Key size={18} color={Colors.accentPurple} />
+                  <Text style={styles.serverTitle}>VK Account</Text>
+                  {vkAuthenticated && (
+                    <View style={[styles.customBadge, { borderColor: Colors.accentGreen + '55', backgroundColor: Colors.accentGreen + '22' }]}>
+                      <Text style={[styles.customBadgeText, { color: Colors.accentGreen }]}>Connected</Text>
+                    </View>
+                  )}
                 </View>
+
+                {vkAuthenticated ? (
+                  <>
+                    <View style={styles.urlRow}>
+                      <User size={14} color={Colors.textTertiary} />
+                      <Text style={styles.urlText} numberOfLines={1}>{vkLoggedInUser ?? 'VK User'}</Text>
+                    </View>
+                    <TouchableOpacity onPress={doVkLogout} style={[styles.testBtn, { marginTop: Spacing.xs }]}>
+                      <LogOut size={14} color={Colors.accentPrimary} />
+                      <Text style={[styles.testBtnText, { color: Colors.accentPrimary }]}>Disconnect</Text>
+                    </TouchableOpacity>
+                  </>
+                ) : showVkLogin ? (
+                  <>
+                    <TextInput
+                      style={styles.input}
+                      value={vkUsername}
+                      onChangeText={setVkUsername}
+                      placeholder="VK username or phone"
+                      placeholderTextColor={Colors.textTertiary}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      keyboardType="email-address"
+                    />
+                    <TextInput
+                      style={[styles.input, { marginTop: Spacing.xs }]}
+                      value={vkPassword}
+                      onChangeText={setVkPassword}
+                      placeholder="Password"
+                      placeholderTextColor={Colors.textTertiary}
+                      secureTextEntry
+                      returnKeyType="done"
+                      onSubmitEditing={doVkLogin}
+                    />
+                    <View style={[styles.inputRow, { marginTop: Spacing.xs }]}>
+                      <TouchableOpacity
+                        onPress={doVkLogin}
+                        style={[styles.iconBtn, { flex: 1, paddingHorizontal: Spacing.md }]}
+                        disabled={vkLoggingIn}
+                      >
+                        {vkLoggingIn
+                          ? <ActivityIndicator size="small" color={Colors.accentPrimary} />
+                          : <Text style={{ ...Typography.button, color: Colors.accentPrimary }}>Login</Text>
+                        }
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => setShowVkLogin(false)} style={styles.iconBtn}>
+                        <X size={16} color={Colors.textSecondary} />
+                      </TouchableOpacity>
+                    </View>
+                    <Text style={styles.hint}>Credentials are sent to your local server only.</Text>
+                  </>
+                ) : (
+                  <TouchableOpacity onPress={() => setShowVkLogin(true)} style={[styles.testBtn, { marginTop: 0 }]}>
+                    <LogIn size={14} color={Colors.accentPurple} />
+                    <Text style={[styles.testBtnText, { color: Colors.accentPurple }]}>Login with VK</Text>
+                  </TouchableOpacity>
+                )}
               </GlassCard>
-            </TouchableOpacity>
-          ))}
+
+              {/* VK Playlists */}
+              {vkAuthenticated && (
+                <GlassCard style={[styles.serverCard, { marginTop: Spacing.sm }]}>
+                  <View style={styles.serverHeader}>
+                    <List size={18} color={Colors.accentPurple} />
+                    <Text style={styles.serverTitle}>VK Playlists</Text>
+                    <TouchableOpacity onPress={loadVkPlaylists} style={styles.badgeBtn} disabled={loadingPlaylists}>
+                      {loadingPlaylists
+                        ? <ActivityIndicator size="small" color={Colors.accentPrimary} />
+                        : <Text style={styles.badgeBtnText}>Load</Text>
+                      }
+                    </TouchableOpacity>
+                  </View>
+                  {vkPlaylists.length === 0 ? (
+                    <Text style={styles.hint}>Tap Load to fetch your VK playlists.</Text>
+                  ) : (
+                    vkPlaylists.map((pl) => (
+                      <View key={pl.id} style={styles.playlistRow}>
+                        <Text style={styles.playlistTitle} numberOfLines={1}>{pl.title}</Text>
+                        <Text style={styles.playlistCount}>{pl.count}</Text>
+                        <TouchableOpacity
+                          onPress={() => importVkPlaylist(pl.id, pl.owner_id, pl.title)}
+                          style={styles.importBtn}
+                          disabled={importingPlaylist === pl.id}
+                        >
+                          {importingPlaylist === pl.id
+                            ? <ActivityIndicator size="small" color={Colors.accentPrimary} />
+                            : <Download size={14} color={Colors.accentPrimary} />
+                          }
+                        </TouchableOpacity>
+                      </View>
+                    ))
+                  )}
+                </GlassCard>
+              )}
+            </>
+          )}
+
+          {/* ── Audio Quality ── */}
+          <SectionLabel label="Audio Quality" />
+
+          <GlassCard style={styles.toggleCard}>
+            {(['low', 'medium', 'high'] as StreamQuality[]).map((q, i, arr) => (
+              <TouchableOpacity
+                key={q}
+                style={[styles.toggleRow, i < arr.length - 1 && styles.toggleDivider]}
+                onPress={() => setStreamQuality(q)}
+              >
+                <Volume2 size={16} color={Colors.textSecondary} />
+                <Text style={styles.toggleLabel}>
+                  {q === 'low' ? 'Low (128 kbps)' : q === 'medium' ? 'Medium (192 kbps)' : 'High (320 kbps)'}
+                </Text>
+                {streamQuality === q && (
+                  <Check size={16} color={Colors.accentPrimary} />
+                )}
+              </TouchableOpacity>
+            ))}
+          </GlassCard>
+
+          {/* ── Playback ── */}
+          <SectionLabel label="Playback" />
+
+          <GlassCard style={styles.toggleCard}>
+            <View style={styles.toggleRow}>
+              <Sliders size={16} color={Colors.textSecondary} />
+              <Text style={styles.toggleLabel}>Crossfade</Text>
+              <TouchableOpacity onPress={cycleCrossfade} style={styles.chipBtn}>
+                <Text style={styles.chipText}>{crossfadeSec === 0 ? 'Off' : `${crossfadeSec}s`}</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={[styles.toggleRow, styles.toggleDivider]}>
+              <Music2 size={16} color={Colors.textSecondary} />
+              <Text style={styles.toggleLabel}>Gapless Playback</Text>
+              <Switch
+                value={gapless}
+                onValueChange={setGapless}
+                trackColor={{ false: 'rgba(255,255,255,0.1)', true: Colors.accentPrimary + '66' }}
+                thumbColor={gapless ? Colors.accentPrimary : Colors.textTertiary}
+              />
+            </View>
+            <View style={[styles.toggleRow, styles.toggleDivider]}>
+              <Settings size={16} color={Colors.textSecondary} />
+              <Text style={styles.toggleLabel}>Volume Normalization</Text>
+              <Switch
+                value={normalization}
+                onValueChange={setNormalization}
+                trackColor={{ false: 'rgba(255,255,255,0.1)', true: Colors.accentPrimary + '66' }}
+                thumbColor={normalization ? Colors.accentPrimary : Colors.textTertiary}
+              />
+            </View>
+          </GlassCard>
+
+          {/* ── Storage ── */}
+          <SectionLabel label="Storage" />
+
+          <RowItem
+            icon={HardDrive}
+            label="Cache Size"
+            value={cacheSize ?? 'Tap to check'}
+            onPress={loadCacheSize}
+          />
+          <View style={{ height: Spacing.sm }} />
+          <RowItem
+            icon={Trash2}
+            label="Clear Cache"
+            onPress={clearCache}
+            danger
+          />
+
+          {/* ── Debug ── */}
+          <SectionLabel label="Debug" />
+
+          <RowItem
+            icon={Bug}
+            label="Reset Onboarding"
+            onPress={() => {
+              Alert.alert('Reset Onboarding', 'This will show the onboarding wizard on next launch.', [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Reset', style: 'destructive', onPress: resetOnboarding },
+              ]);
+            }}
+            danger
+          />
+
+          {/* ── About ── */}
+          <SectionLabel label="About" />
+
+          <GlassCard style={styles.aboutCard}>
+            <Text style={styles.aboutName}>Musaic</Text>
+            <Text style={styles.aboutVersion}>Version 1.0.0</Text>
+            <Text style={styles.aboutDesc}>
+              Your personal music player — local library, VK, and SoundCloud in one place.
+            </Text>
+          </GlassCard>
         </ScrollView>
       </SafeAreaView>
     </KeyboardAvoidingView>
@@ -193,39 +592,17 @@ const styles = StyleSheet.create({
     marginTop: Spacing.lg,
     marginBottom: Spacing.xl,
   },
-  avatarSection: {
-    alignItems: 'center',
-    marginBottom: Spacing['2xl'],
-  },
-  avatar: {
-    marginBottom: Spacing.md,
-  },
-  avatarInner: {
-    width: 96,
-    height: 96,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  userName: {
-    ...Typography.headingMd,
-    color: Colors.textPrimary,
-    marginBottom: Spacing.xs,
-  },
-  userMeta: {
-    ...Typography.bodySm,
-    color: Colors.textSecondary,
-  },
   sectionLabel: {
     ...Typography.caption,
     color: Colors.textTertiary,
     textTransform: 'uppercase',
     letterSpacing: 0.8,
     marginBottom: Spacing.sm,
-    marginTop: Spacing.md,
+    marginTop: Spacing.xl,
   },
+  // Server
   serverCard: {
     padding: Spacing.lg,
-    marginBottom: Spacing.md,
     gap: Spacing.sm,
   },
   serverHeader: {
@@ -238,14 +615,24 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     flex: 1,
   },
-  clearBtn: {
+  serverBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  badgeBtn: {
     paddingHorizontal: Spacing.sm,
     paddingVertical: 2,
     borderRadius: Radius.sm,
     borderWidth: 1,
     borderColor: 'rgba(233,30,140,0.35)',
   },
-  clearBtnText: {
+  badgeBtnText: {
     ...Typography.caption,
     color: Colors.accentPrimary,
   },
@@ -276,6 +663,16 @@ const styles = StyleSheet.create({
     ...Typography.caption,
     color: Colors.accentPrimary,
   },
+  testBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    paddingVertical: Spacing.xs,
+  },
+  testBtnText: {
+    ...Typography.caption,
+    color: Colors.textTertiary,
+  },
   inputRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -302,23 +699,114 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.glassBorder,
   },
-  serverHint: {
+  hint: {
     ...Typography.bodySm,
     color: Colors.textTertiary,
-    lineHeight: 17,
   },
-  menuItem: {
-    marginBottom: Spacing.sm,
+  // Toggles
+  toggleCard: {
+    overflow: 'hidden',
   },
-  menuRow: {
+  toggleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     padding: Spacing.lg,
     gap: Spacing.md,
   },
-  menuLabel: {
+  toggleDivider: {
+    borderTopWidth: 1,
+    borderTopColor: Colors.glassBorder,
+  },
+  toggleLabel: {
     ...Typography.body,
     color: Colors.textPrimary,
     flex: 1,
+  },
+  chipBtn: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    backgroundColor: Colors.glassBgActive,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+    borderColor: Colors.glassBorder,
+  },
+  chipText: {
+    ...Typography.bodySm,
+    color: Colors.accentPrimary,
+  },
+  // Row items
+  rowCard: {
+    marginBottom: Spacing.sm,
+  },
+  rowInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: Spacing.lg,
+    gap: Spacing.md,
+  },
+  rowLabel: {
+    ...Typography.body,
+    color: Colors.textPrimary,
+    flex: 1,
+  },
+  dangerText: {
+    color: Colors.accentPrimary,
+  },
+  rowRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  rowValue: {
+    ...Typography.bodySm,
+    color: Colors.textSecondary,
+  },
+  // About
+  aboutCard: {
+    padding: Spacing.xl,
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  aboutName: {
+    ...Typography.headingMd,
+    color: Colors.textPrimary,
+  },
+  aboutVersion: {
+    ...Typography.bodySm,
+    color: Colors.textSecondary,
+  },
+  aboutDesc: {
+    ...Typography.bodySm,
+    color: Colors.textTertiary,
+    textAlign: 'center',
+    marginTop: Spacing.xs,
+  },
+  // VK Playlists
+  playlistRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: Spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: Colors.glassBorder,
+    gap: Spacing.sm,
+  },
+  playlistTitle: {
+    ...Typography.body,
+    color: Colors.textPrimary,
+    flex: 1,
+  },
+  playlistCount: {
+    ...Typography.caption,
+    color: Colors.textTertiary,
+  },
+  importBtn: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.glassBg,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderColor: Colors.glassBorder,
   },
 });
