@@ -1,5 +1,29 @@
 import { create } from 'zustand';
+import { MMKV } from 'react-native-mmkv';
 import { Track, Playlist } from '../types';
+
+const storage = new MMKV({ id: 'musaic-library' });
+
+const KEYS = {
+  likedTrackIds: 'liked_track_ids',
+  playlists: 'playlists',
+} as const;
+
+function loadLikedTrackIds(): Set<string> {
+  try {
+    const raw = storage.getString(KEYS.likedTrackIds);
+    if (raw) return new Set(JSON.parse(raw) as string[]);
+  } catch {}
+  return new Set();
+}
+
+function loadPlaylists(): Playlist[] {
+  try {
+    const raw = storage.getString(KEYS.playlists);
+    if (raw) return JSON.parse(raw) as Playlist[];
+  } catch {}
+  return [];
+}
 
 interface LibraryState {
   tracks: Track[];
@@ -21,8 +45,8 @@ interface LibraryState {
 
 export const useLibraryStore = create<LibraryState>((set, get) => ({
   tracks: [],
-  playlists: [],
-  likedTrackIds: new Set(),
+  playlists: loadPlaylists(),
+  likedTrackIds: loadLikedTrackIds(),
 
   setTracks: (tracks) => set({ tracks }),
 
@@ -36,7 +60,10 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   removeTrack: (trackId) =>
     set((state) => ({ tracks: state.tracks.filter((t) => t.id !== trackId) })),
 
-  setPlaylists: (playlists) => set({ playlists }),
+  setPlaylists: (playlists) => {
+    storage.set(KEYS.playlists, JSON.stringify(playlists));
+    set({ playlists });
+  },
 
   createPlaylist: (name) => {
     const playlist: Playlist = {
@@ -45,38 +72,49 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       tracks: [],
       createdAt: Date.now(),
     };
-    set((state) => ({ playlists: [...state.playlists, playlist] }));
+    set((state) => {
+      const playlists = [...state.playlists, playlist];
+      storage.set(KEYS.playlists, JSON.stringify(playlists));
+      return { playlists };
+    });
     return playlist;
   },
 
   addToPlaylist: (playlistId, track) =>
-    set((state) => ({
-      playlists: state.playlists.map((p) =>
+    set((state) => {
+      const playlists = state.playlists.map((p) =>
         p.id === playlistId && !p.tracks.some((t) => t.id === track.id)
           ? { ...p, tracks: [...p.tracks, track] }
           : p
-      ),
-    })),
+      );
+      storage.set(KEYS.playlists, JSON.stringify(playlists));
+      return { playlists };
+    }),
 
   removeFromPlaylist: (playlistId, trackId) =>
-    set((state) => ({
-      playlists: state.playlists.map((p) =>
+    set((state) => {
+      const playlists = state.playlists.map((p) =>
         p.id === playlistId
           ? { ...p, tracks: p.tracks.filter((t) => t.id !== trackId) }
           : p
-      ),
-    })),
+      );
+      storage.set(KEYS.playlists, JSON.stringify(playlists));
+      return { playlists };
+    }),
 
   deletePlaylist: (playlistId) =>
-    set((state) => ({
-      playlists: state.playlists.filter((p) => p.id !== playlistId),
-    })),
+    set((state) => {
+      const playlists = state.playlists.filter((p) => p.id !== playlistId);
+      storage.set(KEYS.playlists, JSON.stringify(playlists));
+      return { playlists };
+    }),
 
   toggleLike: (trackId) =>
     set((state) => {
       const next = new Set(state.likedTrackIds);
       if (next.has(trackId)) next.delete(trackId);
       else next.add(trackId);
+      storage.set(KEYS.likedTrackIds, JSON.stringify([...next]));
       return { likedTrackIds: next };
     }),
 
