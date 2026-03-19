@@ -238,9 +238,9 @@ export function HomeScreen() {
               </View>
               <View style={styles.heroPlay}>
                 {isPlaying && tracks.some((t) => t.id === currentTrack?.id) ? (
-                  <Pause size={22} color="#fff" fill="#fff" />
+                  <Pause size={22} color={Colors.bgPrimary} fill={Colors.bgPrimary} />
                 ) : (
-                  <Play size={22} color="#fff" fill="#fff" style={{ marginLeft: 2 }} />
+                  <Play size={22} color={Colors.bgPrimary} fill={Colors.bgPrimary} style={{ marginLeft: 2 }} />
                 )}
               </View>
             </GlassCard>
@@ -494,15 +494,15 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.glassBg,
   },
   tagChipActive: {
-    backgroundColor: 'rgba(233, 30, 140, 0.15)',
-    borderColor: 'rgba(233, 30, 140, 0.40)',
+    backgroundColor: Colors.accentPrimary,
+    borderColor: Colors.accentPrimary,
   },
   tagText: {
     ...Typography.caption,
     color: Colors.textSecondary,
   },
   tagTextActive: {
-    color: Colors.accentPrimary,
+    color: Colors.textPrimary,
   },
   heroWrapper: {
     marginBottom: Spacing.xl,
@@ -535,13 +535,11 @@ const styles = StyleSheet.create({
   heroPlay: {
     position: 'absolute',
     right: Spacing.lg,
-    bottom: 36,
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255,255,255,0.35)',
+    bottom: 32,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(255,255,255,0.90)',
     alignItems: 'center',
     justifyContent: 'center',
   },

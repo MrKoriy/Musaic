@@ -1,13 +1,14 @@
 import React from 'react';
-import { View, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Home, Search, Library, User } from 'lucide-react-native';
+import { Home, Search, Library, User, BarChart2 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Colors, Spacing } from '../theme';
+import { Colors, Spacing, Typography } from '../theme';
 import { HomeScreen } from '../screens/HomeScreen';
 import { SearchScreen } from '../screens/SearchScreen';
 import { LibraryScreen } from '../screens/LibraryScreen';
 import { ProfileScreen } from '../screens/ProfileScreen';
+import { StatsScreen } from '../screens/StatsScreen';
 import { MiniPlayer } from '../components/MiniPlayer';
 import { TabParamList } from '../types';
 
@@ -46,13 +47,11 @@ function CustomTabBar(props: any) {
 
           return (
             <View key={route.key} style={styles.tabItem}>
-              <View
-                style={{ alignItems: 'center', gap: 3 }}
-                // eslint-disable-next-line react/display-name
-              >
+              <View style={{ alignItems: 'center', gap: 3 }}>
                 <View>
-                  {IconComponent?.({ color, size: 22, focused: isFocused })}
+                  {IconComponent?.({ color, size: 20, focused: isFocused })}
                 </View>
+                <Text style={[styles.tabLabel, { color }]}>{label}</Text>
               </View>
               {/* Touchable overlay */}
               <View
@@ -97,6 +96,13 @@ export function TabNavigator() {
         }}
       />
       <Tab.Screen
+        name="Stats"
+        component={StatsScreen}
+        options={{
+          tabBarIcon: ({ color, size }) => <BarChart2 size={size} color={color} />,
+        }}
+      />
+      <Tab.Screen
         name="Profile"
         component={ProfileScreen}
         options={{
@@ -124,5 +130,10 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  tabLabel: {
+    ...Typography.caption,
+    fontSize: 10,
+    marginTop: 1,
   },
 });

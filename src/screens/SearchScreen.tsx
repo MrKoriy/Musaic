@@ -301,7 +301,7 @@ const styles = StyleSheet.create({
   searchCard: { marginBottom: Spacing.md },
   searchRow: {
     flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md - 2, gap: Spacing.sm,
+    paddingHorizontal: Spacing.lg, height: 40, gap: Spacing.sm,
   },
   searchInput: { flex: 1, ...Typography.body, color: Colors.textPrimary },
   clearBtn: { color: Colors.textTertiary, fontSize: 14 },
@@ -316,11 +316,11 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.05)',
   },
   filterChipActive: {
-    backgroundColor: Colors.accentPrimary + '22',
+    backgroundColor: Colors.accentPrimary,
     borderColor: Colors.accentPrimary,
   },
   filterChipText: { ...Typography.bodySm, color: Colors.textSecondary },
-  filterChipTextActive: { color: Colors.accentPrimary, fontWeight: '600' },
+  filterChipTextActive: { color: Colors.textPrimary, fontWeight: '600' },
   recentSection: { marginBottom: Spacing.lg },
   recentRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
