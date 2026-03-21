@@ -2,8 +2,9 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TextInput, ScrollView,
   SafeAreaView, TouchableOpacity, ActivityIndicator,
+  NativeSyntheticEvent, NativeScrollEvent,
 } from 'react-native';
-import { Search, Clock, X } from 'lucide-react-native';
+import { Search, Clock, X, Zap, Smile, CloudMoon, Dumbbell, CloudRain, PartyPopper, Target, Heart, Moon } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -21,10 +22,21 @@ type SourceFilter = 'all' | 'local' | 'soundcloud' | 'vk';
 
 const SOURCE_FILTERS: { id: SourceFilter; label: string }[] = [
   { id: 'all', label: 'All' },
-  { id: 'local', label: 'Local' },
   { id: 'soundcloud', label: 'SoundCloud' },
   { id: 'vk', label: 'VK' },
 ];
+
+const MOOD_ICONS: Record<string, React.FC<{ size: number; color: string }>> = {
+  'Energise': Zap,
+  'Feel good': Smile,
+  'Relax': CloudMoon,
+  'Workout': Dumbbell,
+  'Sad': CloudRain,
+  'Party': PartyPopper,
+  'Focus': Target,
+  'Romance': Heart,
+  'Sleep': Moon,
+};
 
 const storage = new MMKV({ id: 'musaic-search' });
 const RECENT_KEY = 'recent_searches';
@@ -58,28 +70,64 @@ export function SearchScreen() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Track[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [inputFocused, setInputFocused] = useState(false);
+  const [searchOffset, setSearchOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const { currentTrack, isPlaying, setQueue, addToQueue } = usePlayerStore();
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchAbort = useRef<AbortController | null>(null);
 
   useEffect(() => {
     setRecentSearches(loadRecentSearches());
+    return () => { searchAbort.current?.abort(); };
   }, []);
 
   const doSearch = useCallback(async (q: string, source: SourceFilter) => {
-    if (q.length < 2) { setResults([]); return; }
+    if (q.length < 2) { setResults([]); setHasMore(false); return; }
+    // Cancel any in-flight search to prevent stale results overwriting newer ones
+    searchAbort.current?.abort();
+    const controller = new AbortController();
+    searchAbort.current = controller;
     setLoading(true);
+    setSearchOffset(0);
     const sources = source === 'all' ? 'local,soundcloud,vk' : source;
     try {
-      const res = await api.searchTracks(q, sources);
-      setResults(res.tracks.map(serverTrackToAppTrack));
+      const res = await api.searchTracks(q, sources, 30, 0);
+      if (controller.signal.aborted) return;
+      const mapped = res.tracks.map(serverTrackToAppTrack);
+      setResults(mapped);
+      setHasMore(mapped.length >= 20);
+      setSearchOffset(30);
     } catch {
+      if (controller.signal.aborted) return;
       setResults([]);
+      setHasMore(false);
     }
-    setLoading(false);
+    if (!controller.signal.aborted) setLoading(false);
   }, []);
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore || query.length < 2) return;
+    setLoadingMore(true);
+    const sources = sourceFilter === 'all' ? 'local,soundcloud,vk' : sourceFilter;
+    try {
+      const res = await api.searchTracks(query, sources, 30, searchOffset);
+      const mapped = res.tracks.map(serverTrackToAppTrack);
+      if (mapped.length === 0) {
+        setHasMore(false);
+      } else {
+        setResults((prev) => [...prev, ...mapped]);
+        setSearchOffset((prev) => prev + 30);
+        setHasMore(mapped.length >= 20);
+      }
+    } catch {
+      setHasMore(false);
+    }
+    setLoadingMore(false);
+  }, [loadingMore, hasMore, query, sourceFilter, searchOffset]);
 
   function onChangeText(text: string) {
     setQuery(text);
@@ -151,6 +199,14 @@ export function SearchScreen() {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          onScroll={(e: NativeSyntheticEvent<NativeScrollEvent>) => {
+            const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
+            const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y;
+            if (distanceFromBottom < 200 && hasMore && !loadingMore) {
+              loadMore();
+            }
+          }}
+          scrollEventThrottle={400}
         >
           <Text style={styles.heading}>Search</Text>
 
@@ -249,6 +305,11 @@ export function SearchScreen() {
                   })}
                 </View>
               ))}
+
+              {/* Loading more indicator */}
+              {loadingMore && (
+                <ActivityIndicator color={Colors.accentPrimary} style={{ marginVertical: Spacing.md }} />
+              )}
             </>
           )}
 
@@ -266,8 +327,17 @@ export function SearchScreen() {
               <View style={styles.genreGrid}>
                 {MOOD_TAGS.map((tag) => {
                   const colors = GENRE_COLORS[tag] ?? ['#555', '#333'];
+                  const IconComponent = MOOD_ICONS[tag];
                   return (
-                    <TouchableOpacity key={tag} style={styles.genreCardWrapper} activeOpacity={0.8}>
+                    <TouchableOpacity
+                      key={tag}
+                      style={styles.genreCardWrapper}
+                      activeOpacity={0.8}
+                      onPress={() => {
+                        setQuery(tag);
+                        doSearch(tag, sourceFilter);
+                      }}
+                    >
                       <LinearGradient
                         colors={[colors[0] + 'CC', colors[1] + '88']}
                         style={styles.genreCard}
@@ -276,6 +346,9 @@ export function SearchScreen() {
                       >
                         <View style={styles.genreBorder} />
                         <View style={styles.genreCardInner}>
+                          {IconComponent && (
+                            <IconComponent size={28} color="rgba(255,255,255,0.85)" />
+                          )}
                           <Text style={styles.genreText}>{tag}</Text>
                         </View>
                       </LinearGradient>
@@ -303,7 +376,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: Spacing.lg, height: 40, gap: Spacing.sm,
   },
-  searchInput: { flex: 1, ...Typography.body, color: Colors.textPrimary },
+  searchInput: { flex: 1, ...Typography.body, color: Colors.textPrimary, padding: 0 },
   clearBtn: { color: Colors.textTertiary, fontSize: 14 },
   filterScroll: { marginBottom: Spacing.lg },
   filterRow: { flexDirection: 'row', gap: Spacing.sm, paddingVertical: Spacing.xs },
@@ -337,6 +410,20 @@ const styles = StyleSheet.create({
   },
   emptyCard: { padding: Spacing.xl, alignItems: 'center', marginTop: Spacing.lg },
   emptyText: { ...Typography.body, color: Colors.textSecondary },
+  loadMoreBtn: {
+    alignItems: 'center',
+    paddingVertical: Spacing.md,
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.md,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.glassBorder,
+  },
+  loadMoreText: {
+    ...Typography.button,
+    color: Colors.accentPrimary,
+  },
   genreGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
   genreCardWrapper: { width: '47%', borderRadius: Radius.lg, overflow: 'hidden' },
   genreCard: { borderRadius: Radius.lg, overflow: 'hidden', position: 'relative' },
@@ -344,6 +431,6 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', borderRadius: Radius.lg, zIndex: 1,
   },
-  genreCardInner: { height: 80, justifyContent: 'flex-end', padding: Spacing.md },
+  genreCardInner: { height: 100, justifyContent: 'flex-end', padding: Spacing.md, gap: Spacing.xs },
   genreText: { ...Typography.headingSm, color: Colors.textPrimary },
 });

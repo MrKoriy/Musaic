@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,22 +9,22 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Play, Pause, Music, Sparkles, Wifi, WifiOff } from 'lucide-react-native';
+import { Play, Pause, Music, Sparkles, WifiOff } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Colors, Spacing, Typography, Radius } from '../theme';
 import { GlassCard } from '../components/GlassCard';
 import { TrackRow } from '../components/TrackRow';
 import { MoreLikeThisModal } from '../components/MoreLikeThisModal';
+import { PlaylistPicker } from '../components/PlaylistPicker';
 import { usePlayerStore } from '../stores/usePlayerStore';
 import { useLibraryStore } from '../stores/useLibraryStore';
 import { api, serverTrackToAppTrack } from '../services/apiService';
 import { MOOD_TAGS } from '../data/mockData';
 import { RootStackParamList, Track } from '../types';
+import { useSettingsStore } from '../stores/useSettingsStore';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
-
-const CONTENT_TABS = ['Playlist', 'Artists', 'Albums', 'Streams', 'Favorites'];
 
 function getGreeting(): string {
   const h = new Date().getHours();
@@ -33,12 +33,9 @@ function getGreeting(): string {
   return 'Good evening';
 }
 
-type ServerStatus = 'unknown' | 'connected' | 'disconnected';
-
 export function HomeScreen() {
   const navigation = useNavigation<NavProp>();
   const [activeTag, setActiveTag] = useState(0);
-  const [activeTab, setActiveTab] = useState(0);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [recommendations, setRecommendations] = useState<Track[]>([]);
   const [recoSource, setRecoSource] = useState<string>('');
@@ -49,16 +46,11 @@ export function HomeScreen() {
   const [recoLoading, setRecoLoading] = useState(false);
   const [dailyMixLoading, setDailyMixLoading] = useState(false);
   const [moreLikeThis, setMoreLikeThis] = useState<Track | null>(null);
-  const [serverStatus, setServerStatus] = useState<ServerStatus>('unknown');
-  const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [playlistPickerTrack, setPlaylistPickerTrack] = useState<Track | null>(null);
+  const serverStatus = useSettingsStore((s) => s.serverStatus);
+  const setServerStatus = useSettingsStore((s) => s.setServerStatus);
   const { currentTrack, isPlaying, setQueue, addToQueue } = usePlayerStore();
-  const { isLiked, toggleLike } = useLibraryStore();
-
-  const checkServer = useCallback(async () => {
-    const ok = await api.ping();
-    setServerStatus(ok ? 'connected' : 'disconnected');
-    return ok;
-  }, []);
+  const { isLiked, toggleLike, likedTrackIds } = useLibraryStore();
 
   const loadTracks = useCallback(async () => {
     try {
@@ -85,10 +77,10 @@ export function HomeScreen() {
     setRecoLoading(false);
   }, []);
 
-  const loadDailyMix = useCallback(async () => {
+  const loadDailyMix = useCallback(async (refresh = false) => {
     setDailyMixLoading(true);
     try {
-      const res = await api.getDailyMix();
+      const res = await api.getDailyMix(refresh);
       setDailyMix(res.tracks.map(serverTrackToAppTrack));
       setDailyMixName(res.name ?? 'Daily Mix');
     } catch {
@@ -112,12 +104,7 @@ export function HomeScreen() {
     loadTracks();
     loadRecommendations();
     loadDailyMix();
-    // Ping every 30s to keep status indicator fresh
-    pingIntervalRef.current = setInterval(checkServer, 30_000);
-    return () => {
-      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
-    };
-  }, [loadTracks, loadRecommendations, loadDailyMix, checkServer]);
+  }, [loadTracks, loadRecommendations, loadDailyMix]);
 
   function retryLoad() {
     setLoading(true);
@@ -144,6 +131,10 @@ export function HomeScreen() {
   const heroMeta = tracks.length > 0
     ? `${tracks.length} songs · ${hrs > 0 ? hrs + ' hr ' : ''}${mins} min`
     : 'Scan a music folder in Library';
+
+  const dayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+  const likedCount = likedTrackIds.size;
+  const heroSubtitle = `${dayName} · ${likedCount} liked track${likedCount !== 1 ? 's' : ''}`;
 
   return (
     <View style={styles.root}>
@@ -183,13 +174,6 @@ export function HomeScreen() {
                 )}
               </View>
             </View>
-            <TouchableOpacity onPress={() => navigation.navigate('AIChat')}>
-              <GlassCard style={styles.avatar} borderRadius={Radius.full}>
-                <View style={styles.avatarInner}>
-                  <Sparkles size={18} color={Colors.accentPrimary} />
-                </View>
-              </GlassCard>
-            </TouchableOpacity>
           </View>
 
           {/* Mood Tags */}
@@ -233,6 +217,7 @@ export function HomeScreen() {
               />
               <View style={styles.heroContent}>
                 <Text style={styles.heroMeta}>{heroMeta}</Text>
+                <Text style={styles.heroSubtitle}>{heroSubtitle}</Text>
                 <Text style={styles.heroLabel}>Your Library</Text>
                 <Text style={styles.heroTitle}>Local Music</Text>
               </View>
@@ -252,7 +237,9 @@ export function HomeScreen() {
               <View style={styles.sectionHeader}>
                 <Sparkles size={14} color={Colors.accentPrimary} />
                 <Text style={styles.sectionTitle}>{dailyMixName}</Text>
-                <Text style={styles.sectionBadge}>Daily Mix</Text>
+                <TouchableOpacity onPress={() => loadDailyMix(true)}>
+                  <Text style={styles.reloadText}>↻ Reload</Text>
+                </TouchableOpacity>
               </View>
               {dailyMixLoading ? (
                 <ActivityIndicator color={Colors.accentPrimary} style={{ marginVertical: Spacing.md }} />
@@ -267,9 +254,10 @@ export function HomeScreen() {
                       isPlaying={isPlaying}
                       isLiked={isLiked(track.id)}
                       onPress={() => playTrack(dailyMix, i)}
-                      onLike={() => toggleLike(track.id)}
+                      onLike={() => toggleLike(track.id, track)}
                       onMoreLikeThis={(t) => setMoreLikeThis(t)}
                       onAddToQueue={(t) => addToQueue(t)}
+                      onAddToPlaylist={(t) => setPlaylistPickerTrack(t)}
                     />
                   ))}
                 </View>
@@ -294,7 +282,7 @@ export function HomeScreen() {
                     isPlaying={isPlaying}
                     isLiked={isLiked(track.id)}
                     onPress={() => playTrack(moodTracks, i)}
-                    onLike={() => toggleLike(track.id)}
+                    onLike={() => toggleLike(track.id, track)}
                     onMoreLikeThis={(t) => setMoreLikeThis(t)}
                     onAddToQueue={(t) => addToQueue(t)}
                   />
@@ -326,9 +314,10 @@ export function HomeScreen() {
                       isPlaying={isPlaying}
                       isLiked={isLiked(track.id)}
                       onPress={() => playTrack(recommendations, i)}
-                      onLike={() => toggleLike(track.id)}
+                      onLike={() => toggleLike(track.id, track)}
                       onMoreLikeThis={(t) => setMoreLikeThis(t)}
                       onAddToQueue={(t) => addToQueue(t)}
+                      onAddToPlaylist={(t) => setPlaylistPickerTrack(t)}
                     />
                   ))}
                 </View>
@@ -336,30 +325,10 @@ export function HomeScreen() {
             </View>
           )}
 
-          {/* Content Tabs */}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.tabsRow}
-            contentContainerStyle={styles.tabsContent}
-          >
-            {CONTENT_TABS.map((tab, i) => (
-              <TouchableOpacity
-                key={tab}
-                onPress={() => setActiveTab(i)}
-                style={[styles.tab, activeTab === i && styles.tabActive]}
-              >
-                <Text style={[styles.tabText, activeTab === i && styles.tabTextActive]}>
-                  {tab}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-
           {/* Track List */}
           {loading ? (
             <ActivityIndicator color={Colors.accentPrimary} style={{ marginTop: Spacing.xl }} />
-          ) : serverStatus === 'disconnected' && tracks.length === 0 ? (
+          ) : serverStatus === 'disconnected' && tracks.length === 0 && recommendations.length === 0 ? (
             <GlassCard style={styles.emptyState}>
               <WifiOff size={32} color={Colors.textTertiary} />
               <Text style={styles.emptyTitle}>Server unreachable</Text>
@@ -388,7 +357,7 @@ export function HomeScreen() {
                   isPlaying={isPlaying}
                   isLiked={isLiked(track.id)}
                   onPress={() => playTrack(tracks, i)}
-                  onLike={() => toggleLike(track.id)}
+                  onLike={() => toggleLike(track.id, track)}
                   onMoreLikeThis={(t) => setMoreLikeThis(t)}
                   onAddToQueue={(t) => addToQueue(t)}
                 />
@@ -406,6 +375,13 @@ export function HomeScreen() {
           setMoreLikeThis(null);
           playTrack(similarTracks, index);
         }}
+      />
+
+      {/* Playlist Picker */}
+      <PlaylistPicker
+        visible={!!playlistPickerTrack}
+        track={playlistPickerTrack}
+        onClose={() => setPlaylistPickerTrack(null)}
       />
     </View>
   );
@@ -471,6 +447,11 @@ const styles = StyleSheet.create({
   statusDisconnected: {
     backgroundColor: '#ef4444',
   },
+  headerStatusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
   avatar: {},
   avatarInner: {
     width: 40,
@@ -521,6 +502,11 @@ const styles = StyleSheet.create({
   heroMeta: {
     ...Typography.caption,
     color: Colors.textSecondary,
+    marginBottom: 2,
+  },
+  heroSubtitle: {
+    ...Typography.caption,
+    color: Colors.accentPrimary,
     marginBottom: 4,
   },
   heroLabel: {
@@ -565,6 +551,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.sm,
     paddingVertical: 2,
     borderRadius: Radius.sm,
+  },
+  reloadText: {
+    ...Typography.caption,
+    color: Colors.accentPrimary,
+    fontWeight: '600',
   },
   tabsRow: {
     marginBottom: Spacing.md,

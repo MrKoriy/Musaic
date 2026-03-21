@@ -1,6 +1,7 @@
-import TrackPlayer, { Event, State, Capability, AppKilledPlaybackBehavior, useTrackPlayerEvents, useProgress } from 'react-native-track-player';
+import TrackPlayer, { Event, State, Capability, RepeatMode, AppKilledPlaybackBehavior, useTrackPlayerEvents, useProgress } from 'react-native-track-player';
 import { useEffect, useRef } from 'react';
 import { usePlayerStore } from '../stores/usePlayerStore';
+import { useSettingsStore } from '../stores/useSettingsStore';
 import { api } from './apiService';
 
 export async function PlaybackService() {
@@ -23,6 +24,15 @@ export async function PlaybackService() {
     }
   });
 
+  // Auto-advance: when queue ends, loop back to start if repeat is 'queue'
+  TrackPlayer.addEventListener(Event.PlaybackQueueEnded, async ({ position }) => {
+    const { repeatMode, queue } = usePlayerStore.getState();
+    if (repeatMode === 'queue' && queue.length > 0) {
+      await TrackPlayer.skip(0);
+      await TrackPlayer.play();
+    }
+  });
+
   // Surface playback errors — retry once, then stop to avoid silent garbage-audio loop
   const retried = new Set<string>();
   TrackPlayer.addEventListener(Event.PlaybackError, async ({ message, code }) => {
@@ -32,16 +42,19 @@ export async function PlaybackService() {
       const trackId = track?.id;
       if (trackId && !retried.has(trackId)) {
         retried.add(trackId);
-        // Wait briefly, then retry playback once
         await new Promise((r) => setTimeout(r, 1500));
         await TrackPlayer.retry();
       } else {
-        // Second failure — stop and clear to avoid garbage-audio loop
         await TrackPlayer.stop();
       }
     } catch {
       await TrackPlayer.stop().catch(() => {});
     }
+  });
+
+  // Clear retried set when track changes successfully (prevent unbounded growth)
+  TrackPlayer.addEventListener(Event.PlaybackActiveTrackChanged, () => {
+    if (retried.size > 50) retried.clear();
   });
 }
 
@@ -55,6 +68,9 @@ export async function setupPlayer() {
       backBuffer: 30,       // seconds to keep behind current position
       playBuffer: 2.5,      // seconds needed to resume after rebuffer
     });
+
+    // Default to 'off' — auto-advance through queue, stop at end
+    await TrackPlayer.setRepeatMode(RepeatMode.Off);
 
     await TrackPlayer.updateOptions({
       capabilities: [
@@ -91,8 +107,21 @@ export async function setupPlayer() {
  */
 export function useRNTPSync() {
   const { setIsPlaying, setProgress, setDuration, setCurrentTrackById } = usePlayerStore();
+  const setServerStatus = useSettingsStore((s) => s.setServerStatus);
   // Track the last scrobbled ID to avoid duplicate scrobbles on re-renders
   const lastScrobbledId = useRef<string | null>(null);
+  const pingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Global server health check — runs once, independent of tab navigation
+  useEffect(() => {
+    const checkServer = async () => {
+      const ok = await api.ping();
+      setServerStatus(ok ? 'connected' : 'disconnected');
+    };
+    checkServer();
+    pingRef.current = setInterval(checkServer, 60_000);
+    return () => { if (pingRef.current) clearInterval(pingRef.current); };
+  }, []);
 
   const progress = useProgress(500); // update every 500ms
 
@@ -106,7 +135,6 @@ export function useRNTPSync() {
     const { currentTrack } = usePlayerStore.getState();
     if (ratio >= 0.9 && currentTrack && lastScrobbledId.current !== `complete-${currentTrack.id}`) {
       lastScrobbledId.current = `complete-${currentTrack.id}`;
-      api.scrobble(currentTrack.id, 'complete');
       api.logPlay(currentTrack.id, 'complete');
     }
   }, [progress]);
@@ -123,7 +151,6 @@ export function useRNTPSync() {
       // Scrobble play event for new track (avoid duplicate on same track)
       if (lastScrobbledId.current !== `play-${trackId}`) {
         lastScrobbledId.current = `play-${trackId}`;
-        api.scrobble(trackId, 'play');
         api.logPlay(trackId, 'play');
       }
     }

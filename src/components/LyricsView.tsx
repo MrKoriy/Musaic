@@ -122,18 +122,33 @@ export function LyricsView({ trackId, artist, title, duration, progress, onSeek 
 
   // Trigger AI generation
   const handleGenerate = useCallback(async () => {
+    // Clear any existing poll before starting a new one
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     setPipelineError(null);
     setLoadState('generating');
+    let cancelled = false;
     try {
       await generateLyrics(trackId);
-      // Poll for completion
+      let pollCount = 0;
+      const maxPolls = 60; // 5 minutes max
       pollRef.current = setInterval(async () => {
+        if (cancelled) return;
+        pollCount++;
+        if (pollCount > maxPolls) {
+          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current = null;
+          setPipelineError('Generation timed out');
+          setLoadState('error');
+          return;
+        }
         try {
           const status: LyricsJobStatus = await getLyricsJobStatus(trackId);
+          if (cancelled) return;
           if (status.status === 'done') {
-            clearInterval(pollRef.current!);
-            // Reload lyrics from cache
+            if (pollRef.current) clearInterval(pollRef.current);
+            pollRef.current = null;
             const res = await getLyrics(trackId, { artist, title, duration });
+            if (cancelled) return;
             if (res.lrc) {
               const parsed = parseLrc(res.lrc);
               if (parsed.length > 0) {
@@ -148,7 +163,8 @@ export function LyricsView({ trackId, artist, title, duration, progress, onSeek 
               }
             }
           } else if (status.status === 'failed') {
-            clearInterval(pollRef.current!);
+            if (pollRef.current) clearInterval(pollRef.current);
+            pollRef.current = null;
             setPipelineError(status.error ?? 'Pipeline failed');
             setLoadState('error');
           }
@@ -161,10 +177,13 @@ export function LyricsView({ trackId, artist, title, duration, progress, onSeek 
       setPipelineError(msg);
       setLoadState('error');
     }
+    // Return cleanup via effect below
   }, [trackId, artist, title, duration]);
 
   useEffect(() => {
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    return () => {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    };
   }, []);
 
   // Save edited lyrics
@@ -197,7 +216,7 @@ export function LyricsView({ trackId, artist, title, duration, progress, onSeek 
         <ActivityIndicator color={Colors.accentPrimary} />
         <Text style={styles.statusText}>Transcribing lyrics with AI...</Text>
         <Text style={[styles.statusText, { fontSize: 12, marginTop: 4 }]}>
-          ~3-5 min • Demucs + Parakeet TDT v3
+          ~15-30 seconds
         </Text>
       </View>
     );

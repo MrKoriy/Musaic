@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, SafeAreaView,
   TouchableOpacity, Alert, ActivityIndicator,
@@ -14,9 +14,10 @@ import { TrackRow } from '../components/TrackRow';
 import { AlbumCard } from '../components/AlbumCard';
 import { ArtistCard } from '../components/ArtistCard';
 import { PlaylistCard } from '../components/PlaylistCard';
+import { PlaylistPicker } from '../components/PlaylistPicker';
 import { useLibraryStore } from '../stores/useLibraryStore';
 import { usePlayerStore } from '../stores/usePlayerStore';
-import { api, serverTrackToAppTrack } from '../services/apiService';
+import { api } from '../services/apiService';
 import { RootStackParamList, Track, Album, Artist, Playlist } from '../types';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
@@ -49,9 +50,10 @@ export function LibraryScreen() {
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [creatingPlaylist, setCreatingPlaylist] = useState(false);
 
-  const { likedTrackIds } = useLibraryStore();
-  const [likedTracks, setLikedTracks] = useState<Track[]>([]);
+  const { likedTrackIds, likedTracks: storedLikedTracks, toggleLike, isLiked } = useLibraryStore();
+  const [playlistPickerTrack, setPlaylistPickerTrack] = useState<Track | null>(null);
   const { currentTrack, isPlaying, setQueue, addToQueue } = usePlayerStore();
+  const scanPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadData = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -78,14 +80,7 @@ export function LibraryScreen() {
     if (!silent) setLoading(false);
   }, []);
 
-  const loadLiked = useCallback(async () => {
-    if (likedTrackIds.size === 0) { setLikedTracks([]); return; }
-    try {
-      const r = await api.getTracks({ source: 'local', limit: 500 });
-      const all = r.tracks.map(serverTrackToAppTrack);
-      setLikedTracks(all.filter((t) => likedTrackIds.has(t.id)));
-    } catch {}
-  }, [likedTrackIds]);
+  const likedTracks = storedLikedTracks.filter((t) => likedTrackIds.has(t.id));
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -93,8 +88,10 @@ export function LibraryScreen() {
     setRefreshing(false);
   }, [loadData]);
 
-  useEffect(() => { loadData(); }, []);
-  useEffect(() => { loadLiked(); }, [loadLiked]);
+  useEffect(() => {
+    loadData();
+    return () => { if (scanPollRef.current) clearInterval(scanPollRef.current); };
+  }, []);
 
   // ─── Sort helpers ─────────────────────────────────────────────────────────
   function sortedAlbums(): Album[] {
@@ -146,26 +143,29 @@ export function LibraryScreen() {
     setScanProgress('Starting scan…');
     try {
       await api.scanFolder(scanDir.trim());
-      const poll = setInterval(async () => {
+      if (scanPollRef.current) clearInterval(scanPollRef.current);
+      scanPollRef.current = setInterval(async () => {
         try {
           const status = await api.getScanStatus();
           if (status.scanning) {
             setScanProgress('Scanning…');
           } else {
-            clearInterval(poll);
+            if (scanPollRef.current) clearInterval(scanPollRef.current);
+            scanPollRef.current = null;
             setScanning(false);
             setScanProgress(null);
             setShowScanModal(false);
             loadData(true);
           }
         } catch {
-          clearInterval(poll);
+          if (scanPollRef.current) clearInterval(scanPollRef.current);
+          scanPollRef.current = null;
           setScanning(false);
           setScanProgress(null);
         }
       }, 1500);
     } catch (e: any) {
-      Alert.alert('Scan failed', e.message);
+      Alert.alert('Scan failed', e.message ?? String(e));
       setScanning(false);
       setScanProgress(null);
     }
@@ -331,9 +331,12 @@ export function LibraryScreen() {
                     index={i + 1}
                     isCurrent={currentTrack?.id === track.id}
                     isPlaying={isPlaying}
+                    isLiked={isLiked(track.id)}
                     showDownload
                     onPress={() => { setQueue(sortedLiked(), i); navigation.navigate('NowPlaying'); }}
+                    onLike={() => toggleLike(track.id, track)}
                     onAddToQueue={(t) => addToQueue(t)}
+                    onAddToPlaylist={(t) => setPlaylistPickerTrack(t)}
                   />
                 ))
               )
@@ -452,6 +455,13 @@ export function LibraryScreen() {
           </GlassCard>
         </View>
       </Modal>
+
+      {/* Playlist Picker */}
+      <PlaylistPicker
+        visible={!!playlistPickerTrack}
+        track={playlistPickerTrack}
+        onClose={() => setPlaylistPickerTrack(null)}
+      />
     </View>
   );
 }

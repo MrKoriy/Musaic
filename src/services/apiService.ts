@@ -1,40 +1,16 @@
 /**
- * API Service — HTTP client for the local Musaic Bun server.
+ * API Service — HTTP client for the Musaic server.
  *
- * URL resolution priority:
- *  1. User-configured IP (stored in MMKV)
- *  2. Auto-detected from Metro bundler scriptURL (LAN IP on physical device)
- *  3. Platform fallback (Android emulator / localhost)
+ * URL resolution: user-configured IP (MMKV) → production server fallback.
  */
-import { NativeModules, Platform } from 'react-native';
 import { MMKV } from 'react-native-mmkv';
 
 const storage = new MMKV({ id: 'musaic-settings' });
 const STORED_SERVER_URL_KEY = 'server_url';
-const PORT = 3001;
-
-function detectServerUrlAutomatic(): string {
-  if (__DEV__) {
-    // Metro bundler's scriptURL looks like "http://192.168.x.x:8081/index.bundle?..."
-    const scriptURL: string | undefined =
-      NativeModules?.SourceCode?.scriptURL ??
-      NativeModules?.SourceCode?.getConstants?.()?.scriptURL;
-    if (scriptURL) {
-      const match = scriptURL.match(/^https?:\/\/([^:\/]+)/);
-      if (match && match[1] !== 'localhost' && match[1] !== '127.0.0.1') {
-        return `http://${match[1]}:${PORT}`;
-      }
-    }
-  }
-  // Fallback: Android emulator uses 10.0.2.2 for host loopback
-  if (Platform.OS === 'android') return `http://10.0.2.2:${PORT}`;
-  return `http://localhost:${PORT}`;
-}
+const PRODUCTION_SERVER = 'http://45.146.167.109:3001';
 
 function detectServerUrl(): string {
-  const stored = storage.getString(STORED_SERVER_URL_KEY);
-  if (stored) return stored;
-  return detectServerUrlAutomatic();
+  return storage.getString(STORED_SERVER_URL_KEY) ?? PRODUCTION_SERVER;
 }
 
 export let SERVER_URL = detectServerUrl();
@@ -45,10 +21,10 @@ export function setServerUrl(url: string) {
   storage.set(STORED_SERVER_URL_KEY, SERVER_URL);
 }
 
-/** Clear the stored URL and fall back to auto-detection. */
+/** Clear the stored URL and reset to the production server. */
 export function clearServerUrl() {
   storage.delete(STORED_SERVER_URL_KEY);
-  SERVER_URL = detectServerUrlAutomatic();
+  SERVER_URL = PRODUCTION_SERVER;
 }
 
 /** Returns the user-stored server URL, or undefined if not configured. */
@@ -56,9 +32,22 @@ export function getStoredServerUrl(): string | undefined {
   return storage.getString(STORED_SERVER_URL_KEY);
 }
 
+/** Extract a human-readable error message from a failed response */
+async function extractError(method: string, path: string, res: Response): Promise<Error> {
+  let detail = '';
+  try {
+    const body = await res.json() as { error?: string; message?: string };
+    detail = body.error ?? body.message ?? '';
+  } catch {
+    try { detail = await res.text(); } catch {}
+  }
+  const msg = detail ? `${method} ${path} ${res.status}: ${detail}` : `${method} ${path} failed: ${res.status}`;
+  return new Error(msg);
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${SERVER_URL}${path}`);
-  if (!res.ok) throw new Error(`GET ${path} failed: ${res.status}`);
+  if (!res.ok) throw await extractError('GET', path, res);
   return res.json() as Promise<T>;
 }
 
@@ -68,13 +57,13 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`POST ${path} failed: ${res.status}`);
+  if (!res.ok) throw await extractError('POST', path, res);
   return res.json() as Promise<T>;
 }
 
 async function del<T>(path: string): Promise<T> {
   const res = await fetch(`${SERVER_URL}${path}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(`DELETE ${path} failed: ${res.status}`);
+  if (!res.ok) throw await extractError('DELETE', path, res);
   return res.json() as Promise<T>;
 }
 
@@ -84,7 +73,7 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`PATCH ${path} failed: ${res.status}`);
+  if (!res.ok) throw await extractError('PATCH', path, res);
   return res.json() as Promise<T>;
 }
 
@@ -101,6 +90,11 @@ export interface ServerTrack {
   local_path?: string;
   waveform_url?: string;
   metadata?: string; // JSON string
+  // camelCase variants returned by some endpoints (search)
+  coverUrl?: string;
+  streamUrl?: string;
+  localPath?: string;
+  waveformUrl?: string;
 }
 
 export interface ServerAlbum {
@@ -133,9 +127,10 @@ export const api = {
   /** Health check — returns true if server is reachable */
   async ping(): Promise<boolean> {
     try {
-      await fetch(`${SERVER_URL}/health`, { signal: AbortSignal.timeout(2000) });
+      await fetch(`${SERVER_URL}/health`, { signal: AbortSignal.timeout(5000) });
       return true;
-    } catch {
+    } catch (e) {
+      console.warn('[Musaic] ping failed:', SERVER_URL, e instanceof Error ? e.message : String(e));
       return false;
     }
   },
@@ -149,9 +144,9 @@ export const api = {
     return get<{ tracks: ServerTrack[] }>(`/api/tracks?${q}`);
   },
 
-  searchTracks(query: string, sources = 'local') {
+  searchTracks(query: string, sources = 'local', limit = 30, offset = 0) {
     return get<{ tracks: ServerTrack[]; bySource: Record<string, ServerTrack[]> }>(
-      `/api/search?q=${encodeURIComponent(query)}&sources=${sources}`
+      `/api/search?q=${encodeURIComponent(query)}&sources=${sources}&limit=${limit}&offset=${offset}`
     );
   },
 
@@ -282,9 +277,9 @@ export const api = {
     );
   },
 
-  getDailyMix() {
+  getDailyMix(refresh = false) {
     return get<{ name: string; tracks: ServerTrack[]; source: string; refreshAt: string }>(
-      '/api/recommendations/daily-mix'
+      `/api/recommendations/daily-mix${refresh ? '?refresh=1' : ''}`
     );
   },
 
@@ -316,11 +311,15 @@ export const api = {
     });
     const data = await res.json() as { ok?: boolean; error?: string; requires2FA?: boolean };
     if (!res.ok) {
-      const err = new Error(data.error ?? `VK login failed: ${res.status}`);
-      (err as any).requires2FA = data.requires2FA ?? false;
+      const err: Error & { requires2FA?: boolean } = new Error(data.error ?? `VK login failed: ${res.status}`);
+      err.requires2FA = data.requires2FA ?? false;
       throw err;
     }
     return { ok: true };
+  },
+
+  vkSetToken(token: string, username?: string) {
+    return post<{ ok: boolean }>('/api/vk/auth-token', { token, username });
   },
 
   vkLogout() {
@@ -407,11 +406,16 @@ function trackPlaybackUrl(track: ServerTrack): string {
   return `${SERVER_URL}/audio/local/${encodeURIComponent(track.id)}`;
 }
 
+/** Resolve a server-relative URL to absolute (http URLs pass through). */
+export function resolveServerUrl(url: string): string {
+  return url.startsWith('http') ? url : `${SERVER_URL}${url}`;
+}
+
 /** Resolve artwork URL (absolute SC URLs pass through; local paths get prefixed) */
 function resolveArtwork(track: ServerTrack): string | undefined {
-  if (!track.cover_url) return undefined;
-  if (track.cover_url.startsWith('http')) return track.cover_url;
-  return `${SERVER_URL}${track.cover_url}`;
+  const url = track.cover_url ?? track.coverUrl;
+  if (!url) return undefined;
+  return resolveServerUrl(url);
 }
 
 /** Convert a ServerTrack to a react-native-track-player Track shape */
@@ -519,6 +523,6 @@ async function put<T>(path: string, body: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`PUT ${path} failed: ${res.status}`);
+  if (!res.ok) throw await extractError('PUT', path, res);
   return res.json() as Promise<T>;
 }

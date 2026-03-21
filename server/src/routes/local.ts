@@ -323,6 +323,61 @@ playlistsRouter.delete("/:id/tracks/:trackId", (c) => {
   return c.json({ ok: true });
 });
 
+// ─── PATCH /api/playlists/:id — update name/description ──────────────────────
+
+playlistsRouter.patch("/:id", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json<{ name?: string; description?: string }>();
+  if (!body.name && body.description === undefined) {
+    return c.json({ error: "name or description required" }, 400);
+  }
+  const db = getDb();
+  const existing = db.prepare("SELECT id FROM playlists WHERE id = $id").get({ $id: id });
+  if (!existing) return c.json({ error: "Playlist not found" }, 404);
+
+  if (body.name?.trim()) {
+    db.prepare("UPDATE playlists SET name = $n, updated_at = unixepoch() WHERE id = $id")
+      .run({ $n: body.name.trim(), $id: id });
+  }
+  if (body.description !== undefined) {
+    db.prepare("UPDATE playlists SET description = $d, updated_at = unixepoch() WHERE id = $id")
+      .run({ $d: body.description, $id: id });
+  }
+  return c.json({ ok: true });
+});
+
+// ─── GET /api/playlists/:id/cover — 4-grid cover art URLs ────────────────────
+
+playlistsRouter.get("/:id/cover", (c) => {
+  const id = c.req.param("id");
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT t.cover_url FROM tracks t
+    JOIN playlist_tracks pt ON t.id = pt.track_id
+    WHERE pt.playlist_id = $pid AND t.cover_url IS NOT NULL
+    ORDER BY pt.position ASC
+    LIMIT 4
+  `).all({ $pid: id }) as { cover_url: string }[];
+
+  return c.json({ covers: rows.map((r) => r.cover_url) });
+});
+
+// ─── GET /api/playlists/:id — single playlist info ───────────────────────────
+
+playlistsRouter.get("/:id", (c) => {
+  const id = c.req.param("id");
+  const db = getDb();
+  const playlist = db.prepare(`
+    SELECT p.*, COUNT(pt.track_id) as track_count
+    FROM playlists p
+    LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
+    WHERE p.id = $id
+    GROUP BY p.id
+  `).get({ $id: id }) as Record<string, unknown> | null;
+  if (!playlist) return c.json({ error: "Not found" }, 404);
+  return c.json({ playlist });
+});
+
 // ─── Downloads Router ─────────────────────────────────────────────────────────
 
 export const downloadsRouter = new Hono();
@@ -378,7 +433,7 @@ downloadsRouter.get("/stream/:trackId", async (c) => {
       upstreamUrl = await getSoundCloudProvider().getStreamUrl(trackId);
     }
 
-    const upstream = await fetch(upstreamUrl);
+    const upstream = await fetch(upstreamUrl, { signal: AbortSignal.timeout(30_000) });
     if (!upstream.ok) {
       return c.json({ error: `Upstream fetch failed: ${upstream.status}` }, 502);
     }

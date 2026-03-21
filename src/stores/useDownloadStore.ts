@@ -46,11 +46,16 @@ interface DownloadStore {
   getLocalUri: (trackId: string) => string | undefined;
 }
 
+// Single global listener — store factory runs once (Zustand singleton)
+let _netInfoUnsub: (() => void) | null = null;
+
 export const useDownloadStore = create<DownloadStore>((set, get) => {
-  // Subscribe to network state changes
-  NetInfo.addEventListener((state) => {
-    set({ isOffline: !(state.isConnected ?? true) });
-  });
+  // Subscribe to network state changes (only once)
+  if (!_netInfoUnsub) {
+    _netInfoUnsub = NetInfo.addEventListener((state) => {
+      set({ isOffline: !(state.isConnected ?? true) });
+    });
+  }
 
   return {
     activeDownloads: {},

@@ -9,8 +9,7 @@
  * Quality: Opus 64kbps (free tier).
  */
 
-import { upsertTrack, setCachedVkUrl } from "../db/index.js";
-import { getDb } from "../db/index.js";
+import { upsertTrack, getDb } from "../db/index.js";
 import type { Track, TrackMeta, MusicProvider } from "../types.js";
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -39,24 +38,51 @@ let _clientId: string | null = null;
 let _clientIdFetchedAt = 0;
 const CLIENT_ID_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
+// Deduplicated patterns for client_id across SC bundle versions (with g flag for matchAll)
+const CLIENT_ID_PATTERNS: RegExp[] = [
+  /[{,]\s*client_id\s*:\s*"([a-zA-Z0-9]{20,40})"/g,
+  /\bclient_id=([a-zA-Z0-9]{20,40})\b/g,
+];
+
+function extractClientIdFromJs(js: string): string | null {
+  for (const pattern of CLIENT_ID_PATTERNS) {
+    pattern.lastIndex = 0;
+    const matches = js.matchAll(pattern);
+    for (const match of matches) {
+      const id = match[1];
+      if (id && id.length >= 20) return id;
+    }
+  }
+  return null;
+}
+
 /**
  * Extract client_id from SoundCloud's web app JS bundle.
  * SC embeds the client_id as a constant in their main script.
+ * Checks all app scripts (not just last 6) for reliability.
  */
 async function extractClientId(): Promise<string> {
   console.log("[SC] Extracting client_id from soundcloud.com...");
 
-  // Fetch the main SoundCloud page
   const pageRes = await fetch(SC_WEB_URL, {
     headers: {
       "User-Agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      Accept: "text/html,application/xhtml+xml",
     },
+    signal: AbortSignal.timeout(10_000),
   });
   if (!pageRes.ok) throw new Error(`SC page fetch failed: ${pageRes.status}`);
   const html = await pageRes.text();
 
-  // Find script tags pointing to the main app bundle
+  // Inline script check — sometimes client_id appears in inline config
+  const inlineId = extractClientIdFromJs(html);
+  if (inlineId) {
+    console.log(`[SC] Found client_id inline: ${inlineId.substring(0, 8)}...`);
+    return inlineId;
+  }
+
+  // Find all script tags pointing to sndcdn assets
   const scriptMatches = html.matchAll(/<script[^>]+src="(https:\/\/a-v2\.sndcdn\.com\/assets\/[^"]+\.js)"/g);
   const scriptUrls: string[] = [];
   for (const m of scriptMatches) {
@@ -67,29 +93,29 @@ async function extractClientId(): Promise<string> {
     throw new Error("SC: could not find app scripts in HTML");
   }
 
-  // Search in the last few scripts (client_id is usually in a small config script)
-  const scriptsToCheck = scriptUrls.slice(-6);
-  for (const scriptUrl of scriptsToCheck) {
+  // Check scripts in a smarter order: last 3, first 3, then the rest
+  const prioritized = [
+    ...scriptUrls.slice(-4),
+    ...scriptUrls.slice(0, 3),
+    ...scriptUrls.slice(3, -4),
+  ];
+  const unique = [...new Set(prioritized)];
+
+  for (const scriptUrl of unique) {
     try {
       const res = await fetch(scriptUrl, {
-        headers: { "User-Agent": "Mozilla/5.0" },
+        headers: {
+          "User-Agent": "Mozilla/5.0",
+          Referer: "https://soundcloud.com/",
+        },
+        signal: AbortSignal.timeout(8000),
       });
       if (!res.ok) continue;
       const js = await res.text();
-
-      // Common patterns for client_id in SC bundle
-      const patterns = [
-        /client_id:"([a-zA-Z0-9]{32})"/,
-        /client_id:"([a-zA-Z0-9]{20,40})"/,
-        /"client_id":"([a-zA-Z0-9]{20,40})"/,
-        /\bclient_id=([a-zA-Z0-9]{20,40})\b/,
-      ];
-      for (const pattern of patterns) {
-        const match = js.match(pattern);
-        if (match?.[1]) {
-          console.log(`[SC] Extracted client_id: ${match[1].substring(0, 8)}...`);
-          return match[1];
-        }
+      const id = extractClientIdFromJs(js);
+      if (id) {
+        console.log(`[SC] Extracted client_id: ${id.substring(0, 8)}... from ${scriptUrl.split("/").pop()}`);
+        return id;
       }
     } catch {
       // continue trying other scripts
@@ -168,6 +194,25 @@ function scTrackToTrack(track: SCTrack): Track {
   };
 }
 
+/** Batch-upsert SC tracks into the DB inside a single transaction. */
+function cacheSCTracks(tracks: Track[]): void {
+  const db = getDb();
+  db.transaction(() => {
+    for (const t of tracks) {
+      upsertTrack({
+        id: t.id,
+        source: "soundcloud",
+        title: t.title,
+        artist: t.artist,
+        duration: t.duration,
+        cover_url: t.coverUrl,
+        waveform_url: t.waveformUrl,
+        metadata: t.metadata,
+      });
+    }
+  })();
+}
+
 // ─── Provider ────────────────────────────────────────────────────────────────
 
 export class SoundCloudProvider implements MusicProvider {
@@ -194,6 +239,7 @@ export class SoundCloudProvider implements MusicProvider {
         Origin: "https://soundcloud.com",
         Referer: "https://soundcloud.com/",
       },
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (res.status === 401 && !retried) {
@@ -209,30 +255,18 @@ export class SoundCloudProvider implements MusicProvider {
     return res.json() as Promise<T>;
   }
 
-  async search(query: string): Promise<Track[]> {
+  async search(query: string, limit = 30, offset = 0): Promise<Track[]> {
     const result = await this.apiGet<{ collection: SCTrack[] }>("/search/tracks", {
       q: query,
-      limit: 30,
-      offset: 0,
+      limit,
+      offset,
       linked_partitioning: 1,
     });
     const tracks = result.collection
-      .filter((t) => t.streamable)
+      .filter((t) => t.streamable && t.duration > 45000) // skip 30-sec previews
       .map(scTrackToTrack);
 
-    // Cache in DB
-    for (const t of tracks) {
-      upsertTrack({
-        id: t.id,
-        source: "soundcloud",
-        title: t.title,
-        artist: t.artist,
-        duration: t.duration,
-        cover_url: t.coverUrl,
-        waveform_url: t.waveformUrl,
-        metadata: t.metadata,
-      });
-    }
+    cacheSCTracks(tracks);
     return tracks;
   }
 
@@ -270,6 +304,7 @@ export class SoundCloudProvider implements MusicProvider {
           "User-Agent": "Mozilla/5.0",
           Origin: "https://soundcloud.com",
         },
+        signal: AbortSignal.timeout(10_000),
       }
     );
     if (!resolveRes.ok) {
@@ -327,7 +362,7 @@ export class SoundCloudProvider implements MusicProvider {
         limit: 50,
         linked_partitioning: 1,
       });
-      return result.collection.filter((t) => t.streamable).map(scTrackToTrack);
+      return result.collection.filter((t) => t.streamable && t.duration > 45000).map(scTrackToTrack);
     } catch {
       // Resolve username to user object first
       const user = await this.apiGet<{ id: number }>("/resolve", {
@@ -337,7 +372,7 @@ export class SoundCloudProvider implements MusicProvider {
         `/users/${user.id}/tracks`,
         { limit: 50 }
       );
-      return result.collection.filter((t) => t.streamable).map(scTrackToTrack);
+      return result.collection.filter((t) => t.streamable && t.duration > 45000).map(scTrackToTrack);
     }
   }
 
@@ -360,10 +395,54 @@ export class SoundCloudProvider implements MusicProvider {
       return [];
     }
 
-    const res = await fetch(waveformUrl);
+    const res = await fetch(waveformUrl, { signal: AbortSignal.timeout(8_000) });
     if (!res.ok) return [];
     const data = (await res.json()) as { samples: number[]; width?: number; height?: number };
     return data.samples ?? [];
+  }
+
+  /**
+   * Get trending/charts tracks.
+   * kind: 'trending' | 'top'
+   * genre: e.g. 'soundcloud:genres:all-music', 'soundcloud:genres:electronic', etc.
+   */
+  async getCharts(kind: "trending" | "top" = "trending", genre = "soundcloud:genres:all-music", limit = 20): Promise<Track[]> {
+    const result = await this.apiGet<{ collection: Array<{ track: SCTrack }> }>("/charts", {
+      kind,
+      genre,
+      limit,
+      linked_partitioning: 1,
+    });
+    const tracks = result.collection
+      .map((item) => item.track)
+      .filter((t) => t.streamable && t.duration > 45000)
+      .map(scTrackToTrack);
+
+    cacheSCTracks(tracks);
+    return tracks;
+  }
+
+  /**
+   * Get a user's liked tracks.
+   * userId can be a numeric ID or username.
+   */
+  async getUserLikes(userId: string, limit = 50): Promise<Track[]> {
+    const isNumeric = /^\d+$/.test(userId);
+    let numericId = userId;
+    if (!isNumeric) {
+      // Resolve username to numeric user ID
+      const user = await this.apiGet<{ id: number }>("/resolve", {
+        url: `https://soundcloud.com/${userId}`,
+      });
+      numericId = String(user.id);
+    }
+    const result = await this.apiGet<{ collection: SCTrack[] }>(`/users/${numericId}/likes/tracks`, {
+      limit,
+      linked_partitioning: 1,
+    });
+    const tracks = result.collection.filter((t) => t.streamable && t.duration > 45000).map(scTrackToTrack);
+    cacheSCTracks(tracks);
+    return tracks;
   }
 
   /** Refresh client_id manually */

@@ -58,6 +58,14 @@ interface CacheEntry {
 const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 10 * 60_000; // 10 minutes
 
+// Periodic cleanup of expired entries to prevent unbounded growth
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of cache) {
+    if (now > entry.expiry) cache.delete(key);
+  }
+}, 60_000);
+
 export function getCached<T>(key: string): T | null {
   const entry = cache.get(key);
   if (!entry) return null;
@@ -70,6 +78,10 @@ export function getCached<T>(key: string): T | null {
 
 export function setCached(key: string, data: unknown, ttlMs = CACHE_TTL_MS): void {
   cache.set(key, { data, expiry: Date.now() + ttlMs });
+}
+
+export function clearCached(key: string): void {
+  cache.delete(key);
 }
 
 // ─── Taste engine ─────────────────────────────────────────────────────────────
@@ -281,14 +293,22 @@ export function buildDailyMix(
  */
 export function getTracksByMood(mood: string, limit = 20): Record<string, unknown>[] {
   const db = getDb();
-  return db.prepare(`
+  const results = db.prepare(`
     SELECT * FROM tracks
     WHERE lower(mood) LIKE lower($mood)
        OR lower(genre) LIKE lower($mood)
        OR lower(title) LIKE lower($mood)
+       OR lower(artist) LIKE lower($mood)
+       OR lower(album) LIKE lower($mood)
     ORDER BY RANDOM()
     LIMIT $limit
   `).all({ $mood: `%${mood}%`, $limit: limit }) as Record<string, unknown>[];
+
+  if (results.length === 0) {
+    return db.prepare(`SELECT * FROM tracks ORDER BY RANDOM() LIMIT $limit`)
+      .all({ $limit: limit }) as Record<string, unknown>[];
+  }
+  return results;
 }
 
 function shuffled<T>(arr: T[]): T[] {

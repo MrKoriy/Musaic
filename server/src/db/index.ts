@@ -106,6 +106,12 @@ function initSchema(db: Database): void {
       INSERT INTO tracks_fts(rowid, title, artist, album)
         VALUES (new.rowid, new.title, new.artist, COALESCE(new.album, ''));
     END;
+
+    -- Performance indexes for hot query paths
+    CREATE INDEX IF NOT EXISTS idx_lh_action_played_at ON listening_history(action, played_at);
+    CREATE INDEX IF NOT EXISTS idx_lh_track_id ON listening_history(track_id);
+    CREATE INDEX IF NOT EXISTS idx_tracks_source ON tracks(source);
+    CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);
   `);
 }
 
@@ -207,6 +213,11 @@ export function setVkConfig(config: { username?: string; token?: string; tokenEx
   });
 }
 
+export function clearVkConfig(): void {
+  const db = getDb();
+  db.prepare("DELETE FROM vk_config WHERE id = 1").run();
+}
+
 // Listening history
 export function logListening(trackId: string, action: string): void {
   const db = getDb();
@@ -272,18 +283,24 @@ export function getPlaylistTracks(playlistId: string): Record<string, unknown>[]
 
 export function addTrackToPlaylist(playlistId: string, trackId: string, position: number): void {
   const db = getDb();
-  db.prepare(`
-    INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position)
-    VALUES ($pid, $tid, $pos)
-  `).run({ $pid: playlistId, $tid: trackId, $pos: position });
-  db.prepare("UPDATE playlists SET updated_at = unixepoch() WHERE id = $id")
-    .run({ $id: playlistId });
+  db.transaction(() => {
+    db.prepare(`
+      INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position)
+      VALUES ($pid, $tid, $pos)
+    `).run({ $pid: playlistId, $tid: trackId, $pos: position });
+    db.prepare("UPDATE playlists SET updated_at = unixepoch() WHERE id = $id")
+      .run({ $id: playlistId });
+  })();
 }
 
 export function removeTrackFromPlaylist(playlistId: string, trackId: string): void {
   const db = getDb();
-  db.prepare("DELETE FROM playlist_tracks WHERE playlist_id = $pid AND track_id = $tid")
-    .run({ $pid: playlistId, $tid: trackId });
+  db.transaction(() => {
+    db.prepare("DELETE FROM playlist_tracks WHERE playlist_id = $pid AND track_id = $tid")
+      .run({ $pid: playlistId, $tid: trackId });
+    db.prepare("UPDATE playlists SET updated_at = unixepoch() WHERE id = $id")
+      .run({ $id: playlistId });
+  })();
 }
 
 // Lyrics cache

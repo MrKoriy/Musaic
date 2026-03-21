@@ -170,7 +170,7 @@ export async function downloadTrack(
 
   // Get actual file size
   const fileInfo = await FileSystem.getInfoAsync(result.uri);
-  const fileSize = (fileInfo as any).size ?? 0;
+  const fileSize = fileInfo.exists && 'size' in fileInfo ? (fileInfo.size ?? 0) : 0;
 
   // Persist to SQLite
   const db = getDb();

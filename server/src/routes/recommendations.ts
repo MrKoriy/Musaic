@@ -19,6 +19,7 @@ import {
   getTracksByMood,
   getCached,
   setCached,
+  clearCached,
 } from "../providers/taste-engine.js";
 
 const LASTFM_BASE = "https://ws.audioscrobbler.com/2.0/";
@@ -161,8 +162,11 @@ recommendationsRouter.get("/home", async (c) => {
  * Time-of-day aware playlist blending favorites + discovery.
  */
 recommendationsRouter.get("/daily-mix", async (c) => {
-  const cached = getCached<unknown>("daily-mix");
-  if (cached) return c.json(cached);
+  const refresh = c.req.query("refresh") === "1";
+  if (!refresh) {
+    const cached = getCached<unknown>("daily-mix");
+    if (cached) return c.json(cached);
+  }
 
   const profile = buildWeightedProfile();
   const topArtistNames = profile.topArtists.slice(0, 8).map((a) => a.artist);
@@ -379,9 +383,9 @@ recommendationsRouter.post("/scrobble", async (c) => {
   } catch { /* column may not exist yet */ }
 
   // Invalidate caches
-  setCached("home", null as any, 0);
-  setCached("taste-profile", null as any, 0);
-  setCached("daily-mix", null as any, 0);
+  clearCached("home");
+  clearCached("taste-profile");
+  clearCached("daily-mix");
 
   return c.json({ ok: true });
 });

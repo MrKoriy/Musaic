@@ -15,12 +15,17 @@ import {
 } from 'react-native';
 import {
   User, Server, Check, X, Wifi, Radio, HardDrive, Trash2,
-  Music2, Settings, ChevronRight, Bug,
-  Key, Volume2, Sliders, LogIn, LogOut, List, Download,
+  Music2, Settings, ChevronRight, Bug, BarChart2,
+  Key, Volume2, Sliders, LogIn, LogOut, List, Download, Globe,
 } from 'lucide-react-native';
+import { useNavigation } from '@react-navigation/native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { RootStackParamList } from '../types';
+import { EqualizerSheet } from '../components/EqualizerSheet';
 import { Colors, Spacing, Typography, Radius } from '../theme';
 import { GlassCard } from '../components/GlassCard';
 import { SERVER_URL, setServerUrl, clearServerUrl, getStoredServerUrl, api } from '../services/apiService';
+import { loginWithVKOAuth } from '../hooks/useVKAuth';
 import { useSettingsStore, StreamQuality } from '../stores/useSettingsStore';
 import * as FileSystem from 'expo-file-system/legacy';
 
@@ -68,6 +73,8 @@ function RowItem({
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export function ProfileScreen() {
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const [showEqualizer, setShowEqualizer] = useState(false);
   const [serverDraft, setServerDraft] = useState('');
   const [editingServer, setEditingServer] = useState(false);
   const [testingConnection, setTestingConnection] = useState(false);
@@ -155,6 +162,24 @@ export function ProfileScreen() {
     checkVkStatus();
   }, [checkVkStatus]);
 
+  const doVkOAuthLogin = useCallback(async () => {
+    setVkLoggingIn(true);
+    try {
+      await loginWithVKOAuth();
+      const status = await api.vkMe();
+      setVkAuth(status.authenticated, status.username);
+      if (status.authenticated) {
+        Alert.alert('Connected', 'VK account connected.');
+      }
+    } catch (e: any) {
+      if (e.message !== 'VK login was cancelled') {
+        Alert.alert('Error', e.message ?? String(e));
+      }
+    } finally {
+      setVkLoggingIn(false);
+    }
+  }, [setVkAuth]);
+
   const doVkLogin = useCallback(async () => {
     if (!vkUsername.trim() || !vkPassword.trim()) {
       Alert.alert('Missing fields', 'Enter your VK username and password.');
@@ -168,7 +193,7 @@ export function ProfileScreen() {
       setVkPassword('');
       Alert.alert('Connected', 'VK account connected.');
     } catch (e: any) {
-      if ((e as any).requires2FA) {
+      if (e && typeof e === 'object' && 'requires2FA' in e && e.requires2FA) {
         const urlMatch = (e.message ?? '').match(/Open: (https?:\/\/\S+)/);
         Alert.alert(
           '2FA Required',
@@ -182,7 +207,7 @@ export function ProfileScreen() {
     } finally {
       setVkLoggingIn(false);
     }
-  }, [vkUsername, vkPassword]);
+  }, [vkUsername, vkPassword, setVkAuth]);
 
   const doVkLogout = useCallback(() => {
     Alert.alert('Disconnect VK', 'Remove VK account?', [
@@ -286,65 +311,6 @@ export function ProfileScreen() {
         >
           <Text style={styles.heading}>Settings</Text>
 
-          {/* ── Server Connection ── */}
-          <SectionLabel label="Server" />
-
-          <GlassCard style={styles.serverCard}>
-            <View style={styles.serverHeader}>
-              <Server size={18} color={Colors.accentPrimary} />
-              <Text style={styles.serverTitle}>Mac Server</Text>
-              <View style={styles.serverBadgeRow}>
-                {connectionOk === true && (
-                  <View style={[styles.statusDot, { backgroundColor: Colors.accentGreen }]} />
-                )}
-                {connectionOk === false && (
-                  <View style={[styles.statusDot, { backgroundColor: Colors.accentPrimary }]} />
-                )}
-                {isCustom && (
-                  <TouchableOpacity onPress={resetServer} style={styles.badgeBtn}>
-                    <Text style={styles.badgeBtnText}>Reset</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            </View>
-
-            {editingServer ? (
-              <View style={styles.inputRow}>
-                <TextInput
-                  style={styles.input}
-                  value={serverDraft}
-                  onChangeText={setServerDraft}
-                  placeholder="192.168.x.x:3001"
-                  placeholderTextColor={Colors.textTertiary}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  keyboardType="url"
-                  returnKeyType="done"
-                  onSubmitEditing={saveServer}
-                  autoFocus
-                />
-                <TouchableOpacity onPress={saveServer} style={styles.iconBtn}>
-                  <Check size={16} color={Colors.accentGreen} />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => setEditingServer(false)} style={styles.iconBtn}>
-                  <X size={16} color={Colors.textSecondary} />
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <TouchableOpacity onPress={startEditingServer} style={styles.urlRow}>
-                <Text style={styles.urlText} numberOfLines={1}>{currentUrl}</Text>
-                {isCustom && <View style={styles.customBadge}><Text style={styles.customBadgeText}>Custom</Text></View>}
-              </TouchableOpacity>
-            )}
-
-            <TouchableOpacity onPress={testConnection} style={styles.testBtn} disabled={testingConnection}>
-              <Wifi size={14} color={Colors.textSecondary} />
-              <Text style={styles.testBtnText}>
-                {testingConnection ? 'Testing…' : connectionOk === true ? 'Connected' : connectionOk === false ? 'Failed' : 'Test Connection'}
-              </Text>
-            </TouchableOpacity>
-          </GlassCard>
-
           {/* ── Music Sources ── */}
           <SectionLabel label="Music Sources" />
 
@@ -431,10 +397,31 @@ export function ProfileScreen() {
                     <Text style={styles.hint}>Credentials are sent to your local server only.</Text>
                   </>
                 ) : (
-                  <TouchableOpacity onPress={() => setShowVkLogin(true)} style={[styles.testBtn, { marginTop: 0 }]}>
-                    <LogIn size={14} color={Colors.accentPurple} />
-                    <Text style={[styles.testBtnText, { color: Colors.accentPurple }]}>Login with VK</Text>
-                  </TouchableOpacity>
+                  <View style={{ gap: Spacing.sm }}>
+                    <TouchableOpacity
+                      onPress={doVkOAuthLogin}
+                      style={[styles.testBtn, { marginTop: 0 }]}
+                      disabled={vkLoggingIn}
+                    >
+                      {vkLoggingIn ? (
+                        <ActivityIndicator size="small" color={Colors.accentPurple} />
+                      ) : (
+                        <>
+                          <Globe size={14} color={Colors.accentPurple} />
+                          <Text style={[styles.testBtnText, { color: Colors.accentPurple }]}>Login via Browser</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                    {vkLoggingIn && (
+                      <Text style={styles.hint}>Waiting for authorization... Return here after logging in.</Text>
+                    )}
+                    {!vkLoggingIn && (
+                      <TouchableOpacity onPress={() => setShowVkLogin(true)} style={styles.testBtn}>
+                        <LogIn size={14} color={Colors.textTertiary} />
+                        <Text style={[styles.testBtnText, { color: Colors.textTertiary }]}>Login with password</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 )}
               </GlassCard>
 
@@ -496,6 +483,23 @@ export function ProfileScreen() {
               </TouchableOpacity>
             ))}
           </GlassCard>
+
+          {/* ── Tools ── */}
+          <SectionLabel label="Tools" />
+
+          <RowItem
+            icon={BarChart2}
+            label="Your Stats"
+            onPress={() => navigation.navigate('Stats')}
+            iconColor={Colors.accentPurple}
+          />
+          <View style={{ height: Spacing.sm }} />
+          <RowItem
+            icon={Sliders}
+            label="Equalizer"
+            onPress={() => setShowEqualizer(true)}
+            iconColor={Colors.accentPrimary}
+          />
 
           {/* ── Playback ── */}
           <SectionLabel label="Playback" />
@@ -562,6 +566,65 @@ export function ProfileScreen() {
             danger
           />
 
+          {/* ── Server Connection ── */}
+          <SectionLabel label="Server" />
+
+          <GlassCard style={styles.serverCard}>
+            <View style={styles.serverHeader}>
+              <Server size={18} color={Colors.accentPrimary} />
+              <Text style={styles.serverTitle}>Mac Server</Text>
+              <View style={styles.serverBadgeRow}>
+                {connectionOk === true && (
+                  <View style={[styles.statusDot, { backgroundColor: Colors.accentGreen }]} />
+                )}
+                {connectionOk === false && (
+                  <View style={[styles.statusDot, { backgroundColor: Colors.accentPrimary }]} />
+                )}
+                {isCustom && (
+                  <TouchableOpacity onPress={resetServer} style={styles.badgeBtn}>
+                    <Text style={styles.badgeBtnText}>Reset</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+
+            {editingServer ? (
+              <View style={styles.inputRow}>
+                <TextInput
+                  style={styles.input}
+                  value={serverDraft}
+                  onChangeText={setServerDraft}
+                  placeholder="192.168.x.x:3001"
+                  placeholderTextColor={Colors.textTertiary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="url"
+                  returnKeyType="done"
+                  onSubmitEditing={saveServer}
+                  autoFocus
+                />
+                <TouchableOpacity onPress={saveServer} style={styles.iconBtn}>
+                  <Check size={16} color={Colors.accentGreen} />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setEditingServer(false)} style={styles.iconBtn}>
+                  <X size={16} color={Colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity onPress={startEditingServer} style={styles.urlRow}>
+                <Text style={styles.urlText} numberOfLines={1}>{currentUrl}</Text>
+                {isCustom && <View style={styles.customBadge}><Text style={styles.customBadgeText}>Custom</Text></View>}
+              </TouchableOpacity>
+            )}
+
+            <TouchableOpacity onPress={testConnection} style={styles.testBtn} disabled={testingConnection}>
+              <Wifi size={14} color={Colors.textSecondary} />
+              <Text style={styles.testBtnText}>
+                {testingConnection ? 'Testing…' : connectionOk === true ? 'Connected' : connectionOk === false ? 'Failed' : 'Test Connection'}
+              </Text>
+            </TouchableOpacity>
+          </GlassCard>
+
           {/* ── About ── */}
           <SectionLabel label="About" />
 
@@ -574,6 +637,7 @@ export function ProfileScreen() {
           </GlassCard>
         </ScrollView>
       </SafeAreaView>
+      <EqualizerSheet visible={showEqualizer} onClose={() => setShowEqualizer(false)} />
     </KeyboardAvoidingView>
   );
 }

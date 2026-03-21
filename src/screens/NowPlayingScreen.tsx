@@ -5,33 +5,27 @@ import {
 } from 'react-native';
 import {
   ChevronDown, Play, Pause, SkipBack, SkipForward,
-  Shuffle, Repeat, Repeat1, AlignJustify, Mic2, Sparkles, Disc3,
-  ImagePlay, Volume2, SlidersHorizontal, Moon, Share2,
+  Shuffle, Repeat, Repeat1, AlignJustify, Mic2, Moon,
 } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Typography, Radius } from '../theme';
+import { GlassCard } from '../components/GlassCard';
 import { HeartButton } from '../components/HeartButton';
 import { WaveformBar } from '../components/WaveformBar';
 import { LyricsView } from '../components/LyricsView';
 import { QueueSheet } from '../components/QueueSheet';
 import { AlbumArtCarousel } from '../components/AlbumArtCarousel';
-import { VinylAnimation } from '../components/VinylAnimation';
 import { usePlayerStore } from '../stores/usePlayerStore';
 import { useLibraryStore } from '../stores/useLibraryStore';
-import { MoreLikeThisModal } from '../components/MoreLikeThisModal';
-import { EqualizerSheet } from '../components/EqualizerSheet';
-import { SleepTimerSheet } from '../components/SleepTimerSheet';
-import { useAudioStore } from '../stores/useAudioStore';
 import { formatDuration } from '../data/mockData';
 import TrackPlayer from 'react-native-track-player';
 import { haptics } from '../utils/haptics';
-import { shareTrack } from '../utils/share';
 
 const { width: W, height: H } = Dimensions.get('window');
-const ART_SIZE = W - Spacing.xl * 4;
+const ART_SIZE = Math.min(W - 48, 380);
 const DISMISS_THRESHOLD = 80;
 
 function formatSleepCountdown(ms: number): string {
@@ -46,18 +40,12 @@ export function NowPlayingScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const [showLyrics, setShowLyrics] = useState(false);
-  const [showMoreLikeThis, setShowMoreLikeThis] = useState(false);
   const [showQueue, setShowQueue] = useState(false);
-  const [showEqualizer, setShowEqualizer] = useState(false);
-  const [showSleepTimer, setShowSleepTimer] = useState(false);
-  const [vinylMode, setVinylMode] = useState(false);
-  const [, forceUpdate] = useState(0);
-  const [volume, setVolume] = useState(1);
-  const { eqEnabled } = useAudioStore();
+  const [sleepRemaining, setSleepRemaining] = useState(0);
 
   const {
     currentTrack, isPlaying, progress, duration,
-    setIsPlaying, skipNext, skipPrevious, seekTo,
+    togglePlayPause, skipNext, skipPrevious, seekTo,
     repeatMode, isShuffled, toggleRepeat, toggleShuffle,
     sleepTimerEndsAt, setSleepTimer,
   } = usePlayerStore();
@@ -94,11 +82,11 @@ export function NowPlayingScreen() {
   ).current;
 
   // ── Art scale (play/pause) ─────────────────────────────────────────
-  const artScale = useRef(new Animated.Value(isPlaying ? 1 : 0.92)).current;
+  const artScale = useRef(new Animated.Value(isPlaying ? 1 : 0.90)).current;
 
   useEffect(() => {
     Animated.spring(artScale, {
-      toValue: isPlaying ? 1 : 0.92,
+      toValue: isPlaying ? 1 : 0.90,
       useNativeDriver: true,
       stiffness: 200,
       damping: 20,
@@ -107,30 +95,35 @@ export function NowPlayingScreen() {
 
   // ── Sleep timer tick ──────────────────────────────────────────────
   useEffect(() => {
-    if (!sleepTimerEndsAt) return;
+    if (!sleepTimerEndsAt) {
+      setSleepRemaining(0);
+      return;
+    }
+
+    setSleepRemaining(Math.max(0, sleepTimerEndsAt - Date.now()));
 
     const interval = setInterval(() => {
       const remaining = sleepTimerEndsAt - Date.now();
-
-      // Force countdown re-render
-      forceUpdate((n) => n + 1);
+      setSleepRemaining(Math.max(0, remaining));
 
       if (remaining <= 0) {
-        // Timer expired — stop playback and clear
         TrackPlayer.pause().catch(() => {});
+        TrackPlayer.setVolume(1).catch(() => {});
         setSleepTimer(null);
         clearInterval(interval);
         return;
       }
 
-      // Fade out in last 30 seconds
       if (remaining <= 30000) {
         const vol = Math.max(0, remaining / 30000);
         TrackPlayer.setVolume(vol).catch(() => {});
       }
     }, 1000);
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      TrackPlayer.setVolume(1).catch(() => {});
+    };
   }, [sleepTimerEndsAt, setSleepTimer]);
 
   // ── Draggable progress bar ─────────────────────────────────────────
@@ -155,27 +148,6 @@ export function NowPlayingScreen() {
       },
       onPanResponderRelease: () => {
         isDraggingProgress.current = false;
-      },
-    }),
-  ).current;
-
-  // ── Volume control ─────────────────────────────────────────────────
-  const volumeBarWidth = useRef(W - Spacing.xl * 4);
-
-  const volumePan = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onPanResponderGrant: (e) => {
-        const x = e.nativeEvent.locationX;
-        const newVol = Math.max(0, Math.min(1, x / volumeBarWidth.current));
-        setVolume(newVol);
-        TrackPlayer.setVolume(newVol).catch(() => {});
-      },
-      onPanResponderMove: (e) => {
-        const x = e.nativeEvent.locationX;
-        const newVol = Math.max(0, Math.min(1, x / volumeBarWidth.current));
-        setVolume(newVol);
-        TrackPlayer.setVolume(newVol).catch(() => {});
       },
     }),
   ).current;
@@ -220,70 +192,54 @@ export function NowPlayingScreen() {
 
       {/* Ambient gradient from album art */}
       <LinearGradient
-        colors={[artColor + 'CC', Colors.bgPrimary]}
+        colors={[artColor + 'AA', 'rgba(13,13,20,0.85)']}
         style={StyleSheet.absoluteFill}
         start={{ x: 0.5, y: 0 }}
-        end={{ x: 0.5, y: 0.55 }}
+        end={{ x: 0.5, y: 0.5 }}
       />
+      {/* Blur overlay for glass effect */}
+      <BlurView intensity={60} tint="dark" style={StyleSheet.absoluteFill} />
       <LinearGradient
-        colors={['transparent', 'rgba(233, 30, 140, 0.06)']}
-        style={[StyleSheet.absoluteFill, { top: '55%' }]}
+        colors={['transparent', 'rgba(233, 30, 140, 0.04)']}
+        style={[StyleSheet.absoluteFill, { top: '60%' }]}
       />
 
       <View style={{ paddingTop: insets.top, flex: 1, paddingHorizontal: Spacing.xl }}>
         {/* Header — drag handle for dismiss */}
         <View {...dismissPan.panHandlers} style={styles.header}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBtn}>
-            <ChevronDown size={28} color={Colors.textSecondary} />
+            <ChevronDown size={28} color="rgba(255,255,255,0.7)" />
           </TouchableOpacity>
           <View style={styles.headerCenter}>
             <Text style={styles.headerLabel}>NOW PLAYING</Text>
-            {sleepTimerEndsAt && (
+            {sleepTimerEndsAt && sleepRemaining > 0 && (
               <View style={styles.sleepCountdown}>
                 <Moon size={10} color={Colors.accentPurple} />
                 <Text style={styles.sleepCountdownText}>
-                  {formatSleepCountdown(sleepTimerEndsAt - Date.now())}
+                  {formatSleepCountdown(sleepRemaining)}
                 </Text>
               </View>
             )}
           </View>
-          {/* Art / Vinyl toggle */}
-          <TouchableOpacity
-            style={styles.headerBtn}
-            onPress={() => setVinylMode((v) => !v)}
-          >
-            {vinylMode ? (
-              <ImagePlay size={20} color={Colors.textSecondary} />
-            ) : (
-              <Disc3 size={20} color={Colors.textSecondary} />
-            )}
+          <TouchableOpacity style={styles.headerBtn} onPress={() => setShowQueue(true)}>
+            <AlignJustify size={22} color="rgba(255,255,255,0.7)" />
           </TouchableOpacity>
         </View>
 
-        {/* Album Art / Vinyl */}
+        {/* Album Art — larger */}
         <View style={styles.artContainer}>
-          {vinylMode ? (
-            <VinylAnimation
+          <Animated.View style={{ transform: [{ scale: artScale }] }}>
+            <View style={[styles.artBlurRing, { width: ART_SIZE + 32, height: ART_SIZE + 32, borderRadius: Radius.xl + 16 }]}>
+              <BlurView intensity={25} tint="dark" style={StyleSheet.absoluteFill} />
+            </View>
+            <AlbumArtCarousel
               artwork={currentTrack.artwork}
               artColor={artColor}
-              isPlaying={isPlaying}
-              size={ART_SIZE}
+              artSize={ART_SIZE}
+              onSwipeLeft={handleSkipNext}
+              onSwipeRight={handleSkipPrev}
             />
-          ) : (
-            <Animated.View style={{ transform: [{ scale: artScale }] }}>
-              {/* Ambient blur ring */}
-              <View style={[styles.artBlurRing, { width: ART_SIZE + 32, height: ART_SIZE + 32, borderRadius: Radius.xl + 16 }]}>
-                <BlurView intensity={30} tint="dark" style={StyleSheet.absoluteFill} />
-              </View>
-              <AlbumArtCarousel
-                artwork={currentTrack.artwork}
-                artColor={artColor}
-                artSize={ART_SIZE}
-                onSwipeLeft={handleSkipNext}
-                onSwipeRight={handleSkipPrev}
-              />
-            </Animated.View>
-          )}
+          </Animated.View>
         </View>
 
         {/* Track Info + Heart */}
@@ -298,7 +254,7 @@ export function NowPlayingScreen() {
           </View>
           <HeartButton
             liked={isLiked(currentTrack.id)}
-            onToggle={() => toggleLike(currentTrack.id)}
+            onToggle={() => toggleLike(currentTrack.id, currentTrack)}
             size={24}
           />
         </View>
@@ -330,80 +286,50 @@ export function NowPlayingScreen() {
           </View>
         </View>
 
-        {/* Controls */}
-        <View style={styles.controls}>
-          <TouchableOpacity onPress={toggleShuffle} style={styles.ctrlSm}>
-            <Shuffle size={20} color={isShuffled ? Colors.accentPrimary : Colors.textSecondary} />
-          </TouchableOpacity>
+        {/* Controls — Glass Card */}
+        <GlassCard style={styles.controlsGlass} intensity={30} glassStyle="clear">
+          <View style={styles.controls}>
+            <TouchableOpacity onPress={toggleShuffle} style={styles.ctrlSm}>
+              <Shuffle size={20} color={isShuffled ? Colors.accentPrimary : 'rgba(255,255,255,0.6)'} />
+            </TouchableOpacity>
 
-          <TouchableOpacity onPress={skipPrevious} style={styles.ctrlMd}>
-            <SkipBack size={28} color={Colors.textPrimary} fill={Colors.textPrimary} />
-          </TouchableOpacity>
+            <TouchableOpacity onPress={skipPrevious} style={styles.ctrlMd}>
+              <SkipBack size={28} color={Colors.textPrimary} fill={Colors.textPrimary} />
+            </TouchableOpacity>
 
-          <TouchableOpacity
-            onPress={() => { haptics.light(); setIsPlaying(!isPlaying); }}
-            style={styles.playBtn}
-            activeOpacity={0.85}
-          >
-            {isPlaying ? (
-              <Pause size={30} color={Colors.bgPrimary} fill={Colors.bgPrimary} />
-            ) : (
-              <Play size={30} color={Colors.bgPrimary} fill={Colors.bgPrimary} style={{ marginLeft: 3 }} />
-            )}
-          </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => { haptics.light(); togglePlayPause(); }}
+              style={styles.playBtn}
+              activeOpacity={0.85}
+            >
+              <BlurView intensity={80} tint="light" style={styles.playBtnBlur}>
+                {isPlaying ? (
+                  <Pause size={30} color="rgba(0,0,0,0.85)" fill="rgba(0,0,0,0.85)" />
+                ) : (
+                  <Play size={30} color="rgba(0,0,0,0.85)" fill="rgba(0,0,0,0.85)" style={{ marginLeft: 3 }} />
+                )}
+              </BlurView>
+            </TouchableOpacity>
 
-          <TouchableOpacity onPress={skipNext} style={styles.ctrlMd}>
-            <SkipForward size={28} color={Colors.textPrimary} fill={Colors.textPrimary} />
-          </TouchableOpacity>
+            <TouchableOpacity onPress={skipNext} style={styles.ctrlMd}>
+              <SkipForward size={28} color={Colors.textPrimary} fill={Colors.textPrimary} />
+            </TouchableOpacity>
 
-          <TouchableOpacity onPress={toggleRepeat} style={styles.ctrlSm}>
-            {repeatMode === 'track' ? (
-              <Repeat1 size={20} color={Colors.accentPrimary} />
-            ) : (
-              <Repeat size={20} color={repeatMode !== 'off' ? Colors.accentPrimary : Colors.textSecondary} />
-            )}
-          </TouchableOpacity>
-        </View>
-
-        {/* Volume Slider */}
-        <View style={styles.volumeRow}>
-          <Volume2 size={16} color={Colors.textTertiary} />
-          <View
-            {...volumePan.panHandlers}
-            style={styles.volumeHitArea}
-            onLayout={(e) => { volumeBarWidth.current = e.nativeEvent.layout.width; }}
-          >
-            <View style={styles.volumeBg}>
-              <View style={[styles.volumeFill, { width: `${Math.round(volume * 100)}%` as `${number}%` }]} />
-            </View>
+            <TouchableOpacity onPress={toggleRepeat} style={styles.ctrlSm}>
+              {repeatMode === 'track' ? (
+                <Repeat1 size={20} color={Colors.accentPrimary} />
+              ) : (
+                <Repeat size={20} color={repeatMode !== 'off' ? Colors.accentPrimary : 'rgba(255,255,255,0.6)'} />
+              )}
+            </TouchableOpacity>
           </View>
-        </View>
+        </GlassCard>
 
         {/* Bottom Row */}
         <View style={[styles.bottomRow, { paddingBottom: insets.bottom + Spacing.sm }]}>
-          <TouchableOpacity style={styles.bottomBtn} onPress={() => setShowQueue(true)}>
-            <AlignJustify size={20} color={Colors.textSecondary} />
-            <Text style={styles.bottomLabel}>Queue</Text>
-          </TouchableOpacity>
           <TouchableOpacity style={styles.bottomBtn} onPress={() => setShowLyrics(true)}>
-            <Mic2 size={20} color={Colors.textSecondary} />
+            <Mic2 size={20} color="rgba(255,255,255,0.6)" />
             <Text style={styles.bottomLabel}>Lyrics</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.bottomBtn} onPress={() => setShowEqualizer(true)}>
-            <SlidersHorizontal size={20} color={eqEnabled ? Colors.accentPrimary : Colors.textSecondary} />
-            <Text style={[styles.bottomLabel, eqEnabled && { color: Colors.accentPrimary }]}>EQ</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.bottomBtn} onPress={() => setShowMoreLikeThis(true)}>
-            <Sparkles size={20} color={Colors.textSecondary} />
-            <Text style={styles.bottomLabel}>Similar</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.bottomBtn} onPress={() => setShowSleepTimer(true)}>
-            <Moon size={20} color={sleepTimerEndsAt ? Colors.accentPurple : Colors.textSecondary} />
-            <Text style={[styles.bottomLabel, sleepTimerEndsAt !== null && { color: Colors.accentPurple }]}>Sleep</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.bottomBtn} onPress={() => shareTrack(currentTrack)}>
-            <Share2 size={20} color={Colors.textSecondary} />
-            <Text style={styles.bottomLabel}>Share</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -444,24 +370,8 @@ export function NowPlayingScreen() {
         </SafeAreaView>
       </Modal>
 
-      {/* More Like This */}
-      <MoreLikeThisModal
-        track={showMoreLikeThis ? currentTrack : null}
-        onClose={() => setShowMoreLikeThis(false)}
-        onPlay={(similarTracks, index) => {
-          setShowMoreLikeThis(false);
-          usePlayerStore.getState().setQueue(similarTracks, index);
-        }}
-      />
-
       {/* Queue */}
       <QueueSheet visible={showQueue} onClose={() => setShowQueue(false)} />
-
-      {/* Equalizer */}
-      <EqualizerSheet visible={showEqualizer} onClose={() => setShowEqualizer(false)} />
-
-      {/* Sleep Timer */}
-      <SleepTimerSheet visible={showSleepTimer} onClose={() => setShowSleepTimer(false)} />
     </Animated.View>
   );
 }
@@ -474,8 +384,8 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingTop: Spacing.md,
-    marginBottom: Spacing.xl,
+    paddingTop: Spacing.sm,
+    marginBottom: Spacing.md,
   },
   headerBtn: {
     width: 44,
@@ -489,7 +399,7 @@ const styles = StyleSheet.create({
   },
   headerLabel: {
     ...Typography.caption,
-    color: Colors.textSecondary,
+    color: 'rgba(255,255,255,0.5)',
     letterSpacing: 1.5,
   },
   sleepCountdown: {
@@ -505,7 +415,9 @@ const styles = StyleSheet.create({
   },
   artContainer: {
     alignItems: 'center',
-    marginBottom: Spacing.xl,
+    flex: 1,
+    justifyContent: 'center',
+    marginBottom: Spacing.md,
   },
   artBlurRing: {
     position: 'absolute',
@@ -513,12 +425,12 @@ const styles = StyleSheet.create({
     top: -16,
     left: -16,
     overflow: 'hidden',
-    opacity: 0.6,
+    opacity: 0.5,
   },
   infoRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: Spacing.xl,
+    marginBottom: Spacing.lg,
   },
   infoText: {
     flex: 1,
@@ -530,22 +442,22 @@ const styles = StyleSheet.create({
   },
   trackArtist: {
     ...Typography.body,
-    color: Colors.textSecondary,
+    color: 'rgba(255,255,255,0.65)',
   },
   progressSection: {
-    marginBottom: Spacing.xl,
+    marginBottom: Spacing.lg,
   },
   progressHitArea: {
     paddingVertical: Spacing.sm,
   },
   progressBg: {
     height: 4,
-    backgroundColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: 'rgba(255,255,255,0.12)',
     borderRadius: 2,
   },
   progressFill: {
     height: 4,
-    backgroundColor: Colors.accentPrimary,
+    backgroundColor: 'rgba(255,255,255,0.85)',
     borderRadius: 2,
     position: 'relative',
   },
@@ -558,8 +470,8 @@ const styles = StyleSheet.create({
     borderRadius: 7,
     backgroundColor: '#fff',
     shadowColor: '#fff',
-    shadowOpacity: 0.4,
-    shadowRadius: 4,
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
     shadowOffset: { width: 0, height: 0 },
   },
   timeRow: {
@@ -569,13 +481,18 @@ const styles = StyleSheet.create({
   },
   time: {
     ...Typography.caption,
-    color: Colors.textTertiary,
+    color: 'rgba(255,255,255,0.4)',
+  },
+  controlsGlass: {
+    marginHorizontal: -Spacing.sm,
+    marginBottom: Spacing.md,
+    padding: Spacing.sm,
   },
   controls: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: Spacing.lg,
+    paddingHorizontal: Spacing.sm,
   },
   ctrlSm: {
     width: 44,
@@ -593,34 +510,19 @@ const styles = StyleSheet.create({
     width: 66,
     height: 66,
     borderRadius: 33,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#fff',
-    shadowOpacity: 0.25,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 4 },
+    overflow: 'hidden',
+    shadowColor: 'rgba(255,255,255,0.3)',
+    shadowOpacity: 1,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 0 },
     elevation: 8,
   },
-  volumeRow: {
-    flexDirection: 'row',
+  playBtnBlur: {
+    width: 66,
+    height: 66,
     alignItems: 'center',
-    gap: Spacing.sm,
-    marginBottom: Spacing.lg,
-  },
-  volumeHitArea: {
-    flex: 1,
-    paddingVertical: Spacing.sm,
-  },
-  volumeBg: {
-    height: 3,
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    borderRadius: 2,
-  },
-  volumeFill: {
-    height: 3,
-    backgroundColor: Colors.textSecondary,
-    borderRadius: 2,
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.25)',
   },
   bottomRow: {
     flexDirection: 'row',
@@ -632,7 +534,7 @@ const styles = StyleSheet.create({
   },
   bottomLabel: {
     ...Typography.caption,
-    color: Colors.textTertiary,
+    color: 'rgba(255,255,255,0.4)',
   },
   lyricsModal: {
     flex: 1,

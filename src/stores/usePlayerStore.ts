@@ -1,7 +1,13 @@
 import { create } from 'zustand';
-import TrackPlayer from 'react-native-track-player';
+import TrackPlayer, { RepeatMode as RNTPRepeatMode } from 'react-native-track-player';
 import { Track, RepeatMode } from '../types';
 import { appTrackToRNTP } from '../services/apiService';
+
+const RNTP_REPEAT: Record<RepeatMode, RNTPRepeatMode> = {
+  off: RNTPRepeatMode.Off,     // stop after last track in queue
+  queue: RNTPRepeatMode.Queue, // loop entire queue
+  track: RNTPRepeatMode.Track, // loop single track
+};
 
 interface PlayerState {
   currentTrack: Track | null;
@@ -20,6 +26,7 @@ interface PlayerState {
   removeFromQueue: (trackId: string) => Promise<void>;
   reorderQueue: (fromIndex: number, toIndex: number) => Promise<void>;
   setIsPlaying: (playing: boolean) => void;
+  togglePlayPause: () => Promise<void>;
   setProgress: (progress: number) => void;
   setDuration: (duration: number) => void;
   seekTo: (progress: number) => Promise<void>;
@@ -121,25 +128,43 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     set({ queue: newQueue, queueIndex: newIndex });
   },
 
-  setIsPlaying: (playing) => {
-    set({ isPlaying: playing });
-    if (playing) TrackPlayer.play().catch(() => {});
-    else TrackPlayer.pause().catch(() => {});
+  setIsPlaying: (playing) => set({ isPlaying: playing }),
+
+  togglePlayPause: async () => {
+    const { isPlaying } = get();
+    try {
+      if (isPlaying) {
+        await TrackPlayer.pause();
+        set({ isPlaying: false });
+      } else {
+        await TrackPlayer.play();
+        set({ isPlaying: true });
+      }
+    } catch (e) {
+      console.warn('[player] togglePlayPause error:', e);
+    }
   },
 
   setProgress: (progress) => set({ progress }),
   setDuration: (duration) => set({ duration }),
 
   seekTo: async (progress) => {
-    set({ progress });
-    await TrackPlayer.seekTo(progress * get().duration);
+    const { duration } = get();
+    try {
+      await TrackPlayer.seekTo(progress * duration);
+      set({ progress });
+    } catch (e) {
+      console.warn('[player] seekTo error:', e);
+    }
   },
 
-  toggleRepeat: () =>
-    set((state) => {
-      const modes: RepeatMode[] = ['off', 'queue', 'track'];
-      return { repeatMode: modes[(modes.indexOf(state.repeatMode) + 1) % modes.length] };
-    }),
+  toggleRepeat: () => {
+    const modes: RepeatMode[] = ['off', 'queue', 'track'];
+    const current = get().repeatMode;
+    const next = modes[(modes.indexOf(current) + 1) % modes.length];
+    TrackPlayer.setRepeatMode(RNTP_REPEAT[next]).catch(() => {});
+    set({ repeatMode: next });
+  },
 
   toggleShuffle: () => set((state) => ({ isShuffled: !state.isShuffled })),
 
@@ -151,6 +176,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       if (!queue.length) return;
       let next = queueIndex + 1;
       if (next >= queue.length) next = repeatMode === 'queue' ? 0 : queue.length - 1;
+      try { await TrackPlayer.skip(next); } catch {}
       set({ queueIndex: next, currentTrack: queue[next] });
     }
   },
@@ -163,6 +189,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       const { queue, queueIndex } = get();
       if (!queue.length) return;
       const prev = Math.max(0, queueIndex - 1);
+      try { await TrackPlayer.skip(prev); } catch {}
       set({ queueIndex: prev, currentTrack: queue[prev] });
     }
   },

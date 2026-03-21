@@ -6,15 +6,15 @@
  * Rate limit: ~3 req/sec safe.
  */
 
-import { getCachedVkUrl, setCachedVkUrl, setVkConfig, getVkConfig, upsertTrack } from "../db/index.js";
+import { getCachedVkUrl, setCachedVkUrl, setVkConfig, getVkConfig, clearVkConfig, upsertTrack, getDb } from "../db/index.js";
 import type { Track, TrackMeta, MusicProvider } from "../types.js";
 import path from "path";
 import fs from "fs";
 import { Readable } from "stream";
 
-// Kate Mobile app credentials (public knowledge in VK audio community)
-const KATE_APP_ID = "2685278";
-const KATE_SECRET = "lxhD8OD7dMsqtXIm5IUY";
+// Kate Mobile app credentials — override via env if desired
+const KATE_APP_ID = process.env.VK_APP_ID ?? "2685278";
+const KATE_SECRET = process.env.VK_APP_SECRET ?? "lxhD8OD7dMsqtXIm5IUY";
 const VK_API_VERSION = "5.131";
 const VK_API_BASE = "https://api.vk.com/method";
 
@@ -57,6 +57,19 @@ interface VKAudioItem {
   };
 }
 
+interface VKPlaylist {
+  id: number;
+  owner_id: number;
+  title: string;
+  description?: string;
+  count: number;
+  photo?: {
+    photo_135?: string;
+    photo_270?: string;
+    photo_600?: string;
+  };
+}
+
 function vkTrackId(item: VKAudioItem): string {
   return `vk_${item.owner_id}_${item.id}`;
 }
@@ -79,6 +92,25 @@ function vkItemToTrack(item: VKAudioItem): Track {
   };
 }
 
+/** Batch-upsert VK tracks into the DB inside a single transaction. */
+function cacheVKTracks(tracks: Track[]): void {
+  const db = getDb();
+  db.transaction(() => {
+    for (const t of tracks) {
+      upsertTrack({
+        id: t.id,
+        source: "vk",
+        title: t.title,
+        artist: t.artist,
+        album: t.album,
+        duration: t.duration,
+        cover_url: t.coverUrl,
+      });
+      if (t.streamUrl) setCachedVkUrl(t.id, t.streamUrl);
+    }
+  })();
+}
+
 export class VKMusicProvider implements MusicProvider {
   private token: string | null = null;
 
@@ -95,45 +127,69 @@ export class VKMusicProvider implements MusicProvider {
    * Uses Kate Mobile credentials to get audio-enabled token.
    */
   async authenticate(username: string, password: string): Promise<void> {
-    const params = new URLSearchParams({
-      grant_type: "password",
-      client_id: KATE_APP_ID,
-      client_secret: KATE_SECRET,
-      username,
-      password,
-      scope: "audio,offline",
-      v: VK_API_VERSION,
-      "2fa_supported": "1",
-    });
+    // Try multiple VK app credentials (Kate Mobile, VK Official, VK Android)
+    const clients = [
+      { id: KATE_APP_ID, secret: KATE_SECRET, ua: "KateMobileAndroid/56 lite-460 (Android 4.4.2; SDK 19; x86; unknown Android SDK built for x86; en)", name: "Kate" },
+      { id: process.env.VK_OFFICIAL_APP_ID ?? "2274003", secret: process.env.VK_OFFICIAL_APP_SECRET ?? "hHbZxrka2uZ6jB1inYsH", ua: "VKAndroidApp/5.52-4543 (Android 5.1.1; SDK 22; x86_64; unknown Android SDK built for x86_64; en; 320x240)", name: "VK Official" },
+    ];
 
-    const res = await fetch(`https://oauth.vk.com/token?${params}`);
-    if (!res.ok) {
-      throw new Error(`VK auth HTTP error: ${res.status}`);
-    }
-    const data = (await res.json()) as {
-      access_token?: string;
-      error?: string;
-      error_description?: string;
-      redirect_uri?: string;
-    };
+    let lastError = "";
+    for (const client of clients) {
+      try {
+        const params = new URLSearchParams({
+          grant_type: "password",
+          client_id: client.id,
+          client_secret: client.secret,
+          username,
+          password,
+          scope: "audio,offline",
+          v: VK_API_VERSION,
+          "2fa_supported": "1",
+        });
 
-    if (data.error) {
-      if (data.error === "need_validation" && data.redirect_uri) {
-        throw new Error(
-          `VK requires 2FA validation. Open: ${data.redirect_uri}`
-        );
+        const res = await fetch(`https://oauth.vk.com/token?${params}`, {
+          headers: { "User-Agent": client.ua },
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!res.ok) {
+          lastError = `VK auth HTTP error: ${res.status} (${client.name})`;
+          continue;
+        }
+        const data = (await res.json()) as {
+          access_token?: string;
+          error?: string;
+          error_description?: string;
+          redirect_uri?: string;
+        };
+
+        if (data.error) {
+          if (data.error === "need_validation" && data.redirect_uri) {
+            throw new Error(`VK requires 2FA validation. Open: ${data.redirect_uri}`);
+          }
+          lastError = `${data.error}: ${data.error_description} (${client.name})`;
+          // Flood control → try next client
+          if (data.error === "9;Flood control" || data.error.includes("Flood")) continue;
+          // invalid_client → try next client
+          if (data.error === "invalid_client") continue;
+          continue;
+        }
+
+        if (!data.access_token) {
+          lastError = `No access_token in response (${client.name})`;
+          continue;
+        }
+
+        this.token = data.access_token;
+        setVkConfig({ username, token: this.token });
+        console.log(`[VK] Authenticated successfully via ${client.name}`);
+        return;
+      } catch (e) {
+        if (e instanceof Error && e.message.includes("2FA")) throw e;
+        lastError = e instanceof Error ? e.message : String(e);
       }
-      throw new Error(`VK auth error: ${data.error} — ${data.error_description}`);
     }
 
-    if (!data.access_token) {
-      throw new Error("VK auth: no access_token in response");
-    }
-
-    this.token = data.access_token;
-    // Store token in DB (no expiry field from VK for offline scope)
-    setVkConfig({ username, token: this.token });
-    console.log("[VK] Authenticated successfully");
+    throw new Error(`VK auth failed with all clients: ${lastError}`);
   }
 
   private ensureToken(): string {
@@ -159,6 +215,7 @@ export class VKMusicProvider implements MusicProvider {
         "User-Agent":
           "KateMobileAndroid/56 lite-460 (Android 4.4.2; SDK 19; x86; unknown Android SDK built for x86; en)",
       },
+      signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) {
       throw new Error(`VK API ${method} HTTP error: ${res.status}`);
@@ -166,8 +223,9 @@ export class VKMusicProvider implements MusicProvider {
     const json = (await res.json()) as VKApiResponse<T>;
     if (json.error) {
       if (json.error.error_code === 5) {
-        // Auth error — clear token
+        // Auth error — clear token from memory AND database
         this.token = null;
+        clearVkConfig();
         throw new Error("VK token expired or invalid. Re-authenticate.");
       }
       throw new Error(`VK API error ${json.error.error_code}: ${json.error.error_msg}`);
@@ -184,21 +242,7 @@ export class VKMusicProvider implements MusicProvider {
       { q: query, count: 50, auto_complete: 1, sort: 2 }
     );
     const tracks = resp.items.map(vkItemToTrack);
-    // Cache metadata in DB
-    for (const t of tracks) {
-      upsertTrack({
-        id: t.id,
-        source: "vk",
-        title: t.title,
-        artist: t.artist,
-        album: t.album,
-        duration: t.duration,
-        cover_url: t.coverUrl,
-      });
-      if (t.streamUrl) {
-        setCachedVkUrl(t.id, t.streamUrl);
-      }
-    }
+    cacheVKTracks(tracks);
     return tracks;
   }
 
@@ -256,17 +300,7 @@ export class VKMusicProvider implements MusicProvider {
       { q: artistId, count: 100, sort: 0, performer_only: 1 }
     );
     const tracks = resp.items.map(vkItemToTrack);
-    for (const t of tracks) {
-      upsertTrack({
-        id: t.id,
-        source: "vk",
-        title: t.title,
-        artist: t.artist,
-        album: t.album,
-        duration: t.duration,
-        cover_url: t.coverUrl,
-      });
-    }
+    cacheVKTracks(tracks);
     return tracks;
   }
 
@@ -277,20 +311,7 @@ export class VKMusicProvider implements MusicProvider {
       { count, offset }
     );
     const tracks = resp.items.map(vkItemToTrack);
-    for (const t of tracks) {
-      upsertTrack({
-        id: t.id,
-        source: "vk",
-        title: t.title,
-        artist: t.artist,
-        album: t.album,
-        duration: t.duration,
-        cover_url: t.coverUrl,
-      });
-      if (t.streamUrl) {
-        setCachedVkUrl(t.id, t.streamUrl);
-      }
-    }
+    cacheVKTracks(tracks);
     return tracks;
   }
 
@@ -325,6 +346,7 @@ export class VKMusicProvider implements MusicProvider {
         "User-Agent": "Mozilla/5.0",
         Referer: "https://vk.com/",
       },
+      signal: AbortSignal.timeout(120_000), // downloads can take a while
     });
     if (!res.ok) {
       throw new Error(`Download failed: HTTP ${res.status} for ${trackId}`);
@@ -370,8 +392,52 @@ export class VKMusicProvider implements MusicProvider {
     return resp.items.map(vkItemToTrack);
   }
 
+  /** Get user's VK playlists */
+  async getPlaylists(offset = 0, count = 50): Promise<VKPlaylist[]> {
+    const resp = await this.apiCall<{ count: number; items: VKPlaylist[] }>(
+      "audio.getPlaylists",
+      { count, offset }
+    );
+    return resp.items;
+  }
+
+  /** Get tracks from a specific VK playlist */
+  async getPlaylistTracks(playlistId: number, ownerId?: number): Promise<Track[]> {
+    const params: Record<string, string | number> = {
+      count: 200,
+      playlist_id: playlistId,
+    };
+    if (ownerId !== undefined) params.owner_id = ownerId;
+    const resp = await this.apiCall<{ count: number; items: VKAudioItem[] }>(
+      "audio.get",
+      params
+    );
+    const tracks = resp.items.map(vkItemToTrack);
+    cacheVKTracks(tracks);
+    return tracks;
+  }
+
+  /** Set token directly (from OAuth browser flow) */
+  setToken(token: string, username: string): void {
+    this.token = token;
+    setVkConfig({ username, token });
+    console.log(`[VK] Token set for ${username}`);
+  }
+
   isAuthenticated(): boolean {
     return !!this.token;
+  }
+
+  /** Returns the username stored in DB (for display) */
+  getUsername(): string | null {
+    return getVkConfig().username;
+  }
+
+  /** Clear authentication */
+  logout(): void {
+    this.token = null;
+    clearVkConfig();
+    console.log("[VK] Logged out");
   }
 }
 

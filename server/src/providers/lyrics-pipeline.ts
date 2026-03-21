@@ -1,47 +1,23 @@
 /**
  * AI Lyrics Pipeline Orchestrator
  *
- * Orchestrates: Demucs vocal separation → Parakeet TDT v3 ASR → LLM cleanup → LRC
+ * Strategy (in priority order):
+ *   1. whisper.cpp local — fast (~15-25s on Apple Silicon), native --output-lrc
+ *   2. OpenRouter (Gemini Flash) — cloud fallback (~15-30s, needs API key)
  *
- * The heavy lifting is done by server/scripts/transcribe.py (Python).
- * This module spawns the Python process and manages the output.
- *
- * Processing time: ~3-5 min per song on M1/M2 Mac (CPU/MPS)
+ * Install whisper.cpp:
+ *   brew install whisper-cpp
+ *   whisper-cpp-download-ggml-model large-v3-turbo
  */
 
-import { execFile } from "child_process";
-import { promisify } from "util";
-import path from "path";
 import fs from "fs";
+import path from "path";
+import os from "os";
+import { execFileSync, execFile } from "child_process";
 import { getDb } from "../db/index.js";
 
-const execFileAsync = promisify(execFile);
-
-// Cached dependency check result (null = not checked yet)
-let depsAvailable: boolean | null = null;
-let depsError: string | null = null;
-
-async function checkDependencies(pythonPath: string): Promise<void> {
-  if (depsAvailable === true) return;
-  if (depsAvailable === false) throw new Error(depsError!);
-
-  try {
-    await execFileAsync(pythonPath, ["-c", "import demucs, nemo.collections.asr"], {
-      timeout: 30_000,
-    });
-    depsAvailable = true;
-  } catch {
-    depsAvailable = false;
-    depsError =
-      "AI lyrics pipeline not set up. Missing Python dependencies (demucs, nemo_toolkit). " +
-      "Run: chmod +x server/scripts/setup-lyrics.sh && ./server/scripts/setup-lyrics.sh";
-    throw new Error(depsError);
-  }
-}
-
-const SCRIPT_PATH = path.resolve(
-  new URL("../../scripts/transcribe.py", import.meta.url).pathname
-);
+const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
+const AUDIO_MODEL = "google/gemini-2.0-flash-001";
 
 interface PipelineJob {
   trackId: string;
@@ -50,36 +26,81 @@ interface PipelineJob {
   error?: string;
 }
 
-// In-memory job registry (one job at a time to avoid OOM on personal Mac)
 const jobs = new Map<string, PipelineJob>();
+
+// Clean up completed/failed jobs older than 1 hour to prevent unbounded growth
+setInterval(() => {
+  const cutoff = Date.now() - 3600_000;
+  for (const [id, job] of jobs) {
+    if ((job.status === "done" || job.status === "failed") && job.startedAt < cutoff) {
+      jobs.delete(id);
+    }
+  }
+}, 300_000);
 
 export function getJobStatus(trackId: string): PipelineJob | null {
   return jobs.get(trackId) ?? null;
 }
 
-export async function getPipelineStatus(): Promise<{ ready: boolean; error?: string }> {
-  const pythonPath = process.env.PYTHON_PATH ?? "python3";
-  try {
-    await checkDependencies(pythonPath);
-    return { ready: true };
-  } catch (err: unknown) {
-    return { ready: false, error: err instanceof Error ? err.message : String(err) };
+/** Detect which local whisper binary is available */
+function findWhisperCpp(): string | null {
+  for (const bin of ["whisper-cpp", "whisper.cpp", "main"]) {
+    try {
+      const p = execFileSync("which", [bin], { stdio: "pipe" }).toString().trim();
+      if (p) return p;
+    } catch {}
   }
+  return null;
+}
+
+/** Find the best whisper model available */
+function findWhisperModel(): string | null {
+  if (process.env.WHISPER_MODEL_PATH && fs.existsSync(process.env.WHISPER_MODEL_PATH)) {
+    return process.env.WHISPER_MODEL_PATH;
+  }
+  // Homebrew default locations
+  const prefixes = ["/opt/homebrew", "/usr/local"];
+  const models = ["ggml-large-v3-turbo.bin", "ggml-large-v3.bin", "ggml-medium.bin", "ggml-base.bin"];
+  for (const prefix of prefixes) {
+    for (const model of models) {
+      const p = `${prefix}/share/whisper-cpp/models/${model}`;
+      if (fs.existsSync(p)) return p;
+    }
+  }
+  return null;
+}
+
+function isWhisperCppReady(): boolean {
+  return !!findWhisperCpp() && !!findWhisperModel();
+}
+
+function isFfmpegAvailable(): boolean {
+  try {
+    execFileSync("which", ["ffmpeg"], { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function getPipelineStatus(): Promise<{ ready: boolean; method?: string; error?: string }> {
+  if (isWhisperCppReady()) {
+    return { ready: true, method: "whisper-cpp" };
+  }
+  if (process.env.OPENROUTER_API_KEY) {
+    return { ready: true, method: "openrouter" };
+  }
+  return {
+    ready: false,
+    error: "Install whisper.cpp (brew install whisper-cpp && whisper-cpp-download-ggml-model large-v3-turbo) or set OPENROUTER_API_KEY",
+  };
 }
 
 export function listJobs(): PipelineJob[] {
   return Array.from(jobs.values());
 }
 
-/**
- * Start AI transcription pipeline for a track.
- * Returns immediately — poll getJobStatus() for result.
- * On success, saves LRC to lyrics_cache in DB.
- */
-export function startTranscription(
-  trackId: string,
-  audioPath: string
-): PipelineJob {
+export function startTranscription(trackId: string, audioPath: string): PipelineJob {
   const existing = jobs.get(trackId);
   if (existing && (existing.status === "running" || existing.status === "done")) {
     return existing;
@@ -92,7 +113,6 @@ export function startTranscription(
   };
   jobs.set(trackId, job);
 
-  // Run async — do not await
   runPipeline(trackId, audioPath, job).catch((err: unknown) => {
     job.status = "failed";
     job.error = err instanceof Error ? err.message : String(err);
@@ -102,77 +122,223 @@ export function startTranscription(
   return job;
 }
 
-async function runPipeline(
-  trackId: string,
-  audioPath: string,
-  job: PipelineJob
-): Promise<void> {
-  const pythonPath = process.env.PYTHON_PATH ?? "python3";
-  const openrouterKey = process.env.OPENROUTER_API_KEY ?? "";
-
-  // Check dependencies first — fail fast with a clear message
-  await checkDependencies(pythonPath);
-
-  // Output LRC to a temp file, then read it back
-  const lrcPath = path.join(
-    process.env.DOWNLOADS_DIR ?? "downloads",
-    `${trackId}.lrc`
-  );
+async function runPipeline(trackId: string, audioPath: string, job: PipelineJob): Promise<void> {
+  if (!fs.existsSync(audioPath)) {
+    throw new Error(`Audio file not found: ${audioPath}`);
+  }
 
   console.log(`[lyrics-pipeline] Starting job for ${trackId} (audio: ${audioPath})`);
 
+  const db = getDb();
+  const trackInfo = db.prepare("SELECT title, artist, duration FROM tracks WHERE id = $id").get({ $id: trackId }) as {
+    title?: string;
+    artist?: string;
+    duration?: number;
+  } | null;
+  const title = trackInfo?.title ?? "Unknown";
+  const artist = trackInfo?.artist ?? "Unknown";
+
+  let lrc: string | null = null;
+
+  // Strategy 1: whisper.cpp (local, fast, free)
+  if (isWhisperCppReady() && isFfmpegAvailable()) {
+    try {
+      lrc = await transcribeWithWhisperCpp(audioPath);
+    } catch (e) {
+      console.warn(`[lyrics-pipeline] whisper.cpp failed:`, e instanceof Error ? e.message : e);
+    }
+  }
+
+  // Strategy 2: OpenRouter (cloud AI)
+  const openrouterKey = process.env.OPENROUTER_API_KEY;
+  if (!lrc && openrouterKey) {
+    try {
+      lrc = await transcribeWithOpenRouter(audioPath, title, artist, openrouterKey);
+    } catch (e) {
+      console.warn(`[lyrics-pipeline] OpenRouter failed:`, e instanceof Error ? e.message : e);
+    }
+  }
+
+  if (!lrc) {
+    throw new Error(
+      isWhisperCppReady()
+        ? "Transcription failed. Make sure ffmpeg is installed (brew install ffmpeg)."
+        : "No transcription method available. Install whisper.cpp or set OPENROUTER_API_KEY."
+    );
+  }
+
+  // Cache in DB
+  db.prepare(`
+    INSERT INTO lyrics_cache (track_id, lrc, source)
+    VALUES ($id, $lrc, 'ai')
+    ON CONFLICT(track_id) DO UPDATE SET lrc = excluded.lrc, source = excluded.source, created_at = unixepoch()
+  `).run({ $id: trackId, $lrc: lrc });
+
+  job.status = "done";
+  const elapsed = ((Date.now() - job.startedAt) / 1000).toFixed(1);
+  console.log(`[lyrics-pipeline] Job ${trackId} completed in ${elapsed}s (${lrc.split("\n").length} lines)`);
+}
+
+// ── whisper.cpp local transcription ──────────────────────────────────────────
+
+async function transcribeWithWhisperCpp(audioPath: string): Promise<string> {
+  const whisperBin = findWhisperCpp()!;
+  const modelPath = findWhisperModel()!;
+
+  console.log(`[lyrics-pipeline] Using whisper.cpp: ${whisperBin} (model: ${path.basename(modelPath)})`);
+
+  // whisper.cpp requires 16kHz mono WAV — convert with ffmpeg
+  const tmpWav = path.join(os.tmpdir(), `musaic-lyrics-${Date.now()}.wav`);
+
   try {
-    const args = [SCRIPT_PATH, audioPath, lrcPath];
-    if (openrouterKey) {
-      args.push("--openrouter-key", openrouterKey);
+    await convertToWav(audioPath, tmpWav);
+    const lrc = await runWhisperCpp(whisperBin, modelPath, tmpWav);
+    return lrc;
+  } finally {
+    // Clean up temp files
+    for (const f of [tmpWav, `${tmpWav}.lrc`]) {
+      try { fs.unlinkSync(f); } catch {}
     }
-
-    const { stdout, stderr } = await execFileAsync(pythonPath, args, {
-      timeout: 15 * 60 * 1000, // 15 min max
-      maxBuffer: 10 * 1024 * 1024, // 10MB stdout buffer
-    });
-
-    if (stderr) {
-      console.warn(`[lyrics-pipeline] stderr:`, stderr.slice(0, 500));
-    }
-
-    // Read the LRC file
-    let lrc: string;
-    if (fs.existsSync(lrcPath)) {
-      lrc = fs.readFileSync(lrcPath, "utf-8").trim();
-    } else {
-      // Fallback: parse from stdout
-      lrc = extractLrcFromStdout(stdout);
-    }
-
-    if (!lrc) {
-      throw new Error("No LRC output from pipeline");
-    }
-
-    // Cache in DB
-    const db = getDb();
-    db.prepare(`
-      INSERT INTO lyrics_cache (track_id, lrc, source)
-      VALUES ($id, $lrc, 'ai')
-      ON CONFLICT(track_id) DO UPDATE SET lrc = excluded.lrc, source = excluded.source, created_at = unixepoch()
-    `).run({ $id: trackId, $lrc: lrc });
-
-    job.status = "done";
-    console.log(`[lyrics-pipeline] Job ${trackId} completed (${lrc.split("\n").length} lines)`);
-  } catch (err: unknown) {
-    throw err;
   }
 }
 
-/** Extract LRC content from script stdout (printed after "[transcribe] Done" line) */
-function extractLrcFromStdout(stdout: string): string {
-  const doneIdx = stdout.indexOf("[transcribe] Done");
-  if (doneIdx !== -1) {
-    return stdout.slice(0, doneIdx).trim();
+function convertToWav(inputPath: string, outputPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "ffmpeg",
+      ["-i", inputPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-y", outputPath],
+      { timeout: 30_000 },
+      (err, _stdout, stderr) => {
+        if (err) reject(new Error(`ffmpeg conversion failed: ${(stderr || err.message).slice(0, 200)}`));
+        else resolve();
+      }
+    );
+  });
+}
+
+function runWhisperCpp(bin: string, model: string, wavPath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      bin,
+      ["-m", model, "-f", wavPath, "--output-lrc", "--max-len", "42", "-l", "auto", "--no-prints"],
+      {
+        timeout: 120_000,
+        maxBuffer: 10 * 1024 * 1024,
+        env: {
+          ...process.env,
+          GGML_METAL_PATH_RESOURCES: process.env.GGML_METAL_PATH_RESOURCES ?? "/opt/homebrew/share/whisper-cpp",
+        },
+      },
+      (err, _stdout, stderr) => {
+        if (err) {
+          reject(new Error(`whisper.cpp failed: ${(stderr || err.message).slice(0, 300)}`));
+          return;
+        }
+        // whisper.cpp writes <input>.lrc
+        const lrcPath = `${wavPath}.lrc`;
+        if (!fs.existsSync(lrcPath)) {
+          reject(new Error("whisper.cpp did not produce LRC output"));
+          return;
+        }
+        const lrc = fs.readFileSync(lrcPath, "utf-8").trim();
+        if (!lrc) {
+          reject(new Error("whisper.cpp produced empty LRC output"));
+          return;
+        }
+        resolve(lrc);
+      }
+    );
+  });
+}
+
+// ── OpenRouter cloud transcription ───────────────────────────────────────────
+
+async function transcribeWithOpenRouter(
+  audioPath: string,
+  title: string,
+  artist: string,
+  apiKey: string,
+): Promise<string> {
+  const audioBuffer = fs.readFileSync(audioPath);
+  const audioBase64 = audioBuffer.toString("base64");
+
+  const ext = path.extname(audioPath).toLowerCase();
+
+  const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: AUDIO_MODEL,
+      messages: [
+        {
+          role: "system",
+          content: `You are a professional music transcription assistant. You transcribe song lyrics with precise timestamps in LRC format. Rules:
+- Output ONLY LRC format lines: [mm:ss.xx] Lyric text
+- Every line must have a timestamp
+- Timestamps must be accurate to the actual moment each line is sung
+- Include all lyrics including repeated choruses
+- If a line has backing vocals, include them in parentheses
+- Do NOT include any metadata tags, comments or explanations
+- Start timestamps from when singing actually begins, not from 00:00`,
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `Transcribe the lyrics of "${title}" by "${artist}" from this audio. Output only LRC format.`,
+            },
+            {
+              type: "input_audio",
+              input_audio: {
+                data: audioBase64,
+                format: ext.replace(".", "") || "mp3",
+              },
+            },
+          ],
+        },
+      ],
+      max_tokens: 4096,
+      temperature: 0.1,
+    }),
+    signal: AbortSignal.timeout(120_000),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`OpenRouter API error ${res.status}: ${errText.slice(0, 200)}`);
   }
-  // Try to find LRC-format lines
-  const lrcLines = stdout
+
+  const data = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+    error?: { message?: string };
+  };
+
+  if (data.error) throw new Error(`OpenRouter error: ${data.error.message}`);
+
+  const lrc = data.choices?.[0]?.message?.content?.trim();
+  if (!lrc) throw new Error("No lyrics returned from AI model");
+
+  return cleanLrcOutput(lrc);
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function cleanLrcOutput(raw: string): string {
+  let lines = raw
+    .replace(/```[a-z]*\n?/g, "")
+    .replace(/```/g, "")
     .split("\n")
-    .filter((line) => /^\[\d{2}:\d{2}/.test(line));
-  return lrcLines.join("\n");
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  lines = lines.filter((l) => !l.match(/^\[(ti|ar|al|by|offset|re|ve|length):/i));
+
+  const lrcLines = lines.filter((l) => l.match(/^\[\d{1,2}:\d{2}\.\d{1,3}\]/));
+  if (lrcLines.length > 0) return lrcLines.join("\n");
+
+  return lines.join("\n");
 }

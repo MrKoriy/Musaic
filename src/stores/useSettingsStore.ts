@@ -17,6 +17,7 @@ const KEYS = {
 } as const;
 
 export type StreamQuality = 'low' | 'medium' | 'high';
+export type ServerStatus = 'unknown' | 'connected' | 'disconnected';
 
 interface SettingsState {
   onboardingComplete: boolean;
@@ -28,6 +29,7 @@ interface SettingsState {
   crossfadeSec: number;
   gapless: boolean;
   normalization: boolean;
+  serverStatus: ServerStatus;
 
   completeOnboarding: () => void;
   resetOnboarding: () => void;
@@ -39,6 +41,7 @@ interface SettingsState {
   setCrossfadeSec: (sec: number) => void;
   setGapless: (v: boolean) => void;
   setNormalization: (v: boolean) => void;
+  setServerStatus: (status: ServerStatus) => void;
 }
 
 export const useSettingsStore = create<SettingsState>((set) => ({
@@ -51,10 +54,13 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   vkToken: storage.getString(KEYS.vkToken) ?? '',
   vkAuthenticated: storage.getBoolean(KEYS.vkAuthenticated) ?? false,
   vkLoggedInUser: storage.getString(KEYS.vkLoggedInUser) ?? null,
-  streamQuality: (storage.getString(KEYS.streamQuality) as StreamQuality) ?? 'high',
+  streamQuality: (['low', 'medium', 'high'].includes(storage.getString(KEYS.streamQuality) ?? '')
+    ? (storage.getString(KEYS.streamQuality) as StreamQuality)
+    : 'high'),
   crossfadeSec: storage.getNumber(KEYS.crossfadeSec) ?? 0,
   gapless: storage.getBoolean(KEYS.gapless) ?? true,
   normalization: storage.getBoolean(KEYS.normalization) ?? false,
+  serverStatus: 'unknown' as ServerStatus,
 
   completeOnboarding: () => {
     storage.set(KEYS.onboardingComplete, true);
@@ -111,4 +117,6 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     storage.set(KEYS.normalization, v);
     set({ normalization: v });
   },
+
+  setServerStatus: (status) => set({ serverStatus: status }),
 }));

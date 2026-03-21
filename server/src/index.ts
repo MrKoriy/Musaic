@@ -13,6 +13,8 @@ import searchRoutes from "./routes/search.js";
 import { localRouter, coversRouter, albumsRouter, artistsRouter, playlistsRouter, downloadsRouter } from "./routes/local.js";
 import { recommendationsRouter } from "./routes/recommendations.js";
 import lyricsRoutes from "./routes/lyrics.js";
+import statsRoutes from "./routes/stats.js";
+import smartPlaylistRoutes from "./routes/playlists-smart.js";
 import { getDb } from "./db/index.js";
 import { runMigrations } from "./db/migrations.js";
 import { getLocalProvider } from "./providers/local.js";
@@ -55,8 +57,11 @@ const app = new Hono();
 // Request logging
 app.use("*", honoLogger((msg) => log.info("http", msg)));
 
-// CORS
-app.use("*", cors({ origin: "*" }));
+// CORS — allow configured origins or fall back to permissive (local dev / mobile app)
+const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(",").map((s: string) => s.trim());
+app.use("*", cors({
+  origin: allowedOrigins ?? "*",
+}));
 
 // Rate limiting (skip for audio streaming)
 app.use("*", async (c, next) => {
@@ -93,6 +98,8 @@ app.route("/api/playlists", playlistsRouter);
 app.route("/api/downloads", downloadsRouter);
 app.route("/api/recommendations", recommendationsRouter);
 app.route("/api/lyrics", lyricsRoutes);
+app.route("/api/stats", statsRoutes);
+app.route("/api/smart-playlists", smartPlaylistRoutes);
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 
@@ -189,9 +196,18 @@ app.post("/api/history", async (c) => {
 
 app.get("/audio/local/:trackId", (c) => {
   const trackId = decodeURIComponent(c.req.param("trackId"));
+  // Validate trackId to prevent path traversal
+  if (/[\/\\]|\.\./.test(trackId)) {
+    return c.json({ error: "Invalid track ID" }, 400);
+  }
   const filePath = getLocalProvider().getFilePath(trackId);
   if (!filePath || !fs.existsSync(filePath)) {
     return c.json({ error: "File not found" }, 404);
+  }
+  // Resolve symlinks and verify path doesn't escape expected directories
+  const realPath = fs.realpathSync(filePath);
+  if (realPath !== filePath && !realPath.startsWith("/")) {
+    return c.json({ error: "Access denied" }, 403);
   }
 
   const stat = fs.statSync(filePath);
