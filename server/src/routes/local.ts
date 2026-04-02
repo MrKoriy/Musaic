@@ -642,3 +642,116 @@ downloadsRouter.get("/stream/:trackId", async (c) => {
     return c.json({ error: err instanceof Error ? err.message : "Stream error" }, 500);
   }
 });
+
+/**
+ * GET /api/downloads/compressed/:trackId
+ * Download a track transcoded to AAC 128kbps M4A (~3-5MB per song vs 30-50MB FLAC).
+ * Query params: bitrate (default 128, max 256)
+ */
+downloadsRouter.get("/compressed/:trackId", async (c) => {
+  const trackId = decodeURIComponent(c.req.param("trackId"));
+  const bitrate = Math.min(256, Math.max(64, Number(c.req.query("bitrate") ?? 128)));
+  const db = getDb();
+  const track = db.prepare("SELECT * FROM tracks WHERE id = $id").get({ $id: trackId }) as {
+    id: string; source: string; title: string; artist: string; duration: number; local_path?: string;
+  } | null;
+
+  if (!track) return c.json({ error: "Track not found" }, 404);
+
+  const CACHE_DIR = path.resolve(process.env.DOWNLOADS_DIR ?? "downloads");
+  const compressedDir = path.join(CACHE_DIR, "compressed");
+  const compressedPath = path.join(compressedDir, `${trackId}_${bitrate}.m4a`);
+
+  if (fs.existsSync(compressedPath)) {
+    return serveFileWithRange(compressedPath, c.req.header("range") ?? null);
+  }
+
+  let sourcePath: string;
+
+  if (track.source === "local") {
+    const filePath = getLocalProvider().getFilePath(trackId);
+    if (!filePath || !fs.existsSync(filePath)) {
+      return c.json({ error: "Local file not found" }, 404);
+    }
+    if (filePath.endsWith(".mp3")) {
+      const stat = fs.statSync(filePath);
+      if (stat.size < 8 * 1024 * 1024) {
+        return serveFileWithRange(filePath, c.req.header("range") ?? null);
+      }
+    }
+    sourcePath = filePath;
+  } else {
+    const rawCachedPath = path.join(CACHE_DIR, `${trackId}.mp3`);
+    if (!fs.existsSync(rawCachedPath)) {
+      try {
+        let upstreamUrl: string;
+        if (track.source === "vk") {
+          const { getVKProvider } = await import("../providers/vk.js");
+          upstreamUrl = await getVKProvider().getStreamUrl(trackId);
+        } else {
+          const { getSoundCloudProvider } = await import("../providers/soundcloud.js");
+          upstreamUrl = await getSoundCloudProvider().getStreamUrl(trackId);
+        }
+        fs.mkdirSync(CACHE_DIR, { recursive: true });
+        const upstream = await fetch(upstreamUrl, { signal: AbortSignal.timeout(60_000) });
+        if (!upstream.ok || !upstream.body) {
+          return c.json({ error: `Download failed: ${upstream.status}` }, 502);
+        }
+        const tmpPath = rawCachedPath + ".tmp";
+        const writer = fs.createWriteStream(tmpPath);
+        const { Readable } = await import("stream");
+        await new Promise<void>((resolve, reject) => {
+          Readable.fromWeb(upstream.body as any).pipe(writer);
+          writer.on("finish", resolve);
+          writer.on("error", reject);
+        });
+        fs.renameSync(tmpPath, rawCachedPath);
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : "Download error" }, 500);
+      }
+    }
+    sourcePath = rawCachedPath;
+  }
+
+  try {
+    fs.mkdirSync(compressedDir, { recursive: true });
+    const tmpOut = compressedPath + ".tmp";
+    const { execFileSync } = await import("child_process");
+    execFileSync("ffmpeg", [
+      "-i", sourcePath, "-c:a", "aac", "-b:a", `${bitrate}k`,
+      "-movflags", "+faststart", "-vn", "-y", tmpOut,
+    ], { timeout: 120_000, stdio: "pipe" });
+    fs.renameSync(tmpOut, compressedPath);
+  } catch {
+    try { fs.unlinkSync(compressedPath + ".tmp"); } catch {}
+    return c.json({ error: "Transcoding failed" }, 500);
+  }
+
+  return serveFileWithRange(compressedPath, c.req.header("range") ?? null);
+});
+
+/**
+ * GET /api/downloads/info/:trackId
+ * Returns estimated/actual size for compressed download.
+ */
+downloadsRouter.get("/info/:trackId", (c) => {
+  const trackId = decodeURIComponent(c.req.param("trackId"));
+  const bitrate = Math.min(256, Math.max(64, Number(c.req.query("bitrate") ?? 128)));
+  const db = getDb();
+  const track = db.prepare("SELECT id, duration, source FROM tracks WHERE id = $id").get({ $id: trackId }) as {
+    id: string; duration: number; source: string;
+  } | null;
+
+  if (!track) return c.json({ error: "Track not found" }, 404);
+
+  const CACHE_DIR = path.resolve(process.env.DOWNLOADS_DIR ?? "downloads");
+  const compressedPath = path.join(CACHE_DIR, "compressed", `${trackId}_${bitrate}.m4a`);
+
+  if (fs.existsSync(compressedPath)) {
+    const stat = fs.statSync(compressedPath);
+    return c.json({ trackId, sizeBytes: stat.size, cached: true, bitrate });
+  }
+
+  const estimatedBytes = Math.ceil((bitrate * 1000 * track.duration) / 8) + 50_000;
+  return c.json({ trackId, sizeBytes: estimatedBytes, cached: false, bitrate });
+});
