@@ -14,6 +14,7 @@ import { recommendationsRouter } from "./routes/recommendations.js";
 import lyricsRoutes from "./routes/lyrics.js";
 import statsRoutes from "./routes/stats.js";
 import smartPlaylistRoutes from "./routes/playlists-smart.js";
+import authRoutes from "./routes/auth.js";
 import { getDb, logListening } from "./db/index.js";
 import { runMigrations } from "./db/migrations.js";
 import { getLocalProvider } from "./providers/local.js";
@@ -124,8 +125,29 @@ app.use("*", async (c, next) => {
   return next();
 });
 
+// ─── Auth middleware — extract user from Bearer token (optional for most routes) ──
+app.use("/api/*", async (c, next) => {
+  const auth = c.req.header("authorization");
+  if (auth?.startsWith("Bearer ")) {
+    const token = auth.slice(7).trim();
+    if (token) {
+      try {
+        const db = getDb();
+        const user = db.prepare("SELECT id, username FROM users WHERE token = $t").get({ $t: token }) as { id: string; username: string } | null;
+        if (user) {
+          (c as any).set("userId", user.id);
+          (c as any).set("username", user.username);
+          db.prepare("UPDATE users SET last_seen_at = unixepoch() WHERE id = $id").run({ $id: user.id });
+        }
+      } catch { /* ignore auth errors — treat as anonymous */ }
+    }
+  }
+  return next();
+});
+
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
+app.route("/api/auth", authRoutes);
 app.route("/api/vk", vkRoutes);
 app.route("/api/sc", scRoutes);
 app.route("/api/search", searchRoutes);
@@ -334,7 +356,8 @@ app.post("/api/history", async (c) => {
   if (!validActions.has(body.action)) {
     return c.json({ error: "Invalid action" }, 400);
   }
-  logListening(body.trackId, body.action);
+  const userId = (c as any).get("userId") as string | undefined;
+  logListening(body.trackId, body.action, userId);
   return c.json({ ok: true });
 });
 

@@ -292,11 +292,11 @@ export function clearVkConfig(): void {
 }
 
 // Listening history
-export function logListening(trackId: string, action: string): void {
+export function logListening(trackId: string, action: string, userId?: string | null): void {
   const db = getDb();
   db.transaction(() => {
-    db.prepare("INSERT INTO listening_history (track_id, action) VALUES ($id, $action)")
-      .run({ $id: trackId, $action: action });
+    db.prepare("INSERT INTO listening_history (track_id, action, user_id) VALUES ($id, $action, $uid)")
+      .run({ $id: trackId, $action: action, $uid: userId ?? null });
 
     if (action === "play") {
       db.prepare(`
@@ -342,8 +342,9 @@ export function normalizePlaylistRow(row: Record<string, unknown>): Record<strin
   };
 }
 
-export function getPlaylists(): Record<string, unknown>[] {
+export function getPlaylists(userId?: string | null): Record<string, unknown>[] {
   const db = getDb();
+  const userClause = userId ? "WHERE (p.user_id = $uid OR p.user_id IS NULL)" : "";
   const rows = db.prepare(`
     SELECT
       p.*,
@@ -366,17 +367,18 @@ export function getPlaylists(): Record<string, unknown>[] {
     FROM playlists p
     LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
     LEFT JOIN playlist_cover_data pcd ON p.id = pcd.playlist_id
+    ${userClause}
     GROUP BY p.id
     ORDER BY p.updated_at DESC
-  `).all() as Record<string, unknown>[];
+  `).all(userId ? { $uid: userId } : {}) as Record<string, unknown>[];
 
   return rows.map(normalizePlaylistRow);
 }
 
-export function createPlaylist(id: string, name: string, description?: string): void {
+export function createPlaylist(id: string, name: string, description?: string, userId?: string | null): void {
   const db = getDb();
-  db.prepare("INSERT INTO playlists (id, name, description) VALUES ($id, $name, $desc)")
-    .run({ $id: id, $name: name, $desc: description ?? null });
+  db.prepare("INSERT INTO playlists (id, name, description, user_id) VALUES ($id, $name, $desc, $uid)")
+    .run({ $id: id, $name: name, $desc: description ?? null, $uid: userId ?? null });
 }
 
 export function deletePlaylist(id: string): void {

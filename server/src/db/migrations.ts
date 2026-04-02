@@ -58,6 +58,41 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 4,
+    description: "Create playlist_cover_data table",
+    up: `
+      CREATE TABLE IF NOT EXISTS playlist_cover_data (
+        playlist_id TEXT PRIMARY KEY REFERENCES playlists(id) ON DELETE CASCADE,
+        data BLOB NOT NULL,
+        mime_type TEXT NOT NULL DEFAULT 'image/jpeg',
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+    `,
+  },
+  {
+    version: 5,
+    description: "Add users table and user_id columns for multi-user support",
+    up: `
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        display_name TEXT,
+        password_hash TEXT NOT NULL,
+        token TEXT UNIQUE,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        last_seen_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_users_token ON users(token);
+      CREATE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE);
+
+      ALTER TABLE listening_history ADD COLUMN user_id TEXT REFERENCES users(id);
+      ALTER TABLE playlists ADD COLUMN user_id TEXT REFERENCES users(id);
+
+      CREATE INDEX IF NOT EXISTS idx_lh_user_id ON listening_history(user_id);
+      CREATE INDEX IF NOT EXISTS idx_playlists_user_id ON playlists(user_id);
+    `,
+  },
 ];
 
 /**

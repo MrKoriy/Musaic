@@ -372,14 +372,16 @@ artistsRouter.get("/tracks", (c) => {
 export const playlistsRouter = new Hono();
 
 playlistsRouter.get("/", (c) => {
-  return c.json({ playlists: getPlaylists() });
+  const userId = (c as any).get("userId") as string | undefined;
+  return c.json({ playlists: getPlaylists(userId) });
 });
 
 playlistsRouter.post("/", async (c) => {
   const body = await c.req.json<{ name?: string; description?: string }>();
   if (!body.name?.trim()) return c.json({ error: "name required" }, 400);
   const id = "playlist_" + crypto.randomBytes(8).toString("hex");
-  createPlaylist(id, body.name.trim(), body.description);
+  const userId = (c as any).get("userId") as string | undefined;
+  createPlaylist(id, body.name.trim(), body.description, userId);
   return c.json({ ok: true, id });
 });
 

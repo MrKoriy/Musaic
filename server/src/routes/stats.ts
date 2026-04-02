@@ -46,8 +46,17 @@ function periodCutoff(period: Period): number | null {
 
 // ─── Overview ─────────────────────────────────────────────────────────────────
 
+/** User-scoped filter: returns SQL clause + params for user_id filtering */
+function userScope(c: unknown): { clause: string; params: Record<string, string | null> } {
+  const uid = (c as any).get("userId") as string | undefined;
+  return uid
+    ? { clause: "AND (user_id = $uid OR user_id IS NULL)", params: { $uid: uid } }
+    : { clause: "", params: { $uid: null } };
+}
+
 router.get("/overview", (c) => {
   const db = getDb();
+  const { clause: uc, params: up } = userScope(c);
 
   const todayStart = startOfDayUnix(0);
   const weekStart = startOfDayUnix(6);
@@ -59,8 +68,8 @@ router.get("/overview", (c) => {
       SUM(CASE WHEN played_at >= $today THEN 1 ELSE 0 END) as today,
       SUM(CASE WHEN played_at >= $week THEN 1 ELSE 0 END) as week,
       SUM(CASE WHEN played_at >= $month THEN 1 ELSE 0 END) as month
-    FROM listening_history WHERE action = 'play'
-  `).get({ $today: todayStart, $week: weekStart, $month: monthStart }) as
+    FROM listening_history WHERE action = 'play' ${uc}
+  `).get({ $today: todayStart, $week: weekStart, $month: monthStart, ...up }) as
     { total: number; today: number; week: number; month: number } | undefined;
 
   const totalCount = counts?.total ?? 0;
@@ -76,8 +85,8 @@ router.get("/overview", (c) => {
       COALESCE(SUM(CASE WHEN lh.played_at >= $month THEN t.duration ELSE 0 END), 0) as month
     FROM listening_history lh
     JOIN tracks t ON t.id = lh.track_id
-    WHERE lh.action = 'play'
-  `).get({ $today: todayStart, $week: weekStart, $month: monthStart }) as
+    WHERE lh.action = 'play' ${uc}
+  `).get({ $today: todayStart, $week: weekStart, $month: monthStart, ...up }) as
     { total: number; today: number; week: number; month: number } | undefined;
 
   const totalSecs = times?.total ?? 0;
