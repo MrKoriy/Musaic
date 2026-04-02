@@ -15,6 +15,7 @@ import lyricsRoutes from "./routes/lyrics.js";
 import statsRoutes from "./routes/stats.js";
 import smartPlaylistRoutes from "./routes/playlists-smart.js";
 import authRoutes from "./routes/auth.js";
+import importRoutes from "./routes/import.js";
 import { getDb, logListening } from "./db/index.js";
 import { runMigrations } from "./db/migrations.js";
 import { getLocalProvider } from "./providers/local.js";
@@ -148,6 +149,7 @@ app.use("/api/*", async (c, next) => {
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 app.route("/api/auth", authRoutes);
+app.route("/api/import", importRoutes);
 app.route("/api/vk", vkRoutes);
 app.route("/api/sc", scRoutes);
 app.route("/api/search", searchRoutes);
