@@ -714,17 +714,34 @@ downloadsRouter.get("/compressed/:trackId", async (c) => {
   }
 
   try {
+    if (!fs.existsSync(sourcePath)) {
+      return c.json({ error: `Source file not found: ${sourcePath}` }, 404);
+    }
     fs.mkdirSync(compressedDir, { recursive: true });
     const tmpOut = compressedPath + ".tmp";
-    const { execFileSync } = await import("child_process");
-    execFileSync("ffmpeg", [
-      "-i", sourcePath, "-c:a", "aac", "-b:a", `${bitrate}k`,
-      "-movflags", "+faststart", "-vn", "-y", tmpOut,
-    ], { timeout: 120_000, stdio: "pipe" });
+    const { spawn: nodeSpawn } = await import("child_process");
+    const exitCode = await new Promise<number>((resolve, reject) => {
+      const child = nodeSpawn("ffmpeg", [
+        "-nostdin", "-i", sourcePath,
+        "-f", "mp4",          // force MP4 container (AAC-compatible)
+        "-c:a", "aac", "-b:a", `${bitrate}k`,
+        "-movflags", "+faststart", "-vn", "-y", tmpOut,
+      ], { stdio: ["ignore", "inherit", "inherit"], detached: false });
+      child.on("close", (code) => resolve(code ?? 1));
+      child.on("error", (err) => reject(err));
+    });
+    if (exitCode !== 0) {
+      console.error(`[transcode] ffmpeg exit ${exitCode} for ${sourcePath}`);
+      try { fs.unlinkSync(tmpOut); } catch {}
+      return c.json({ error: `Transcoding failed (ffmpeg exit ${exitCode})` }, 500);
+    }
+    if (!fs.existsSync(tmpOut) || fs.statSync(tmpOut).size < 100) {
+      return c.json({ error: "Transcoding produced empty file" }, 500);
+    }
     fs.renameSync(tmpOut, compressedPath);
-  } catch {
+  } catch (err) {
     try { fs.unlinkSync(compressedPath + ".tmp"); } catch {}
-    return c.json({ error: "Transcoding failed" }, 500);
+    return c.json({ error: err instanceof Error ? err.message : "Transcoding failed" }, 500);
   }
 
   return serveFileWithRange(compressedPath, c.req.header("range") ?? null);
