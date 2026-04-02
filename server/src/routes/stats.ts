@@ -53,41 +53,43 @@ router.get("/overview", (c) => {
   const weekStart = startOfDayUnix(6);
   const monthStart = startOfMonthUnix();
 
-  const countQ = db.prepare(
-    `SELECT COUNT(*) as n FROM listening_history WHERE action IN ('play', 'complete') AND played_at >= $from`
-  );
-  const countAll = db.prepare(
-    `SELECT COUNT(*) as n FROM listening_history WHERE action IN ('play', 'complete')`
-  );
+  const counts = db.prepare(`
+    SELECT
+      COUNT(*) as total,
+      SUM(CASE WHEN played_at >= $today THEN 1 ELSE 0 END) as today,
+      SUM(CASE WHEN played_at >= $week THEN 1 ELSE 0 END) as week,
+      SUM(CASE WHEN played_at >= $month THEN 1 ELSE 0 END) as month
+    FROM listening_history WHERE action = 'play'
+  `).get({ $today: todayStart, $week: weekStart, $month: monthStart }) as
+    { total: number; today: number; week: number; month: number } | undefined;
 
-  const totalCount = (countAll.get() as { n: number } | undefined)?.n ?? 0;
-  const todayCount = (countQ.get({ $from: todayStart }) as { n: number } | undefined)?.n ?? 0;
-  const weekCount = (countQ.get({ $from: weekStart }) as { n: number } | undefined)?.n ?? 0;
-  const monthCount = (countQ.get({ $from: monthStart }) as { n: number } | undefined)?.n ?? 0;
+  const totalCount = counts?.total ?? 0;
+  const todayCount = counts?.today ?? 0;
+  const weekCount = counts?.week ?? 0;
+  const monthCount = counts?.month ?? 0;
 
-  const timeQ = db.prepare(`
-    SELECT COALESCE(SUM(t.duration), 0) as secs
+  const times = db.prepare(`
+    SELECT
+      COALESCE(SUM(t.duration), 0) as total,
+      COALESCE(SUM(CASE WHEN lh.played_at >= $today THEN t.duration ELSE 0 END), 0) as today,
+      COALESCE(SUM(CASE WHEN lh.played_at >= $week THEN t.duration ELSE 0 END), 0) as week,
+      COALESCE(SUM(CASE WHEN lh.played_at >= $month THEN t.duration ELSE 0 END), 0) as month
     FROM listening_history lh
     JOIN tracks t ON t.id = lh.track_id
-    WHERE lh.action IN ('play', 'complete') AND lh.played_at >= $from
-  `);
-  const timeAll = db.prepare(`
-    SELECT COALESCE(SUM(t.duration), 0) as secs
-    FROM listening_history lh
-    JOIN tracks t ON t.id = lh.track_id
-    WHERE lh.action IN ('play', 'complete')
-  `);
+    WHERE lh.action = 'play'
+  `).get({ $today: todayStart, $week: weekStart, $month: monthStart }) as
+    { total: number; today: number; week: number; month: number } | undefined;
 
-  const totalSecs = (timeAll.get() as { secs: number | null } | undefined)?.secs ?? 0;
-  const todaySecs = (timeQ.get({ $from: todayStart }) as { secs: number | null } | undefined)?.secs ?? 0;
-  const weekSecs = (timeQ.get({ $from: weekStart }) as { secs: number | null } | undefined)?.secs ?? 0;
-  const monthSecs = (timeQ.get({ $from: monthStart }) as { secs: number | null } | undefined)?.secs ?? 0;
+  const totalSecs = times?.total ?? 0;
+  const todaySecs = times?.today ?? 0;
+  const weekSecs = times?.week ?? 0;
+  const monthSecs = times?.month ?? 0;
 
   // Streak: consecutive days with at least one play
   const dailyDates = db.prepare(`
     SELECT DISTINCT date(played_at, 'unixepoch') as day
     FROM listening_history
-    WHERE action IN ('play', 'complete')
+    WHERE action = 'play'
     ORDER BY day DESC
   `).all() as { day: string }[];
 
@@ -106,7 +108,7 @@ router.get("/overview", (c) => {
     SELECT lh.track_id, t.title, t.artist, COUNT(*) as play_count
     FROM listening_history lh
     JOIN tracks t ON t.id = lh.track_id
-    WHERE lh.action IN ('play', 'complete')
+    WHERE lh.action = 'play'
     GROUP BY lh.track_id
     ORDER BY play_count DESC
     LIMIT 1
@@ -116,7 +118,7 @@ router.get("/overview", (c) => {
     SELECT t.artist, COUNT(*) as play_count
     FROM listening_history lh
     JOIN tracks t ON t.id = lh.track_id
-    WHERE lh.action IN ('play', 'complete')
+    WHERE lh.action = 'play'
     GROUP BY t.artist
     ORDER BY play_count DESC
     LIMIT 1
@@ -144,7 +146,7 @@ router.get("/top-tracks", (c) => {
         SELECT lh.track_id, t.title, t.artist, t.album, t.cover_url, t.duration, COUNT(*) as play_count
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action IN ('play', 'complete') AND lh.played_at >= $from
+        WHERE lh.action = 'play' AND lh.played_at >= $from
         GROUP BY lh.track_id
         ORDER BY play_count DESC
         LIMIT $limit
@@ -153,7 +155,7 @@ router.get("/top-tracks", (c) => {
         SELECT lh.track_id, t.title, t.artist, t.album, t.cover_url, t.duration, COUNT(*) as play_count
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action IN ('play', 'complete')
+        WHERE lh.action = 'play'
         GROUP BY lh.track_id
         ORDER BY play_count DESC
         LIMIT $limit
@@ -176,7 +178,7 @@ router.get("/top-artists", (c) => {
                MAX(t.cover_url) as cover_url
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action IN ('play', 'complete') AND lh.played_at >= $from
+        WHERE lh.action = 'play' AND lh.played_at >= $from
         GROUP BY t.artist
         ORDER BY play_count DESC
         LIMIT $limit
@@ -186,7 +188,7 @@ router.get("/top-artists", (c) => {
                MAX(t.cover_url) as cover_url
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action IN ('play', 'complete')
+        WHERE lh.action = 'play'
         GROUP BY t.artist
         ORDER BY play_count DESC
         LIMIT $limit
@@ -208,7 +210,7 @@ router.get("/top-albums", (c) => {
         SELECT t.album, t.artist, COUNT(*) as play_count, MAX(t.cover_url) as cover_url
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action IN ('play', 'complete') AND t.album IS NOT NULL AND lh.played_at >= $from
+        WHERE lh.action = 'play' AND t.album IS NOT NULL AND lh.played_at >= $from
         GROUP BY t.album, t.artist
         ORDER BY play_count DESC
         LIMIT $limit
@@ -217,7 +219,7 @@ router.get("/top-albums", (c) => {
         SELECT t.album, t.artist, COUNT(*) as play_count, MAX(t.cover_url) as cover_url
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action IN ('play', 'complete') AND t.album IS NOT NULL
+        WHERE lh.action = 'play' AND t.album IS NOT NULL
         GROUP BY t.album, t.artist
         ORDER BY play_count DESC
         LIMIT $limit
@@ -238,7 +240,7 @@ router.get("/heatmap", (c) => {
         SELECT CAST(strftime('%H', played_at, 'unixepoch') AS INTEGER) as hour,
                COUNT(*) as play_count
         FROM listening_history
-        WHERE action IN ('play', 'complete') AND played_at >= $from
+        WHERE action = 'play' AND played_at >= $from
         GROUP BY hour
         ORDER BY hour ASC
       `).all({ $from: cutoff })
@@ -246,7 +248,7 @@ router.get("/heatmap", (c) => {
         SELECT CAST(strftime('%H', played_at, 'unixepoch') AS INTEGER) as hour,
                COUNT(*) as play_count
         FROM listening_history
-        WHERE action IN ('play', 'complete')
+        WHERE action = 'play'
         GROUP BY hour
         ORDER BY hour ASC
       `).all();
@@ -269,7 +271,7 @@ router.get("/monthly", (c) => {
   const rows = db.prepare(`
     SELECT date(played_at, 'unixepoch') as day, COUNT(*) as play_count
     FROM listening_history
-    WHERE action IN ('play', 'complete') AND played_at >= $from
+    WHERE action = 'play' AND played_at >= $from
     GROUP BY day
     ORDER BY day ASC
   `).all({ $from: monthStart });
@@ -289,7 +291,7 @@ router.get("/genres", (c) => {
         SELECT COALESCE(t.genre, 'Unknown') as genre, COUNT(*) as play_count
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action IN ('play', 'complete') AND lh.played_at >= $from
+        WHERE lh.action = 'play' AND lh.played_at >= $from
         GROUP BY genre
         ORDER BY play_count DESC
         LIMIT 8
@@ -298,7 +300,7 @@ router.get("/genres", (c) => {
         SELECT COALESCE(t.genre, 'Unknown') as genre, COUNT(*) as play_count
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action IN ('play', 'complete')
+        WHERE lh.action = 'play'
         GROUP BY genre
         ORDER BY play_count DESC
         LIMIT 8

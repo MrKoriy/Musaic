@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import { cors } from "hono/cors";
 import { logger as honoLogger } from "hono/logger";
 import { serve } from "@hono/node-server";
 import type { Server } from "node:http";
@@ -15,13 +14,15 @@ import { recommendationsRouter } from "./routes/recommendations.js";
 import lyricsRoutes from "./routes/lyrics.js";
 import statsRoutes from "./routes/stats.js";
 import smartPlaylistRoutes from "./routes/playlists-smart.js";
-import { getDb } from "./db/index.js";
+import { getDb, logListening } from "./db/index.js";
 import { runMigrations } from "./db/migrations.js";
 import { getLocalProvider } from "./providers/local.js";
+import { getSoundCloudProvider } from "./providers/soundcloud.js";
 import { log } from "./logger.js";
 
 const SERVER_START = Date.now();
 const SERVER_VERSION = "0.1.0";
+const HOST = process.env.HOST ?? "0.0.0.0";
 const PORT = Number(process.env.PORT ?? 3001);
 
 // ─── In-memory rate limiter ──────────────────────────────────────────────────
@@ -42,13 +43,14 @@ function checkRateLimit(ip: string): boolean {
   return entry.count <= RATE_LIMIT_MAX;
 }
 
-// Periodically clean up expired entries
+// Periodically clean up expired entries; cap at 10k IPs
 setInterval(() => {
   const now = Date.now();
   for (const [ip, entry] of rateLimitMap) {
     if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS) rateLimitMap.delete(ip);
   }
-}, 5 * 60_000).unref();
+  if (rateLimitMap.size > 10_000) rateLimitMap.clear();
+}, 60_000).unref();
 
 // ─── App ─────────────────────────────────────────────────────────────────────
 
@@ -58,10 +60,47 @@ const app = new Hono();
 app.use("*", honoLogger((msg) => log.info("http", msg)));
 
 // CORS — allow configured origins or fall back to permissive (local dev / mobile app)
-const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(",").map((s: string) => s.trim());
-app.use("*", cors({
-  origin: allowedOrigins ?? "*",
-}));
+const configuredOrigins = new Set(
+  (process.env.ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((s: string) => s.trim())
+    .filter(Boolean)
+);
+
+function resolveAllowedOrigin(origin: string | undefined): string | null {
+  if (!origin) return null;
+  if (configuredOrigins.size > 0) {
+    return configuredOrigins.has(origin) ? origin : null;
+  }
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null;
+}
+
+app.use("*", async (c, next) => {
+  const origin = c.req.header("origin");
+  const allowedOrigin = resolveAllowedOrigin(origin);
+
+  if (c.req.method === "OPTIONS") {
+    const headers: Record<string, string> = {
+      "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      "Access-Control-Max-Age": "86400",
+    };
+    if (allowedOrigin) {
+      headers["Access-Control-Allow-Origin"] = allowedOrigin;
+      headers["Vary"] = "Origin";
+    }
+    return new Response(null, { status: 204, headers });
+  }
+
+  await next();
+
+  if (allowedOrigin) {
+    c.header("Access-Control-Allow-Origin", allowedOrigin);
+    c.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+    c.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    c.header("Vary", "Origin");
+  }
+});
 
 // Rate limiting (skip for audio streaming)
 app.use("*", async (c, next) => {
@@ -162,6 +201,57 @@ app.get("/api/server/info", (c) => {
   });
 });
 
+app.on(["GET", "HEAD"], "/api/artwork", async (c) => {
+  const rawUrl = c.req.query("url")?.trim();
+  if (!rawUrl) {
+    return c.json({ error: "url required" }, 400);
+  }
+
+  let upstreamURL: URL;
+  try {
+    upstreamURL = new URL(rawUrl);
+  } catch {
+    return c.json({ error: "Invalid artwork URL" }, 400);
+  }
+
+  if (!["http:", "https:"].includes(upstreamURL.protocol)) {
+    return c.json({ error: "Unsupported artwork protocol" }, 400);
+  }
+
+  try {
+    const upstream = await fetch(upstreamURL, {
+      method: c.req.method,
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!upstream.ok || (c.req.method != "HEAD" && !upstream.body)) {
+      return c.json({ error: `Artwork fetch failed: ${upstream.status}` }, 502);
+    }
+
+    const headers = new Headers();
+    headers.set("Content-Type", upstream.headers.get("content-type") ?? "image/jpeg");
+    headers.set("Cache-Control", upstream.headers.get("cache-control") ?? "public, max-age=86400");
+    for (const header of ["content-length", "etag", "last-modified", "accept-ranges"]) {
+      const value = upstream.headers.get(header);
+      if (value) {
+        headers.set(header, value);
+      }
+    }
+
+    if (c.req.method === "HEAD") {
+      return new Response(null, { status: 200, headers });
+    }
+
+    return new Response(upstream.body, { status: 200, headers });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : "Artwork fetch failed" }, 500);
+  }
+});
+
 // ─── Track listing ────────────────────────────────────────────────────────────
 
 app.get("/api/tracks", (c) => {
@@ -177,6 +267,62 @@ app.get("/api/tracks", (c) => {
   return c.json({ tracks: rows });
 });
 
+app.get("/api/tracks/by-ids", async (c) => {
+  const db = getDb();
+  const ids = (c.req.query("ids") ?? "")
+    .split(",")
+    .map((value) => decodeURIComponent(value).trim())
+    .filter(Boolean)
+    .slice(0, 500);
+
+  if (ids.length === 0) {
+    return c.json({ tracks: [] });
+  }
+
+  const uniqueIDs = Array.from(new Set(ids));
+  const soundCloudIDs = uniqueIDs.filter((id) => id.startsWith("sc_"));
+
+  if (soundCloudIDs.length > 0) {
+    const provider = getSoundCloudProvider();
+    for (const trackId of soundCloudIDs) {
+      try {
+        const meta = await provider.getTrackMetadata(trackId);
+        db.prepare(`
+          UPDATE tracks
+          SET title = $title,
+              artist = $artist,
+              album = $album,
+              duration = $duration,
+              cover_url = COALESCE($cover_url, cover_url),
+              updated_at = unixepoch()
+          WHERE id = $id
+        `).run({
+          $id: trackId,
+          $title: meta.title,
+          $artist: meta.artist,
+          $album: meta.album ?? null,
+          $duration: meta.duration,
+          $cover_url: meta.coverUrl ?? null,
+        });
+      } catch {
+        // Best effort refresh only.
+      }
+    }
+  }
+
+  const placeholders = uniqueIDs.map((_, index) => `$id${index}`).join(", ");
+  const params = Object.fromEntries(uniqueIDs.map((id, index) => [`$id${index}`, id]));
+  const rows = db.prepare(`SELECT * FROM tracks WHERE id IN (${placeholders})`).all(params) as Array<Record<string, unknown> & { id: string }>;
+  const rowsByID = new Map(rows.map((row) => [row.id, row]));
+  const orderedRows = uniqueIDs
+    .map((id) => rowsByID.get(id))
+    .filter((row): row is Record<string, unknown> & { id: string } => Boolean(row));
+
+  return c.json({
+    tracks: orderedRows,
+  });
+});
+
 // ─── History logging ──────────────────────────────────────────────────────────
 
 app.post("/api/history", async (c) => {
@@ -184,11 +330,11 @@ app.post("/api/history", async (c) => {
   if (!body.trackId || !body.action) {
     return c.json({ error: "trackId and action required" }, 400);
   }
-  const db = getDb();
-  db.prepare("INSERT INTO listening_history (track_id, action) VALUES ($id, $a)").run({
-    $id: body.trackId,
-    $a: body.action,
-  });
+  const validActions = new Set(["play", "pause", "skip", "like", "dislike", "complete"]);
+  if (!validActions.has(body.action)) {
+    return c.json({ error: "Invalid action" }, 400);
+  }
+  logListening(body.trackId, body.action);
   return c.json({ ok: true });
 });
 
@@ -254,7 +400,7 @@ app.get("/audio/local/:trackId", (c) => {
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
-log.info("server", `Starting Musaic v${SERVER_VERSION} on port ${PORT}`);
+log.info("server", `Starting Musaic v${SERVER_VERSION} on ${HOST}:${PORT}`);
 log.info("server", `DB: ${process.env.DB_PATH ?? "musaic.db"} | Downloads: ${process.env.DOWNLOADS_DIR ?? "downloads/"}`);
 
 // Run DB migrations
@@ -268,8 +414,8 @@ try {
 
 let httpServer: Server | null = null;
 
-const serverInstance = serve({ fetch: app.fetch, hostname: "0.0.0.0", port: PORT }, (info) => {
-  log.info("server", `Server ready at http://0.0.0.0:${info.port}`);
+const serverInstance = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) => {
+  log.info("server", `Server ready at http://${HOST}:${info.port}`);
   httpServer = serverInstance as unknown as Server;
 
   // Auto-scan music folder on startup

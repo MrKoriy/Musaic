@@ -28,15 +28,22 @@ interface PipelineJob {
 
 const jobs = new Map<string, PipelineJob>();
 
-// Clean up completed/failed jobs older than 1 hour to prevent unbounded growth
+// Clean up completed/failed jobs older than 10 min; cap at 200 entries
 setInterval(() => {
-  const cutoff = Date.now() - 3600_000;
+  const cutoff = Date.now() - 600_000;
   for (const [id, job] of jobs) {
     if ((job.status === "done" || job.status === "failed") && job.startedAt < cutoff) {
       jobs.delete(id);
     }
   }
-}, 300_000);
+  // Hard cap: remove oldest entries if map grows too large
+  if (jobs.size > 200) {
+    const sorted = [...jobs.entries()].sort((a, b) => a[1].startedAt - b[1].startedAt);
+    for (let i = 0; i < sorted.length - 200; i++) {
+      jobs.delete(sorted[i][0]);
+    }
+  }
+}, 60_000);
 
 export function getJobStatus(trackId: string): PipelineJob | null {
   return jobs.get(trackId) ?? null;
@@ -259,6 +266,11 @@ async function transcribeWithOpenRouter(
   artist: string,
   apiKey: string,
 ): Promise<string> {
+  const fileSize = fs.statSync(audioPath).size;
+  if (fileSize > 25 * 1024 * 1024) {
+    throw new Error("Audio file is too large for cloud transcription fallback (>25MB)");
+  }
+
   const audioBuffer = fs.readFileSync(audioPath);
   const audioBase64 = audioBuffer.toString("base64");
 
