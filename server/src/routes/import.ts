@@ -31,16 +31,38 @@ interface MatchedTrack extends ExternalTrack {
 
 // ─── Yandex Music Parser ────────────────────────────────────────────────────
 
-function parseYandexMusicURL(url: string): { owner: string; kind: string } | null {
-  const m = url.match(/music\.yandex\.(ru|com)\/users\/([^\/]+)\/playlists\/(\d+)/);
-  if (m) return { owner: m[2], kind: m[3] };
+function parseYandexMusicURL(url: string): { owner: string; kind: string } | { shareId: string } | null {
+  // Classic format: /users/{owner}/playlists/{kind}
+  const classic = url.match(/music\.yandex\.(ru|com)\/users\/([^\/]+)\/playlists\/(\d+)/);
+  if (classic) return { owner: classic[2], kind: classic[3] };
+
+  // New share format: /playlists/{uuid}
+  const share = url.match(/music\.yandex\.(ru|com)\/playlists\/(lk\.[a-f0-9-]+|[a-f0-9-]+)/i);
+  if (share) return { shareId: share[2] };
+
   return null;
+}
+
+async function resolveYandexShareUrl(shareId: string): Promise<{ owner: string; kind: string }> {
+  // Fetch the HTML page and extract owner login + kind from embedded JSON
+  const res = await fetch(
+    `https://music.yandex.ru/playlists/${encodeURIComponent(shareId)}`,
+    { headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" }, signal: AbortSignal.timeout(15_000) }
+  );
+  if (!res.ok) throw new Error(`Yandex returned ${res.status}`);
+  const html = await res.text();
+
+  const ownerMatch = html.match(/"owner":\{.*?"login":"([^"]+)"/);
+  const kindMatch = html.match(/"kind":(\d+)/);
+  if (!ownerMatch || !kindMatch) throw new Error("Could not resolve playlist owner/kind from share URL");
+
+  return { owner: ownerMatch[1], kind: kindMatch[1] };
 }
 
 async function fetchYandexPlaylist(owner: string, kind: string): Promise<{ title: string; tracks: ExternalTrack[] }> {
   const res = await fetch(
     `https://music.yandex.ru/handlers/playlist.jsx?owner=${encodeURIComponent(owner)}&kinds=${kind}&light=true`,
-    { signal: AbortSignal.timeout(15_000) }
+    { headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" }, signal: AbortSignal.timeout(15_000) }
   );
   if (!res.ok) throw new Error(`Yandex Music returned ${res.status}`);
 
@@ -158,7 +180,16 @@ router.post("/playlist", async (c) => {
   if (ym) {
     source = "yandex";
     try {
-      const result = await fetchYandexPlaylist(ym.owner, ym.kind);
+      let owner: string, kind: string;
+      if ("shareId" in ym) {
+        const resolved = await resolveYandexShareUrl(ym.shareId);
+        owner = resolved.owner;
+        kind = resolved.kind;
+      } else {
+        owner = ym.owner;
+        kind = ym.kind;
+      }
+      const result = await fetchYandexPlaylist(owner, kind);
       playlistTitle = result.title;
       externalTracks = result.tracks;
     } catch (err) {
@@ -171,6 +202,10 @@ router.post("/playlist", async (c) => {
   if (externalTracks.length === 0) {
     return c.json({ error: "Playlist is empty" }, 404);
   }
+
+  // Limit tracks to avoid timeout (default 100, max 500)
+  const limit = Math.min(500, Math.max(1, Number(c.req.query("limit") ?? 100)));
+  externalTracks = externalTracks.slice(0, limit);
 
   // Search for matches — process in batches of 3 to avoid rate limits
   const matches: MatchedTrack[] = [];
