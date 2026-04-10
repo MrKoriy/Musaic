@@ -295,8 +295,21 @@ export function clearVkConfig(): void {
 export function logListening(trackId: string, action: string, userId?: string | null): void {
   const db = getDb();
   db.transaction(() => {
+    // Dedup: skip if same (track_id, user_id, action) was recorded within the last 5 seconds
+    const uid = userId ?? null;
+    const recent = db.prepare(`
+      SELECT 1 FROM listening_history
+      WHERE track_id = $id
+        AND action = $action
+        AND (user_id = $uid OR (user_id IS NULL AND $uid IS NULL))
+        AND played_at >= unixepoch() - 5
+      LIMIT 1
+    `).get({ $id: trackId, $action: action, $uid: uid });
+
+    if (recent) return;
+
     db.prepare("INSERT INTO listening_history (track_id, action, user_id) VALUES ($id, $action, $uid)")
-      .run({ $id: trackId, $action: action, $uid: userId ?? null });
+      .run({ $id: trackId, $action: action, $uid: uid });
 
     if (action === "play") {
       db.prepare(`

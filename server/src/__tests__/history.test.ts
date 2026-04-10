@@ -119,7 +119,7 @@ describe("POST /api/history", () => {
     expect(row.play_count).toBe(0);
   });
 
-  it("records multiple plays and history entries", async () => {
+  it("records only one play when duplicate events fire within 5s", async () => {
     const trackId = seedTrack();
     const app = buildApp();
     for (let i = 0; i < 3; i++) {
@@ -131,6 +131,64 @@ describe("POST /api/history", () => {
     }
     const db = getDb();
     const count = db.prepare("SELECT COUNT(*) as n FROM listening_history WHERE track_id = $id AND action = 'play'").get({ $id: trackId }) as { n: number };
-    expect(count.n).toBe(3);
+    expect(count.n).toBe(1);
+  });
+
+  it("dedup: play_count increments only once for rapid duplicate plays", async () => {
+    const trackId = seedTrack();
+    const app = buildApp();
+    const db = getDb();
+
+    for (let i = 0; i < 3; i++) {
+      await app.request("/api/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trackId, action: "play" }),
+      });
+    }
+
+    const row = db.prepare("SELECT play_count FROM tracks WHERE id = $id").get({ $id: trackId }) as { play_count: number };
+    expect(row.play_count).toBe(1);
+  });
+
+  it("dedup: different actions for same track are each recorded", async () => {
+    const trackId = seedTrack();
+    const app = buildApp();
+    const db = getDb();
+
+    await app.request("/api/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trackId, action: "play" }),
+    });
+    await app.request("/api/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trackId, action: "pause" }),
+    });
+
+    const count = db.prepare("SELECT COUNT(*) as n FROM listening_history WHERE track_id = $id").get({ $id: trackId }) as { n: number };
+    expect(count.n).toBe(2);
+  });
+
+  it("dedup: different tracks with same action are each recorded", async () => {
+    const trackId1 = seedTrack();
+    const trackId2 = seedTrack();
+    const app = buildApp();
+    const db = getDb();
+
+    await app.request("/api/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trackId: trackId1, action: "play" }),
+    });
+    await app.request("/api/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trackId: trackId2, action: "play" }),
+    });
+
+    const count = db.prepare("SELECT COUNT(*) as n FROM listening_history WHERE action = 'play'").get() as { n: number };
+    expect(count.n).toBe(2);
   });
 });
