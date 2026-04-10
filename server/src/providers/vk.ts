@@ -11,7 +11,7 @@ import type { Track, TrackMeta, MusicProvider } from "../types.js";
 import path from "path";
 import fs from "fs";
 import { Readable } from "stream";
-import { fetchOnlineArtwork } from "./artwork.js";
+import { hydrateCachedCoverUrls, hydrateFallbackArtwork } from "./artwork.js";
 
 // Kate Mobile app credentials — override via env if desired
 const KATE_APP_ID = process.env.VK_APP_ID ?? "2685278";
@@ -182,68 +182,6 @@ function cacheVKTracks(tracks: Track[]): void {
       if (t.streamUrl) setCachedVkUrl(t.id, t.streamUrl);
     }
   })();
-}
-
-function hydrateCachedCoverUrls(tracks: Track[]): Track[] {
-  const missingTrackIDs = tracks
-    .filter((track) => !track.coverUrl)
-    .map((track) => track.id);
-
-  if (missingTrackIDs.length === 0) {
-    return tracks;
-  }
-
-  const db = getDb();
-  const bindings = Object.fromEntries(
-    missingTrackIDs.map((id, index) => [`$id${index}`, id])
-  );
-  const placeholders = missingTrackIDs.map((_, index) => `$id${index}`).join(", ");
-  const rows = db.prepare(
-    `SELECT id, cover_url
-     FROM tracks
-     WHERE id IN (${placeholders}) AND cover_url IS NOT NULL`
-  ).all(bindings) as Array<{ id: string; cover_url: string }>;
-
-  if (rows.length === 0) {
-    return tracks;
-  }
-
-  const coverByID = new Map(rows.map((row) => [row.id, row.cover_url]));
-  return tracks.map((track) => ({
-    ...track,
-    coverUrl: track.coverUrl ?? coverByID.get(track.id),
-  }));
-}
-
-async function hydrateFallbackArtwork(tracks: Track[]): Promise<Track[]> {
-  const hydratedFromCache = hydrateCachedCoverUrls(tracks);
-  const pending = hydratedFromCache.filter((track) => !track.coverUrl).slice(0, 16);
-  if (pending.length === 0) {
-    return hydratedFromCache;
-  }
-
-  const byID = new Map(hydratedFromCache.map((track) => [track.id, { ...track }]));
-  let cursor = 0;
-  const concurrency = Math.min(4, pending.length);
-
-  const workers = Array.from({ length: concurrency }, async () => {
-    while (cursor < pending.length) {
-      const current = pending[cursor++];
-      try {
-        const artwork = await fetchOnlineArtwork(current.artist, current.title);
-        if (!artwork?.url) continue;
-        const track = byID.get(current.id);
-        if (track && !track.coverUrl) {
-          track.coverUrl = artwork.url;
-        }
-      } catch {
-        // Best effort only. If external artwork is unavailable, keep the VK item.
-      }
-    }
-  });
-
-  await Promise.all(workers);
-  return hydratedFromCache.map((track) => byID.get(track.id) ?? track);
 }
 
 export class VKMusicProvider implements MusicProvider {
