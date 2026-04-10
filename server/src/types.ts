@@ -9,6 +9,8 @@ export interface Track {
   streamUrl?: string;
   localPath?: string;
   waveformUrl?: string;
+  mood?: string;
+  genre?: string;
   metadata?: Record<string, unknown>;
 }
 

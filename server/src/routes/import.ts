@@ -44,24 +44,36 @@ function parseYandexMusicURL(url: string): { owner: string; kind: string } | { s
 }
 
 async function resolveYandexShareUrl(shareId: string): Promise<{ owner: string; kind: string }> {
-  // Fetch the HTML page and extract owner login + kind from embedded JSON
-  const res = await fetch(
-    `https://music.yandex.ru/playlists/${encodeURIComponent(shareId)}`,
-    { headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" }, signal: AbortSignal.timeout(15_000) }
-  );
-  if (!res.ok) throw new Error(`Yandex returned ${res.status}`);
-  const html = await res.text();
+  // Fetch HTML page and extract owner login + kind — retry up to 2 times
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(
+        `https://music.yandex.ru/playlists/${encodeURIComponent(shareId)}`,
+        {
+          headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" },
+          signal: AbortSignal.timeout(20_000),
+          redirect: "follow",
+        }
+      );
+      if (!res.ok) { if (attempt === 0) continue; throw new Error(`Yandex returned ${res.status}`); }
+      const html = await res.text();
+      if (html.length < 1000) { if (attempt === 0) continue; throw new Error("Yandex returned empty page"); }
 
-  const ownerMatch = html.match(/"owner":\{.*?"login":"([^"]+)"/);
-  const kindMatch = html.match(/"kind":(\d+)/);
-  if (!ownerMatch || !kindMatch) throw new Error("Could not resolve playlist owner/kind from share URL");
-
-  return { owner: ownerMatch[1], kind: kindMatch[1] };
+      const ownerMatch = html.match(/"owner":\{[^}]*?"login":"([^"]+)"/);
+      const kindMatch = html.match(/"kind":(\d+)/);
+      if (ownerMatch && kindMatch) return { owner: ownerMatch[1], kind: kindMatch[1] };
+      if (attempt === 0) continue;
+    } catch (err) {
+      if (attempt === 0) { await new Promise(r => setTimeout(r, 1000)); continue; }
+      throw err;
+    }
+  }
+  throw new Error("Could not resolve playlist owner/kind from share URL");
 }
 
 async function fetchYandexPlaylist(owner: string, kind: string): Promise<{ title: string; tracks: ExternalTrack[] }> {
   const res = await fetch(
-    `https://music.yandex.ru/handlers/playlist.jsx?owner=${encodeURIComponent(owner)}&kinds=${kind}&light=true`,
+    `https://music.yandex.ru/handlers/playlist.jsx?owner=${encodeURIComponent(owner)}&kinds=${kind}&light=false`,
     { headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" }, signal: AbortSignal.timeout(15_000) }
   );
   if (!res.ok) throw new Error(`Yandex Music returned ${res.status}`);
@@ -111,48 +123,58 @@ function normalizeForMatch(s: string): string {
 
 function matchConfidence(external: ExternalTrack, found: Track): "high" | "medium" | "none" {
   const extTitle = normalizeForMatch(external.title);
-  const extArtist = normalizeForMatch(external.artist);
+  const extArtist = normalizeForMatch(external.artist).split(",")[0].trim();
   const foundTitle = normalizeForMatch(found.title);
   const foundArtist = normalizeForMatch(found.artist);
 
-  if (foundTitle === extTitle && foundArtist.includes(extArtist.split(",")[0])) return "high";
-  if (foundTitle.includes(extTitle) || extTitle.includes(foundTitle)) {
-    if (foundArtist.includes(extArtist.split(",")[0]) || extArtist.includes(foundArtist.split(",")[0])) {
-      return "medium";
-    }
-  }
+  const titleExact = foundTitle === extTitle;
+  const titleContains = foundTitle.includes(extTitle) || extTitle.includes(foundTitle);
+  const artistContains = foundArtist.includes(extArtist) || extArtist.includes(foundArtist);
+
+  // Also check if first word of artist matches (handles "DJ XYZ" vs "XYZ")
+  const extArtistFirst = extArtist.split(" ").pop() ?? extArtist;
+  const artistLoose = foundArtist.includes(extArtistFirst) && extArtistFirst.length >= 3;
+
+  if (titleExact && artistContains) return "high";
+  if (titleContains && artistContains) return "high";
+  if (titleExact && artistLoose) return "medium";
+  if (titleContains && artistLoose) return "medium";
+  // If title matches closely, accept even with different artist (covers, remixes)
+  if (titleExact) return "medium";
   return "none";
 }
 
 async function searchTrackAcrossProviders(ext: ExternalTrack): Promise<MatchedTrack> {
-  const query = `${ext.artist} ${ext.title}`;
+  const mainArtist = ext.artist.split(",")[0].trim();
+  const cleanTitle = ext.title.replace(/\([^)]*\)/g, "").replace(/\[[^\]]*\]/g, "").trim();
+  const query = `${mainArtist} ${cleanTitle}`;
   const result: MatchedTrack = { ...ext, confidence: "none" };
 
-  // Search SoundCloud first (free, no auth needed)
+  // Try SoundCloud first (faster, no auth)
   try {
     const scTracks = await getSoundCloudProvider().search(query, 3);
     for (const t of scTracks) {
       const conf = matchConfidence(ext, t);
       if (conf !== "none") {
-        result.match = t;
-        result.matchSource = "soundcloud";
-        result.confidence = conf;
-        if (conf === "high") return result;
+        return { ...result, match: t, matchSource: "soundcloud", confidence: conf };
       }
+    }
+    if (scTracks.length > 0) {
+      return { ...result, match: scTracks[0], matchSource: "soundcloud", confidence: "medium" };
     }
   } catch { /* skip */ }
 
-  // Then try VK
+  // Fallback: VK
   try {
     const vkTracks = (await getVKProvider().search(query)).slice(0, 3);
     for (const t of vkTracks) {
       const conf = matchConfidence(ext, t);
-      if (conf !== "none" && (result.confidence === "none" || conf === "high")) {
-        result.match = t;
-        result.matchSource = "vk";
-        result.confidence = conf;
-        if (conf === "high") return result;
+      if (conf !== "none") {
+        return { ...result, match: t, matchSource: "vk", confidence: conf };
       }
+    }
+    if (vkTracks.length > 0) {
+      return { ...result, match: vkTracks[0], matchSource: "vk", confidence: "medium" };
     }
   } catch { /* skip */ }
 
@@ -203,28 +225,42 @@ router.post("/playlist", async (c) => {
     return c.json({ error: "Playlist is empty" }, 404);
   }
 
-  // Limit tracks to avoid timeout (default 100, max 500)
-  const limit = Math.min(500, Math.max(1, Number(c.req.query("limit") ?? 100)));
-  externalTracks = externalTracks.slice(0, limit);
+  // Optional limit (0 = no limit)
+  const limitParam = Number(c.req.query("limit") ?? 0);
+  if (limitParam > 0) externalTracks = externalTracks.slice(0, limitParam);
 
-  // Search for matches — process in batches of 3 to avoid rate limits
+  // Search for matches — process in batches of 10 concurrently
+  const BATCH = 10;
   const matches: MatchedTrack[] = [];
-  for (let i = 0; i < externalTracks.length; i += 3) {
-    const batch = externalTracks.slice(i, i + 3);
+  for (let i = 0; i < externalTracks.length; i += BATCH) {
+    const batch = externalTracks.slice(i, i + BATCH);
     const batchResults = await Promise.allSettled(
       batch.map((t) => searchTrackAcrossProviders(t))
     );
-    for (const r of batchResults) {
+    for (let j = 0; j < batchResults.length; j++) {
+      const r = batchResults[j];
       if (r.status === "fulfilled") matches.push(r.value);
-      else matches.push({ ...batch[batchResults.indexOf(r)], confidence: "none" });
-    }
-    // Small delay between batches
-    if (i + 3 < externalTracks.length) {
-      await new Promise((r) => setTimeout(r, 300));
+      else matches.push({ ...batch[j], confidence: "none" });
     }
   }
 
+  // Upsert matched tracks into DB so they can be saved to playlists
   const matched = matches.filter((m) => m.confidence !== "none");
+  for (const m of matched) {
+    if (m.match) {
+      try {
+        upsertTrack({
+          id: m.match.id,
+          source: m.match.source,
+          title: m.match.title,
+          artist: m.match.artist,
+          album: m.match.album,
+          duration: m.match.duration ?? 0,
+          cover_url: m.match.coverUrl,
+        });
+      } catch { /* skip duplicates */ }
+    }
+  }
 
   return c.json({
     source,

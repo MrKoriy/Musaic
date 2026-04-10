@@ -22,6 +22,24 @@ import path from "path";
 import { Readable } from "stream";
 
 const router = new Hono();
+const DOWNLOADS_DIR = path.resolve(process.env.DOWNLOADS_DIR ?? "downloads");
+
+function getSafeTrackAudioPath(trackId: string): string | null {
+  const track = getTrack(trackId) as {
+    title?: string;
+    artist?: string;
+    album?: string;
+    duration?: number;
+    cover_url?: string;
+    local_path?: string;
+    source?: string;
+  } | null;
+  if (!track?.local_path) return null;
+
+  const resolved = path.resolve(track.local_path);
+  if (!fs.existsSync(resolved)) return null;
+  return resolved;
+}
 
 /**
  * GET /api/lyrics/pipeline/ready — check if AI pipeline dependencies are available
@@ -98,47 +116,68 @@ async function fetchAndRespond(
 
 /**
  * POST /api/lyrics/:trackId/generate
- * Body: { audioPath: string } (path on server filesystem)
- * Starts async AI pipeline; returns job status.
+ * Starts async AI pipeline from a trusted track file or server-side download.
  */
 router.post("/:trackId/generate", async (c) => {
   const trackId = decodeURIComponent(c.req.param("trackId"));
-  const body = await c.req.json<{ audioPath?: string }>().catch(() => ({} as { audioPath?: string }));
+  await c.req.json().catch(() => null);
 
-  let audioPath = body.audioPath;
-  if (!audioPath) {
-    const track = getTrack(trackId) as { local_path?: string; source?: string } | null;
-    audioPath = track?.local_path ?? undefined;
+  const track = getTrack(trackId) as {
+    id?: string;
+    title?: string;
+    artist?: string;
+    album?: string;
+    duration?: number;
+    cover_url?: string;
+    local_path?: string;
+    source?: string;
+  } | null;
 
-    // Auto-download if no local file exists
-    if (!audioPath && track) {
-      const downloadDir = process.env.DOWNLOADS_DIR ?? "downloads";
-      try {
-        if (trackId.startsWith("vk_") && getVKProvider().isAuthenticated()) {
-          audioPath = await getVKProvider().downloadTrack(trackId, downloadDir);
-        } else if (trackId.startsWith("sc_")) {
-          // Download SoundCloud track
-          const streamUrl = await getSoundCloudProvider().getStreamUrl(trackId);
-          fs.mkdirSync(downloadDir, { recursive: true });
-          const filename = `${trackId}.mp3`;
-          const localPath = path.join(downloadDir, filename);
-          if (!fs.existsSync(localPath)) {
-            const res = await fetch(streamUrl, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(60_000) });
-            if (!res.ok) throw new Error(`Download failed: ${res.status}`);
-            const writeStream = fs.createWriteStream(localPath);
-            await new Promise<void>((resolve, reject) => {
-              if (!res.body) { reject(new Error("No body")); return; }
-              Readable.fromWeb(res.body as any).pipe(writeStream);
-              writeStream.on("finish", resolve);
-              writeStream.on("error", reject);
-            });
-          }
-          upsertTrack({ id: trackId, source: "soundcloud", title: track.source ?? "", artist: "", duration: 0, local_path: localPath });
-          audioPath = localPath;
+  let audioPath = getSafeTrackAudioPath(trackId) ?? undefined;
+
+  if (!audioPath && track) {
+    try {
+      if (trackId.startsWith("vk_") && getVKProvider().isAuthenticated()) {
+        audioPath = await getVKProvider().downloadTrack(trackId, DOWNLOADS_DIR);
+      } else if (trackId.startsWith("sc_")) {
+        const streamUrl = await getSoundCloudProvider().getStreamUrl(trackId);
+        fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+        const filename = `${trackId}.mp3`;
+        const localPath = path.join(DOWNLOADS_DIR, filename);
+
+        if (!fs.existsSync(localPath)) {
+          const res = await fetch(streamUrl, {
+            headers: { "User-Agent": "Mozilla/5.0" },
+            signal: AbortSignal.timeout(60_000),
+          });
+          if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+
+          const writeStream = fs.createWriteStream(localPath);
+          await new Promise<void>((resolve, reject) => {
+            if (!res.body) {
+              reject(new Error("No body"));
+              return;
+            }
+            Readable.fromWeb(res.body as any).pipe(writeStream);
+            writeStream.on("finish", resolve);
+            writeStream.on("error", reject);
+          });
         }
-      } catch (e) {
-        console.error("[lyrics] Auto-download failed:", e);
+
+        upsertTrack({
+          id: trackId,
+          source: "soundcloud",
+          title: track.title ?? "Unknown Title",
+          artist: track.artist ?? "Unknown Artist",
+          album: track.album,
+          duration: Math.round(track.duration ?? 0),
+          cover_url: track.cover_url,
+          local_path: localPath,
+        });
+        audioPath = localPath;
       }
+    } catch (e) {
+      console.error("[lyrics] Auto-download failed:", e);
     }
   }
 

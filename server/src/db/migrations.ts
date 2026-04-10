@@ -93,6 +93,39 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_playlists_user_id ON playlists(user_id);
     `,
   },
+  {
+    version: 6,
+    description: "Add sessions table for multi-device auth + liked_tracks table for sync",
+    up: `
+      CREATE TABLE IF NOT EXISTS sessions (
+        token TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        device_name TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        last_used_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+      CREATE TABLE IF NOT EXISTS liked_tracks (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        track_id TEXT NOT NULL,
+        liked_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (user_id, track_id)
+      );
+
+      INSERT OR IGNORE INTO sessions (token, user_id, device_name)
+        SELECT token, id, 'legacy' FROM users WHERE token IS NOT NULL;
+    `,
+  },
+  {
+    version: 7,
+    description: "Add composite indexes for stats and listening history queries",
+    up: `
+      CREATE INDEX IF NOT EXISTS idx_lh_user_played ON listening_history(user_id, played_at);
+      CREATE INDEX IF NOT EXISTS idx_lh_action_played ON listening_history(action, played_at);
+      CREATE INDEX IF NOT EXISTS idx_tracks_album_artist ON tracks(album, artist);
+    `,
+  },
 ];
 
 /**
