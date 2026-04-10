@@ -11,12 +11,14 @@ import type { Track, TrackMeta, MusicProvider } from "../types.js";
 import path from "path";
 import fs from "fs";
 import { Readable } from "stream";
+import { fetchOnlineArtwork } from "./artwork.js";
 
 // Kate Mobile app credentials — override via env if desired
 const KATE_APP_ID = process.env.VK_APP_ID ?? "2685278";
 const KATE_SECRET = process.env.VK_APP_SECRET ?? "lxhD8OD7dMsqtXIm5IUY";
 const VK_API_VERSION = "5.131";
-const VK_API_BASE = "https://api.vk.com/method";
+// VK migrated from vk.com to vk.ru in September 2025
+const VK_API_BASE = "https://api.vk.ru/method";
 
 // Rate limiting: 3 req/sec max
 let _lastRequestTime = 0;
@@ -46,13 +48,25 @@ interface VKAudioItem {
   artist: string;
   duration: number;
   url?: string;
+  track_covers?: string[];
+  photo_34?: string;
+  photo_68?: string;
+  photo_135?: string;
+  photo_270?: string;
+  photo_300?: string;
+  photo_600?: string;
+  photo_1200?: string;
   album?: {
     id: number;
     title: string;
     thumb?: {
-      photo_135: string;
-      photo_270: string;
-      photo_600: string;
+      photo_34?: string;
+      photo_68?: string;
+      photo_135?: string;
+      photo_270?: string;
+      photo_300?: string;
+      photo_600?: string;
+      photo_1200?: string;
     };
   };
 }
@@ -74,12 +88,71 @@ function vkTrackId(item: VKAudioItem): string {
   return `vk_${item.owner_id}_${item.id}`;
 }
 
+function bestTrackCoverFromArray(trackCovers: string[] | undefined): string | undefined {
+  if (!trackCovers || trackCovers.length === 0) {
+    return undefined;
+  }
+
+  let bestUrl: string | undefined;
+  let bestScore = -1;
+
+  for (const url of trackCovers) {
+    if (!url?.trim()) continue;
+
+    let score = 0;
+    try {
+      const parsed = new URL(url);
+      const size = parsed.searchParams.get("size");
+      const match = size?.match(/^(\d+)x(\d+)$/);
+      if (match) {
+        score = Number(match[1]) * Number(match[2]);
+      }
+    } catch {
+      score = 0;
+    }
+
+    if (score >= bestScore) {
+      bestScore = score;
+      bestUrl = url;
+    }
+  }
+
+  return bestUrl;
+}
+
+function extractVKCoverUrl(item: VKAudioItem): string | undefined {
+  const albumThumb = item.album?.thumb;
+
+  return [
+    albumThumb?.photo_1200,
+    albumThumb?.photo_600,
+    albumThumb?.photo_300,
+    albumThumb?.photo_270,
+    albumThumb?.photo_135,
+    albumThumb?.photo_68,
+    albumThumb?.photo_34,
+    item.photo_1200,
+    item.photo_600,
+    item.photo_300,
+    item.photo_270,
+    item.photo_135,
+    item.photo_68,
+    item.photo_34,
+    bestTrackCoverFromArray(item.track_covers),
+  ].find((value) => typeof value === "string" && value.trim().length > 0);
+}
+
+function mergeVKAudioItems(base: VKAudioItem, extra: VKAudioItem): VKAudioItem {
+  return {
+    ...base,
+    ...extra,
+    album: extra.album ?? base.album,
+    track_covers: extra.track_covers ?? base.track_covers,
+  };
+}
+
 function vkItemToTrack(item: VKAudioItem): Track {
   const id = vkTrackId(item);
-  const coverUrl =
-    item.album?.thumb?.photo_270 ??
-    item.album?.thumb?.photo_135 ??
-    undefined;
   return {
     id,
     source: "vk",
@@ -87,7 +160,7 @@ function vkItemToTrack(item: VKAudioItem): Track {
     artist: item.artist.trim(),
     album: item.album?.title,
     duration: item.duration,
-    coverUrl,
+    coverUrl: extractVKCoverUrl(item),
     streamUrl: item.url || undefined,
   };
 }
@@ -109,6 +182,68 @@ function cacheVKTracks(tracks: Track[]): void {
       if (t.streamUrl) setCachedVkUrl(t.id, t.streamUrl);
     }
   })();
+}
+
+function hydrateCachedCoverUrls(tracks: Track[]): Track[] {
+  const missingTrackIDs = tracks
+    .filter((track) => !track.coverUrl)
+    .map((track) => track.id);
+
+  if (missingTrackIDs.length === 0) {
+    return tracks;
+  }
+
+  const db = getDb();
+  const bindings = Object.fromEntries(
+    missingTrackIDs.map((id, index) => [`$id${index}`, id])
+  );
+  const placeholders = missingTrackIDs.map((_, index) => `$id${index}`).join(", ");
+  const rows = db.prepare(
+    `SELECT id, cover_url
+     FROM tracks
+     WHERE id IN (${placeholders}) AND cover_url IS NOT NULL`
+  ).all(bindings) as Array<{ id: string; cover_url: string }>;
+
+  if (rows.length === 0) {
+    return tracks;
+  }
+
+  const coverByID = new Map(rows.map((row) => [row.id, row.cover_url]));
+  return tracks.map((track) => ({
+    ...track,
+    coverUrl: track.coverUrl ?? coverByID.get(track.id),
+  }));
+}
+
+async function hydrateFallbackArtwork(tracks: Track[]): Promise<Track[]> {
+  const hydratedFromCache = hydrateCachedCoverUrls(tracks);
+  const pending = hydratedFromCache.filter((track) => !track.coverUrl).slice(0, 16);
+  if (pending.length === 0) {
+    return hydratedFromCache;
+  }
+
+  const byID = new Map(hydratedFromCache.map((track) => [track.id, { ...track }]));
+  let cursor = 0;
+  const concurrency = Math.min(4, pending.length);
+
+  const workers = Array.from({ length: concurrency }, async () => {
+    while (cursor < pending.length) {
+      const current = pending[cursor++];
+      try {
+        const artwork = await fetchOnlineArtwork(current.artist, current.title);
+        if (!artwork?.url) continue;
+        const track = byID.get(current.id);
+        if (track && !track.coverUrl) {
+          track.coverUrl = artwork.url;
+        }
+      } catch {
+        // Best effort only. If external artwork is unavailable, keep the VK item.
+      }
+    }
+  });
+
+  await Promise.all(workers);
+  return hydratedFromCache.map((track) => byID.get(track.id) ?? track);
 }
 
 export class VKMusicProvider implements MusicProvider {
@@ -147,7 +282,7 @@ export class VKMusicProvider implements MusicProvider {
           "2fa_supported": "1",
         });
 
-        const res = await fetch(`https://oauth.vk.com/token?${params}`, {
+        const res = await fetch(`https://oauth.vk.ru/access_token?${params}`, {
           headers: { "User-Agent": client.ua },
           signal: AbortSignal.timeout(15_000),
         });
@@ -218,17 +353,32 @@ export class VKMusicProvider implements MusicProvider {
       signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) {
+      if (res.status === 401) {
+        this.token = null;
+        clearVkConfig();
+        throw new Error("VK token expired or invalid (HTTP 401). Re-authenticate via /api/vk/oauth-url.");
+      }
       throw new Error(`VK API ${method} HTTP error: ${res.status}`);
     }
     const json = (await res.json()) as VKApiResponse<T>;
     if (json.error) {
-      if (json.error.error_code === 5) {
-        // Auth error — clear token from memory AND database
+      const code = json.error.error_code;
+      if (code === 5) {
         this.token = null;
         clearVkConfig();
         throw new Error("VK token expired or invalid. Re-authenticate.");
       }
-      throw new Error(`VK API error ${json.error.error_code}: ${json.error.error_msg}`);
+      if (code === 25) {
+        throw new Error("VK token needs confirmation. Try re-authenticating via OAuth browser flow.");
+      }
+      if (code === 201) {
+        throw new Error("VK audio access denied. Token must come from Kate Mobile OAuth (client_id 2685278) with 'audio' scope.");
+      }
+      if (code === 14) {
+        const captchaImg = (json.error as any).captcha_img;
+        throw new Error(`VK captcha required${captchaImg ? `: ${captchaImg}` : ". Slow down requests."}`);
+      }
+      throw new Error(`VK API error ${code}: ${json.error.error_msg}`);
     }
     if (json.response === undefined) {
       throw new Error(`VK API ${method}: unexpected response shape`);
@@ -236,12 +386,47 @@ export class VKMusicProvider implements MusicProvider {
     return json.response;
   }
 
+  private async hydrateArtworkIfNeeded(items: VKAudioItem[]): Promise<VKAudioItem[]> {
+    const missingArtwork = items.filter((item) => !extractVKCoverUrl(item));
+    if (missingArtwork.length === 0) {
+      return items;
+    }
+
+    const enriched = new Map<string, VKAudioItem>();
+    const refs = missingArtwork.map((item) => `${item.owner_id}_${item.id}`);
+
+    for (let idx = 0; idx < refs.length; idx += 100) {
+      const batch = refs.slice(idx, idx + 100);
+      try {
+        const response = await this.apiCall<VKAudioItem[]>("audio.getById", {
+          audios: batch.join(","),
+        });
+        for (const item of response) {
+          enriched.set(vkTrackId(item), item);
+        }
+      } catch {
+        // Best effort: keep original items if VK refuses extra metadata lookup.
+        return items;
+      }
+    }
+
+    if (enriched.size === 0) {
+      return items;
+    }
+
+    return items.map((item) => {
+      const detailed = enriched.get(vkTrackId(item));
+      return detailed ? mergeVKAudioItems(item, detailed) : item;
+    });
+  }
+
   async search(query: string): Promise<Track[]> {
     const resp = await this.apiCall<{ count: number; items: VKAudioItem[] }>(
       "audio.search",
       { q: query, count: 50, auto_complete: 1, sort: 2 }
     );
-    const tracks = resp.items.map(vkItemToTrack);
+    const items = await this.hydrateArtworkIfNeeded(resp.items);
+    const tracks = await hydrateFallbackArtwork(items.map(vkItemToTrack));
     cacheVKTracks(tracks);
     return tracks;
   }
@@ -282,14 +467,15 @@ export class VKMusicProvider implements MusicProvider {
       throw new Error(`VK track not found: ${trackId}`);
     }
     const item = items[0];
+    const [track] = await hydrateFallbackArtwork([vkItemToTrack(item)]);
     return {
-      id: vkTrackId(item),
-      source: "vk",
-      title: item.title.trim(),
-      artist: item.artist.trim(),
-      album: item.album?.title,
-      duration: item.duration,
-      coverUrl: item.album?.thumb?.photo_270,
+      id: track.id,
+      source: track.source,
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      duration: track.duration,
+      coverUrl: track.coverUrl,
       bitrate: 128, // VK typically 128-320kbps MP3
     };
   }
@@ -299,7 +485,8 @@ export class VKMusicProvider implements MusicProvider {
       "audio.search",
       { q: artistId, count: 100, sort: 0, performer_only: 1 }
     );
-    const tracks = resp.items.map(vkItemToTrack);
+    const items = await this.hydrateArtworkIfNeeded(resp.items);
+    const tracks = await hydrateFallbackArtwork(items.map(vkItemToTrack));
     cacheVKTracks(tracks);
     return tracks;
   }
@@ -310,7 +497,8 @@ export class VKMusicProvider implements MusicProvider {
       "audio.get",
       { count, offset }
     );
-    const tracks = resp.items.map(vkItemToTrack);
+    const items = await this.hydrateArtworkIfNeeded(resp.items);
+    const tracks = await hydrateFallbackArtwork(items.map(vkItemToTrack));
     cacheVKTracks(tracks);
     return tracks;
   }
@@ -344,7 +532,7 @@ export class VKMusicProvider implements MusicProvider {
     const res = await fetch(streamUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0",
-        Referer: "https://vk.com/",
+        Referer: "https://vk.ru/",
       },
       signal: AbortSignal.timeout(120_000), // downloads can take a while
     });
@@ -389,7 +577,31 @@ export class VKMusicProvider implements MusicProvider {
       "audio.getRecommendations",
       { count }
     );
-    return resp.items.map(vkItemToTrack);
+    const items = await this.hydrateArtworkIfNeeded(resp.items);
+    const tracks = await hydrateFallbackArtwork(items.map(vkItemToTrack));
+    cacheVKTracks(tracks);
+    return tracks;
+  }
+
+  /** Search VK playlists by query */
+  async searchPlaylists(query: string, count = 5): Promise<import("./soundcloud.js").ExternalPlaylist[]> {
+    try {
+      const resp = await this.apiCall<{ count: number; items: VKPlaylist[] }>(
+        "audio.searchPlaylists",
+        { q: query, count }
+      );
+      return resp.items.map((p) => ({
+        id: `vk_playlist_${p.owner_id}_${p.id}`,
+        source: "vk",
+        title: p.title,
+        author: "VK",
+        trackCount: p.count,
+        coverUrl: p.photo?.photo_600 ?? p.photo?.photo_270 ?? undefined,
+      }));
+    } catch {
+      // audio.searchPlaylists may not be available — fallback to user playlists filtered
+      return [];
+    }
   }
 
   /** Get user's VK playlists */
@@ -412,7 +624,8 @@ export class VKMusicProvider implements MusicProvider {
       "audio.get",
       params
     );
-    const tracks = resp.items.map(vkItemToTrack);
+    const items = await this.hydrateArtworkIfNeeded(resp.items);
+    const tracks = await hydrateFallbackArtwork(items.map(vkItemToTrack));
     cacheVKTracks(tracks);
     return tracks;
   }
