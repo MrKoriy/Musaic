@@ -2,16 +2,38 @@ import { Hono } from "hono";
 import { getVKProvider } from "../providers/vk.js";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 
 const router = new Hono();
 
 const DOWNLOADS_DIR = process.env.DOWNLOADS_DIR ?? path.join(process.cwd(), "downloads");
+
+// CSRF state store for OAuth flow — state token → expiry timestamp
+const csrfStateStore = new Map<string, number>();
+const CSRF_STATE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [state, expiry] of csrfStateStore) {
+    if (now > expiry) csrfStateStore.delete(state);
+  }
+}, 60_000).unref();
+
+function callbackBaseUrl(c: { req: { header(name: string): string | undefined } }): string {
+  const forwardedProto = c.req.header("x-forwarded-proto");
+  const host = c.req.header("host") ?? "localhost:3001";
+  const protocol = forwardedProto ?? (host.startsWith("localhost") || host.startsWith("127.0.0.1") ? "http" : "https");
+  return `${protocol}://${host}`;
+}
 
 /**
  * POST /api/vk/auth
  * Body: { username: string, password: string }
  */
 router.post("/auth", async (c) => {
+  if (process.env.ALLOW_VK_PASSWORD_AUTH !== "1") {
+    return c.json({ error: "Password auth is disabled. Use OAuth token login instead." }, 403);
+  }
   const body = await c.req.json<{ username?: string; password?: string }>();
   if (!body.username || !body.password) {
     return c.json({ error: "username and password required" }, 400);
@@ -26,6 +48,115 @@ router.post("/auth", async (c) => {
       return c.json({ error: msg, requires2FA: true }, 403);
     }
     return c.json({ error: msg }, 401);
+  }
+});
+
+/**
+ * GET /api/vk/oauth-url — returns OAuth URL for browser-based login
+ */
+router.get("/oauth-url", (c) => {
+  const redirectUri = `${callbackBaseUrl(c)}/api/vk/oauth-callback`;
+  const state = crypto.randomBytes(16).toString("hex");
+  csrfStateStore.set(state, Date.now() + CSRF_STATE_TTL_MS);
+  const url = `https://oauth.vk.ru/authorize?client_id=2685278&display=mobile&redirect_uri=${encodeURIComponent(redirectUri)}&scope=audio,offline&response_type=token&v=5.131&revoke=1&state=${state}`;
+  return c.json({ url, redirectUri });
+});
+
+/**
+ * GET /api/vk/oauth-callback — HTML page that extracts token from URL fragment
+ * VK implicit flow puts token in the hash: #access_token=...&user_id=...
+ * This page reads it via JS and POSTs to /api/vk/auth-token
+ */
+router.get("/oauth-callback", (c) => {
+  const baseUrl = callbackBaseUrl(c);
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: -apple-system, sans-serif; background: #0d0d14; color: #fff; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .card { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12); border-radius: 16px; padding: 32px; text-align: center; max-width: 360px; }
+    h2 { margin: 0 0 8px; }
+    p { color: rgba(255,255,255,0.6); margin: 0; }
+    .spinner { width: 32px; height: 32px; border: 3px solid rgba(255,255,255,0.1); border-top-color: #e91e8c; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 16px auto; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .success { color: #4ade80; }
+    .error { color: #e91e8c; }
+  </style>
+</head>
+<body>
+  <div class="card" id="card">
+    <div class="spinner" id="spinner"></div>
+    <h2>Connecting VK...</h2>
+    <p id="status">Authorizing your account</p>
+  </div>
+  <script>
+    (async function() {
+      const hash = window.location.hash.substring(1);
+      const params = new URLSearchParams(hash);
+      const token = params.get('access_token');
+      const userId = params.get('user_id');
+      const state = params.get('state');
+      const statusEl = document.getElementById('status');
+      const spinner = document.getElementById('spinner');
+
+      if (!token) {
+        spinner.style.display = 'none';
+        statusEl.className = 'error';
+        statusEl.textContent = 'No token received. Please try again.';
+        return;
+      }
+
+      try {
+        const res = await fetch('${baseUrl}/api/vk/auth-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, username: userId ? 'VK User ' + userId : 'VK User', state }),
+        });
+        const data = await res.json();
+        spinner.style.display = 'none';
+        if (data.ok) {
+          statusEl.className = 'success';
+          statusEl.textContent = 'Connected! You can close this page and return to Musaic.';
+          document.querySelector('h2').textContent = 'VK Connected';
+        } else {
+          statusEl.className = 'error';
+          statusEl.textContent = data.error || 'Connection failed';
+        }
+      } catch (e) {
+        spinner.style.display = 'none';
+        statusEl.className = 'error';
+        statusEl.textContent = 'Network error: ' + e.message;
+      }
+    })();
+  </script>
+</body>
+</html>`;
+  return c.html(html);
+});
+
+/**
+ * POST /api/vk/auth-token — authenticate with a pre-obtained token
+ * Body: { token: string, username?: string }
+ */
+router.post("/auth-token", async (c) => {
+  const body = await c.req.json<{ token?: string; username?: string; state?: string }>();
+  if (!body.token) return c.json({ error: "token required" }, 400);
+
+  // Verify CSRF state if one is in the store (OAuth flow was initiated via /oauth-url)
+  if (csrfStateStore.size > 0 || body.state) {
+    const expiry = body.state ? csrfStateStore.get(body.state) : undefined;
+    if (!expiry || Date.now() > expiry) {
+      return c.json({ error: "Invalid or expired OAuth state" }, 403);
+    }
+    csrfStateStore.delete(body.state!); // consume once
+  }
+
+  try {
+    getVKProvider().setToken(body.token, body.username ?? "VK User");
+    return c.json({ ok: true });
+  } catch (err: unknown) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });
 
@@ -141,8 +272,53 @@ router.get("/proxy/:trackId", async (c) => {
   const trackId = c.req.param("trackId");
   try {
     const url = await getVKProvider().getStreamUrl(trackId);
-    // Redirect to the actual VK CDN URL
     return c.redirect(url, 302);
+  } catch (err: unknown) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+/**
+ * GET /api/vk/me — returns authenticated user info
+ */
+router.get("/me", (c) => {
+  const p = getVKProvider();
+  if (!p.isAuthenticated()) return c.json({ authenticated: false, username: null });
+  return c.json({ authenticated: true, username: p.getUsername() });
+});
+
+/**
+ * POST /api/vk/logout
+ */
+router.post("/logout", (c) => {
+  getVKProvider().logout();
+  return c.json({ ok: true });
+});
+
+/**
+ * GET /api/vk/playlists?offset=0&count=50
+ */
+router.get("/playlists", async (c) => {
+  const offset = Number(c.req.query("offset") ?? 0);
+  const count = Math.min(Number(c.req.query("count") ?? 50), 100);
+  try {
+    const playlists = await getVKProvider().getPlaylists(offset, count);
+    return c.json({ playlists });
+  } catch (err: unknown) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+/**
+ * GET /api/vk/playlists/:id/tracks?ownerId=xxx
+ */
+router.get("/playlists/:id/tracks", async (c) => {
+  const playlistId = Number(c.req.param("id"));
+  const ownerId = c.req.query("ownerId") ? Number(c.req.query("ownerId")) : undefined;
+  if (isNaN(playlistId)) return c.json({ error: "Invalid playlist id" }, 400);
+  try {
+    const tracks = await getVKProvider().getPlaylistTracks(playlistId, ownerId);
+    return c.json({ tracks });
   } catch (err: unknown) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }

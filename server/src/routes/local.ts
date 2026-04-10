@@ -367,6 +367,39 @@ artistsRouter.get("/tracks", (c) => {
   return c.json({ tracks: rows });
 });
 
+// ─── Playlist helpers ─────────────────────────────────────────────────────────
+
+function playlistOwnershipCheck(
+  id: string,
+  userId: string | undefined
+): { status: number; error: string } | null {
+  const db = getDb();
+  const row = db.prepare("SELECT user_id FROM playlists WHERE id = $id")
+    .get({ $id: id }) as { user_id: string | null } | null;
+  if (!row) return { status: 404, error: "Playlist not found" };
+  if (row.user_id && row.user_id !== userId) return { status: 403, error: "Forbidden" };
+  return null;
+}
+
+const ALLOWED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+
+function validateImageMagicBytes(data: Buffer, mimeType: string): boolean {
+  const mime = mimeType.split(";")[0]!.trim().toLowerCase();
+  if (!ALLOWED_IMAGE_MIMES.has(mime)) return false;
+  if (data.length < 12) return false;
+  if (mime === "image/jpeg") return data[0] === 0xFF && data[1] === 0xD8 && data[2] === 0xFF;
+  if (mime === "image/png") {
+    return data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4E && data[3] === 0x47 &&
+           data[4] === 0x0D && data[5] === 0x0A && data[6] === 0x1A && data[7] === 0x0A;
+  }
+  if (mime === "image/gif") return data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x38;
+  if (mime === "image/webp") {
+    return data[0] === 0x52 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x46 &&
+           data[8] === 0x57 && data[9] === 0x45 && data[10] === 0x42 && data[11] === 0x50;
+  }
+  return false;
+}
+
 // ─── Playlists Router ─────────────────────────────────────────────────────────
 
 export const playlistsRouter = new Hono();
@@ -386,6 +419,9 @@ playlistsRouter.post("/", async (c) => {
 });
 
 playlistsRouter.delete("/:id", (c) => {
+  const userId = (c as any).get("userId") as string | undefined;
+  const ownerErr = playlistOwnershipCheck(c.req.param("id"), userId);
+  if (ownerErr) return c.json({ error: ownerErr.error }, ownerErr.status as any);
   deletePlaylist(c.req.param("id"));
   return c.json({ ok: true });
 });
@@ -395,6 +431,9 @@ playlistsRouter.get("/:id/tracks", (c) => {
 });
 
 playlistsRouter.post("/:id/tracks", async (c) => {
+  const userId = (c as any).get("userId") as string | undefined;
+  const ownerErr = playlistOwnershipCheck(c.req.param("id"), userId);
+  if (ownerErr) return c.json({ error: ownerErr.error }, ownerErr.status as any);
   const body = await c.req.json<{ trackId?: string; position?: number }>();
   if (!body.trackId) return c.json({ error: "trackId required" }, 400);
   const tracks = getPlaylistTracks(c.req.param("id"));
@@ -403,6 +442,9 @@ playlistsRouter.post("/:id/tracks", async (c) => {
 });
 
 playlistsRouter.delete("/:id/tracks/:trackId", (c) => {
+  const userId = (c as any).get("userId") as string | undefined;
+  const ownerErr = playlistOwnershipCheck(c.req.param("id"), userId);
+  if (ownerErr) return c.json({ error: ownerErr.error }, ownerErr.status as any);
   removeTrackFromPlaylist(c.req.param("id"), c.req.param("trackId"));
   return c.json({ ok: true });
 });
@@ -411,14 +453,15 @@ playlistsRouter.delete("/:id/tracks/:trackId", (c) => {
 
 playlistsRouter.post("/:id/image", async (c) => {
   const id = c.req.param("id");
-  const body = await c.req.json<{ imageBase64?: string; mimeType?: string }>();
-  if (!body.imageBase64 || !body.mimeType?.startsWith("image/")) {
-    return c.json({ error: "imageBase64 and valid mimeType required" }, 400);
-  }
+  const userId = (c as any).get("userId") as string | undefined;
+  const ownerErr = playlistOwnershipCheck(id, userId);
+  if (ownerErr) return c.json({ error: ownerErr.error }, ownerErr.status as any);
 
-  const db = getDb();
-  const existing = db.prepare("SELECT id FROM playlists WHERE id = $id").get({ $id: id });
-  if (!existing) return c.json({ error: "Playlist not found" }, 404);
+  const body = await c.req.json<{ imageBase64?: string; mimeType?: string }>();
+  const mime = body.mimeType?.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (!body.imageBase64 || !ALLOWED_IMAGE_MIMES.has(mime)) {
+    return c.json({ error: "imageBase64 and mimeType (jpeg/png/gif/webp) required" }, 400);
+  }
 
   let data: Buffer;
   try {
@@ -429,8 +472,11 @@ playlistsRouter.post("/:id/image", async (c) => {
   if (!data.length || data.length > 4 * 1024 * 1024) {
     return c.json({ error: "Image is empty or exceeds 4MB" }, 400);
   }
+  if (!validateImageMagicBytes(data, mime)) {
+    return c.json({ error: "Image data does not match declared MIME type" }, 400);
+  }
 
-  setPlaylistCoverData(id, data, body.mimeType);
+  setPlaylistCoverData(id, data, mime);
   return c.json({ ok: true, cover_url: `/api/playlists/${encodeURIComponent(id)}/image` });
 });
 
@@ -453,6 +499,9 @@ playlistsRouter.get("/:id/image", (c) => {
 // ─── DELETE /api/playlists/:id/image — remove custom playlist cover ─────────
 
 playlistsRouter.delete("/:id/image", (c) => {
+  const userId = (c as any).get("userId") as string | undefined;
+  const ownerErr = playlistOwnershipCheck(c.req.param("id"), userId);
+  if (ownerErr) return c.json({ error: ownerErr.error }, ownerErr.status as any);
   clearPlaylistCoverData(c.req.param("id"));
   return c.json({ ok: true });
 });
@@ -461,13 +510,14 @@ playlistsRouter.delete("/:id/image", (c) => {
 
 playlistsRouter.patch("/:id", async (c) => {
   const id = c.req.param("id");
+  const userId = (c as any).get("userId") as string | undefined;
+  const ownerErr = playlistOwnershipCheck(id, userId);
+  if (ownerErr) return c.json({ error: ownerErr.error }, ownerErr.status as any);
   const body = await c.req.json<{ name?: string; description?: string }>();
   if (!body.name && body.description === undefined) {
     return c.json({ error: "name or description required" }, 400);
   }
   const db = getDb();
-  const existing = db.prepare("SELECT id FROM playlists WHERE id = $id").get({ $id: id });
-  if (!existing) return c.json({ error: "Playlist not found" }, 404);
 
   if (body.name?.trim()) {
     db.prepare("UPDATE playlists SET name = $n, updated_at = unixepoch() WHERE id = $id")

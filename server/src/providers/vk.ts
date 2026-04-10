@@ -13,9 +13,9 @@ import fs from "fs";
 import { Readable } from "stream";
 import { hydrateCachedCoverUrls, hydrateFallbackArtwork } from "./artwork.js";
 
-// Kate Mobile app credentials — override via env if desired
-const KATE_APP_ID = process.env.VK_APP_ID ?? "2685278";
-const KATE_SECRET = process.env.VK_APP_SECRET ?? "lxhD8OD7dMsqtXIm5IUY";
+// Kate Mobile app credentials — must be set via env vars
+const KATE_APP_ID = process.env.VK_APP_ID;
+const KATE_SECRET = process.env.VK_APP_SECRET;
 const VK_API_VERSION = "5.131";
 // VK migrated from vk.com to vk.ru in September 2025
 const VK_API_BASE = "https://api.vk.ru/method";
@@ -202,8 +202,8 @@ export class VKMusicProvider implements MusicProvider {
   async authenticate(username: string, password: string): Promise<void> {
     // Try multiple VK app credentials (Kate Mobile, VK Official, VK Android)
     const clients = [
-      { id: KATE_APP_ID, secret: KATE_SECRET, ua: "KateMobileAndroid/56 lite-460 (Android 4.4.2; SDK 19; x86; unknown Android SDK built for x86; en)", name: "Kate" },
-      { id: process.env.VK_OFFICIAL_APP_ID ?? "2274003", secret: process.env.VK_OFFICIAL_APP_SECRET ?? "hHbZxrka2uZ6jB1inYsH", ua: "VKAndroidApp/5.52-4543 (Android 5.1.1; SDK 22; x86_64; unknown Android SDK built for x86_64; en; 320x240)", name: "VK Official" },
+      { id: KATE_APP_ID ?? "", secret: KATE_SECRET ?? "", ua: "KateMobileAndroid/56 lite-460 (Android 4.4.2; SDK 19; x86; unknown Android SDK built for x86; en)", name: "Kate" },
+      { id: process.env.VK_OFFICIAL_APP_ID ?? "", secret: process.env.VK_OFFICIAL_APP_SECRET ?? "", ua: "VKAndroidApp/5.52-4543 (Android 5.1.1; SDK 22; x86_64; unknown Android SDK built for x86_64; en; 320x240)", name: "VK Official" },
     ];
 
     let lastError = "";

@@ -29,8 +29,8 @@ const PORT = Number(process.env.PORT ?? 3001);
 
 // ─── In-memory rate limiter ──────────────────────────────────────────────────
 
-const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
-const RATE_LIMIT_MAX = 300;          // max requests per window per IP
+const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60_000);
+const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX ?? 300);
 
 const rateLimitMap = new Map<string, { count: number; windowStart: number }>();
 
@@ -45,6 +45,22 @@ function checkRateLimit(ip: string): boolean {
   return entry.count <= RATE_LIMIT_MAX;
 }
 
+// Stricter rate limiter for auth endpoints (10 req/min per IP)
+const AUTH_RATE_LIMIT_WINDOW_MS = 60_000;
+const AUTH_RATE_LIMIT_MAX = 10;
+const authRateLimitMap = new Map<string, { count: number; windowStart: number }>();
+
+function checkAuthRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = authRateLimitMap.get(ip);
+  if (!entry || now - entry.windowStart > AUTH_RATE_LIMIT_WINDOW_MS) {
+    authRateLimitMap.set(ip, { count: 1, windowStart: now });
+    return true;
+  }
+  entry.count++;
+  return entry.count <= AUTH_RATE_LIMIT_MAX;
+}
+
 // Periodically clean up expired entries; cap at 10k IPs
 setInterval(() => {
   const now = Date.now();
@@ -52,6 +68,9 @@ setInterval(() => {
     if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS) rateLimitMap.delete(ip);
   }
   if (rateLimitMap.size > 10_000) rateLimitMap.clear();
+  for (const [ip, entry] of authRateLimitMap) {
+    if (now - entry.windowStart > AUTH_RATE_LIMIT_WINDOW_MS) authRateLimitMap.delete(ip);
+  }
 }, 60_000).unref();
 
 // ─── App ─────────────────────────────────────────────────────────────────────
@@ -134,14 +153,36 @@ app.use("/api/*", async (c, next) => {
     if (token) {
       try {
         const db = getDb();
-        const user = db.prepare("SELECT id, username FROM users WHERE token = $t").get({ $t: token }) as { id: string; username: string } | null;
+        // Check sessions table first (multi-device), fallback to legacy users.token
+        let user = db.prepare(`
+          SELECT u.id, u.username FROM sessions s
+          JOIN users u ON u.id = s.user_id
+          WHERE s.token = $t
+        `).get({ $t: token }) as { id: string; username: string } | null;
+        if (!user) {
+          user = db.prepare("SELECT id, username FROM users WHERE token = $t").get({ $t: token }) as { id: string; username: string } | null;
+        }
         if (user) {
           (c as any).set("userId", user.id);
           (c as any).set("username", user.username);
-          db.prepare("UPDATE users SET last_seen_at = unixepoch() WHERE id = $id").run({ $id: user.id });
+          db.prepare("UPDATE sessions SET last_used_at = unixepoch() WHERE token = $t").run({ $t: token });
         }
-      } catch { /* ignore auth errors — treat as anonymous */ }
+      } catch (err) {
+        log.warn("auth", `Token validation error: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
+  }
+  return next();
+});
+
+// ─── Auth rate limiting (stricter than global) ──────────────────────────────
+app.use("/api/auth/*", async (c, next) => {
+  const ip =
+    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
+    c.req.header("x-real-ip") ??
+    "local";
+  if (!checkAuthRateLimit(ip)) {
+    return c.json({ error: "Too many auth attempts. Try again later." }, 429);
   }
   return next();
 });
@@ -166,6 +207,20 @@ app.route("/api/smart-playlists", smartPlaylistRoutes);
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 
+// Cached track count for health check (refreshed every 60s)
+let cachedTrackCount = 0;
+let trackCountLastRefresh = 0;
+function getCachedTrackCount(): number {
+  const now = Date.now();
+  if (now - trackCountLastRefresh > 60_000) {
+    try {
+      cachedTrackCount = (getDb().prepare("SELECT COUNT(*) as n FROM tracks").get() as { n: number }).n;
+    } catch { /* keep previous value */ }
+    trackCountLastRefresh = now;
+  }
+  return cachedTrackCount;
+}
+
 app.get("/health", (c) => {
   const mem = process.memoryUsage();
 
@@ -173,7 +228,8 @@ app.get("/health", (c) => {
   let trackCount = 0;
   try {
     const db = getDb();
-    trackCount = (db.prepare("SELECT COUNT(*) as n FROM tracks").get() as { n: number }).n;
+    db.prepare("SELECT 1").get(); // lightweight connectivity check
+    trackCount = getCachedTrackCount();
     dbOk = true;
   } catch { /* ignore */ }
 
@@ -205,6 +261,9 @@ app.get("/health", (c) => {
 // ─── Server info ──────────────────────────────────────────────────────────────
 
 app.get("/api/server/info", (c) => {
+  const userId = (c as any).get("userId") as string | undefined;
+  if (!userId) return c.json({ error: "Not authenticated" }, 401);
+
   const db = getDb();
   const trackCount = (db.prepare("SELECT COUNT(*) as n FROM tracks").get() as { n: number }).n;
   const lyricsCount = (db.prepare("SELECT COUNT(*) as n FROM lyrics_cache").get() as { n: number }).n;
@@ -308,28 +367,36 @@ app.get("/api/tracks/by-ids", async (c) => {
 
   if (soundCloudIDs.length > 0) {
     const provider = getSoundCloudProvider();
-    for (const trackId of soundCloudIDs) {
-      try {
-        const meta = await provider.getTrackMetadata(trackId);
-        db.prepare(`
-          UPDATE tracks
-          SET title = $title,
-              artist = $artist,
-              album = $album,
-              duration = $duration,
-              cover_url = COALESCE($cover_url, cover_url),
-              updated_at = unixepoch()
-          WHERE id = $id
-        `).run({
-          $id: trackId,
-          $title: meta.title,
-          $artist: meta.artist,
-          $album: meta.album ?? null,
-          $duration: meta.duration,
-          $cover_url: meta.coverUrl ?? null,
-        });
-      } catch {
-        // Best effort refresh only.
+    // Fetch metadata concurrently in batches of 5 (instead of sequential N+1)
+    const BATCH_SIZE = 5;
+    for (let i = 0; i < soundCloudIDs.length; i += BATCH_SIZE) {
+      const batch = soundCloudIDs.slice(i, i + BATCH_SIZE);
+      const results = await Promise.allSettled(
+        batch.map((trackId) => provider.getTrackMetadata(trackId).then((meta) => ({ trackId, meta })))
+      );
+      for (const result of results) {
+        if (result.status === "fulfilled") {
+          const { trackId, meta } = result.value;
+          try {
+            db.prepare(`
+              UPDATE tracks
+              SET title = $title,
+                  artist = $artist,
+                  album = $album,
+                  duration = $duration,
+                  cover_url = COALESCE($cover_url, cover_url),
+                  updated_at = unixepoch()
+              WHERE id = $id
+            `).run({
+              $id: trackId,
+              $title: meta.title,
+              $artist: meta.artist,
+              $album: meta.album ?? null,
+              $duration: meta.duration,
+              $cover_url: meta.coverUrl ?? null,
+            });
+          } catch { /* best effort */ }
+        }
       }
     }
   }
@@ -377,7 +444,11 @@ app.get("/audio/local/:trackId", (c) => {
   }
   // Resolve symlinks and verify path doesn't escape expected directories
   const realPath = fs.realpathSync(filePath);
-  if (realPath !== filePath && !realPath.startsWith("/")) {
+  const allowedRoots = [
+    process.env.MUSIC_DIR,
+    process.env.DOWNLOADS_DIR ?? "./downloads",
+  ].filter(Boolean).map((d) => fs.realpathSync(d!));
+  if (realPath !== filePath && !allowedRoots.some((root) => realPath.startsWith(root))) {
     return c.json({ error: "Access denied" }, 403);
   }
 

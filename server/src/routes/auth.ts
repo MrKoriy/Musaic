@@ -39,8 +39,8 @@ router.post("/register", async (c) => {
   if (!username || username.length < 2 || username.length > 30) {
     return c.json({ error: "Username must be 2-30 characters" }, 400);
   }
-  if (!password || password.length < 4) {
-    return c.json({ error: "Password must be at least 4 characters" }, 400);
+  if (!password || password.length < 8) {
+    return c.json({ error: "Password must be at least 8 characters" }, 400);
   }
   if (!/^[a-zA-Z0-9_.-]+$/.test(username)) {
     return c.json({ error: "Username can only contain letters, numbers, dots, dashes, underscores" }, 400);
@@ -103,6 +103,23 @@ router.post("/login", async (c) => {
     user: { id: user.id, username: user.username, displayName: user.display_name ?? user.username },
     token,
   });
+});
+
+// POST /api/auth/logout — invalidate current session token
+router.post("/logout", (c) => {
+  const userId = (c as any).get("userId") as string | undefined;
+  if (!userId) return c.json({ error: "Not authenticated" }, 401);
+
+  const auth = c.req.header("authorization");
+  if (auth?.startsWith("Bearer ")) {
+    const token = auth.slice(7).trim();
+    if (token) {
+      const db = getDb();
+      db.prepare("DELETE FROM sessions WHERE token = $t AND user_id = $uid")
+        .run({ $t: token, $uid: userId });
+    }
+  }
+  return c.json({ ok: true });
 });
 
 // GET /api/auth/me
