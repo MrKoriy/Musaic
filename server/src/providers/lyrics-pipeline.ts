@@ -17,7 +17,12 @@ import { execFileSync, execFile } from "child_process";
 import { getDb } from "../db/index.js";
 
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
-const AUDIO_MODEL = "google/gemini-2.0-flash-001";
+const AUDIO_MODEL = "google/gemini-3.1-flash-lite-preview";
+
+// Cache binary/tool detection — avoids repeated `which` + `fs.existsSync` per request
+let _whisperBin: string | null | undefined;
+let _whisperModel: string | null | undefined;
+let _ffmpegAvailable: boolean | undefined;
 
 interface PipelineJob {
   trackId: string;
@@ -49,21 +54,25 @@ export function getJobStatus(trackId: string): PipelineJob | null {
   return jobs.get(trackId) ?? null;
 }
 
-/** Detect which local whisper binary is available */
+/** Detect which local whisper binary is available (result cached for process lifetime) */
 function findWhisperCpp(): string | null {
+  if (_whisperBin !== undefined) return _whisperBin;
   for (const bin of ["whisper-cpp", "whisper.cpp", "main"]) {
     try {
       const p = execFileSync("which", [bin], { stdio: "pipe" }).toString().trim();
-      if (p) return p;
+      if (p) { _whisperBin = p; return p; }
     } catch {}
   }
+  _whisperBin = null;
   return null;
 }
 
-/** Find the best whisper model available */
+/** Find the best whisper model available (result cached for process lifetime) */
 function findWhisperModel(): string | null {
+  if (_whisperModel !== undefined) return _whisperModel;
   if (process.env.WHISPER_MODEL_PATH && fs.existsSync(process.env.WHISPER_MODEL_PATH)) {
-    return process.env.WHISPER_MODEL_PATH;
+    _whisperModel = process.env.WHISPER_MODEL_PATH;
+    return _whisperModel;
   }
   // Homebrew default locations
   const prefixes = ["/opt/homebrew", "/usr/local"];
@@ -71,9 +80,10 @@ function findWhisperModel(): string | null {
   for (const prefix of prefixes) {
     for (const model of models) {
       const p = `${prefix}/share/whisper-cpp/models/${model}`;
-      if (fs.existsSync(p)) return p;
+      if (fs.existsSync(p)) { _whisperModel = p; return p; }
     }
   }
+  _whisperModel = null;
   return null;
 }
 
@@ -82,12 +92,14 @@ function isWhisperCppReady(): boolean {
 }
 
 function isFfmpegAvailable(): boolean {
+  if (_ffmpegAvailable !== undefined) return _ffmpegAvailable;
   try {
     execFileSync("which", ["ffmpeg"], { stdio: "pipe" });
-    return true;
+    _ffmpegAvailable = true;
   } catch {
-    return false;
+    _ffmpegAvailable = false;
   }
+  return _ffmpegAvailable;
 }
 
 export async function getPipelineStatus(): Promise<{ ready: boolean; method?: string; error?: string }> {
@@ -225,11 +237,23 @@ function convertToWav(inputPath: string, outputPath: string): Promise<void> {
 
 function runWhisperCpp(bin: string, model: string, wavPath: string): Promise<string> {
   return new Promise((resolve, reject) => {
+    // Use all available threads; beam-size 1 + best-of 1 cuts search time ~30-40%
+    const threads = String(Math.max(4, Math.min(os.cpus().length, 8)));
     execFile(
       bin,
-      ["-m", model, "-f", wavPath, "--output-lrc", "--max-len", "42", "-l", "auto", "--no-prints"],
+      [
+        "-m", model,
+        "-f", wavPath,
+        "--output-lrc",
+        "--max-len", "42",
+        "-l", "auto",
+        "--no-prints",
+        "--threads", threads,
+        "--beam-size", "1",
+        "--best-of", "1",
+      ],
       {
-        timeout: 120_000,
+        timeout: 90_000,
         maxBuffer: 10 * 1024 * 1024,
         env: {
           ...process.env,
@@ -316,7 +340,7 @@ async function transcribeWithOpenRouter(
       max_tokens: 4096,
       temperature: 0.1,
     }),
-    signal: AbortSignal.timeout(120_000),
+    signal: AbortSignal.timeout(60_000),
   });
 
   if (!res.ok) {
