@@ -463,3 +463,12 @@ export function deleteCachedLyrics(trackId: string): void {
   const db = getDb();
   db.prepare("DELETE FROM lyrics_cache WHERE track_id = $id").run({ $id: trackId });
 }
+
+/**
+ * For tests only — replace the db singleton so tests can use an in-memory DB.
+ * Pass null to reset (forces next getDb() call to re-open from DB_PATH).
+ */
+export function setDbForTest(db: Database | null): void {
+  _db = db;
+  _configSecret = null;
+}

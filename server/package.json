@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
-    "build": "bun build src/index.ts --target=bun --outfile=dist/server.js"
+    "build": "bun build src/index.ts --target=bun --outfile=dist/server.js",
+    "typecheck": "bun x tsc --noEmit",
+    "test": "bun test src/__tests__",
+    "test:watch": "bun test --watch src/__tests__"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.11",
