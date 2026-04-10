@@ -199,8 +199,8 @@ export function buildWeightedProfile(): TasteProfile {
     topTracks,
     topGenres,
     topMoods,
-    playCount: totalPlays + totalCompletes,
-    completionRate: totalPlays > 0 ? totalCompletes / (totalPlays + totalCompletes) : 0,
+    playCount: totalPlays,
+    completionRate: totalPlays > 0 ? Math.min(1, totalCompletes / totalPlays) : 0,
     timeOfDayProfile: {
       morning: topForSlot(timeSlots.morning),
       afternoon: topForSlot(timeSlots.afternoon),
@@ -288,12 +288,38 @@ export function buildDailyMix(
   return shuffled(deduped).slice(0, 20);
 }
 
+// Maps mood labels (used in the app UI) to related genre/keyword synonyms for
+// broader DB matching. Covers both English mood labels from HomeView and common
+// music genre terms that may appear in track genre/title/artist fields.
+const MOOD_KEYWORDS: Record<string, string[]> = {
+  energise:  ["electronic", "dance", "hip hop", "hip-hop", "rap", "edm", "pop", "rock", "trap", "drill"],
+  energy:    ["electronic", "dance", "hip hop", "hip-hop", "rap", "edm", "pop", "rock", "trap", "drill"],
+  "feel good": ["pop", "funk", "soul", "indie", "disco", "r&b", "happy"],
+  feelgood:  ["pop", "funk", "soul", "indie", "disco", "r&b", "happy"],
+  relax:     ["ambient", "chill", "lofi", "lo-fi", "jazz", "acoustic", "downtempo", "chillout"],
+  workout:   ["hip hop", "hip-hop", "rap", "rock", "metal", "electronic", "edm", "drum"],
+  sad:       ["sad", "blues", "emo", "acoustic", "slow", "melancholy", "indie"],
+  party:     ["dance", "house", "club", "edm", "hip hop", "pop", "techno", "trance"],
+  focus:     ["ambient", "classical", "instrumental", "electronic", "lofi", "lo-fi", "piano"],
+  romance:   ["r&b", "soul", "love", "ballad", "slow", "jazz", "rnb"],
+  romantic:  ["r&b", "soul", "love", "ballad", "slow", "jazz", "rnb"],
+  sleep:     ["ambient", "classical", "acoustic", "piano", "meditation", "downtempo", "chill"],
+};
+
 /**
  * Get tracks matching a mood tag.
+ * 1. Exact keyword match on mood/genre/title/artist/album fields.
+ * 2. Expanded genre-keyword search using the MOOD_KEYWORDS mapping.
+ * 3. Taste-profile fallback: tracks from the user's top listened artists
+ *    (personalized and varied per mood via shuffle seed offset).
+ * 4. Final fallback: random tracks from DB.
  */
 export function getTracksByMood(mood: string, limit = 20): Record<string, unknown>[] {
   const db = getDb();
-  const results = db.prepare(`
+  const moodLower = mood.toLowerCase().trim();
+
+  // 1. Exact keyword search
+  const exact = db.prepare(`
     SELECT * FROM tracks
     WHERE lower(mood) LIKE lower($mood)
        OR lower(genre) LIKE lower($mood)
@@ -302,13 +328,68 @@ export function getTracksByMood(mood: string, limit = 20): Record<string, unknow
        OR lower(album) LIKE lower($mood)
     ORDER BY RANDOM()
     LIMIT $limit
-  `).all({ $mood: `%${mood}%`, $limit: limit }) as Record<string, unknown>[];
+  `).all({ $mood: `%${moodLower}%`, $limit: limit }) as Record<string, unknown>[];
 
-  if (results.length === 0) {
-    return db.prepare(`SELECT * FROM tracks ORDER BY RANDOM() LIMIT $limit`)
-      .all({ $limit: limit }) as Record<string, unknown>[];
+  if (exact.length >= limit) return exact;
+
+  const seen = new Set<string>(exact.map((t) => t.id as string));
+  const combined: Record<string, unknown>[] = [...exact];
+
+  // 2. Expanded genre/keyword search
+  const synonyms = MOOD_KEYWORDS[moodLower] ?? [];
+  for (const kw of synonyms) {
+    if (combined.length >= limit) break;
+    const rows = db.prepare(`
+      SELECT * FROM tracks
+      WHERE lower(genre) LIKE lower($kw)
+         OR lower(mood) LIKE lower($kw)
+      ORDER BY RANDOM()
+      LIMIT $lim
+    `).all({ $kw: `%${kw}%`, $lim: limit - combined.length }) as Record<string, unknown>[];
+    for (const row of rows) {
+      if (!seen.has(row.id as string)) {
+        seen.add(row.id as string);
+        combined.push(row);
+      }
+    }
   }
-  return results;
+
+  if (combined.length >= limit) return combined.slice(0, limit);
+
+  // 3. Taste-profile fallback: tracks from top listened artists
+  try {
+    const profile = buildWeightedProfile();
+    const topArtists = profile.topArtists.slice(0, 12).map((a) => a.artist);
+    // Use a different offset per mood so different moods return different artists
+    const offset = Math.abs(moodLower.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0)) % Math.max(1, topArtists.length);
+    const orderedArtists = [...topArtists.slice(offset), ...topArtists.slice(0, offset)];
+
+    for (const artist of orderedArtists) {
+      if (combined.length >= limit) break;
+      const rows = db.prepare(`
+        SELECT * FROM tracks
+        WHERE lower(artist) LIKE lower($a)
+        ORDER BY RANDOM()
+        LIMIT $lim
+      `).all({ $a: `%${artist}%`, $lim: limit - combined.length }) as Record<string, unknown>[];
+      for (const row of rows) {
+        if (!seen.has(row.id as string)) {
+          seen.add(row.id as string);
+          combined.push(row);
+        }
+      }
+    }
+  } catch { /* no history yet — proceed to final fallback */ }
+
+  if (combined.length >= Math.min(limit, 5)) return shuffled(combined).slice(0, limit);
+
+  // 4. Final fallback: random tracks
+  const fallback = db.prepare(`SELECT * FROM tracks ORDER BY RANDOM() LIMIT $limit`)
+    .all({ $limit: limit - combined.length }) as Record<string, unknown>[];
+  for (const row of fallback) {
+    if (!seen.has(row.id as string)) combined.push(row);
+  }
+  return shuffled(combined).slice(0, limit);
 }
 
 function shuffled<T>(arr: T[]): T[] {
