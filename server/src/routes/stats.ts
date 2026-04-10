@@ -50,8 +50,8 @@ function periodCutoff(period: Period): number | null {
 function userScope(c: unknown): { clause: string; params: Record<string, string | null> } {
   const uid = (c as any).get("userId") as string | undefined;
   return uid
-    ? { clause: "AND (user_id = $uid OR user_id IS NULL)", params: { $uid: uid } }
-    : { clause: "", params: { $uid: null } };
+    ? { clause: "AND user_id = $uid", params: { $uid: uid } }
+    : { clause: "AND user_id IS NULL", params: { $uid: null } };
 }
 
 router.get("/overview", (c) => {
@@ -94,13 +94,14 @@ router.get("/overview", (c) => {
   const weekSecs = times?.week ?? 0;
   const monthSecs = times?.month ?? 0;
 
-  // Streak: consecutive days with at least one play
+  // Streak: consecutive days with at least one play (capped at 365 for performance)
   const dailyDates = db.prepare(`
     SELECT DISTINCT date(played_at, 'unixepoch') as day
     FROM listening_history
-    WHERE action = 'play'
+    WHERE action = 'play' ${uc}
     ORDER BY day DESC
-  `).all() as { day: string }[];
+    LIMIT 365
+  `).all({ ...up }) as { day: string }[];
 
   let streak = 0;
   const today = new Date();
@@ -117,21 +118,21 @@ router.get("/overview", (c) => {
     SELECT lh.track_id, t.title, t.artist, COUNT(*) as play_count
     FROM listening_history lh
     JOIN tracks t ON t.id = lh.track_id
-    WHERE lh.action = 'play'
+    WHERE lh.action = 'play' ${uc}
     GROUP BY lh.track_id
     ORDER BY play_count DESC
     LIMIT 1
-  `).get() as { track_id: string; title: string; artist: string; play_count: number } | undefined;
+  `).get({ ...up }) as { track_id: string; title: string; artist: string; play_count: number } | undefined;
 
   const topArtist = db.prepare(`
     SELECT t.artist, COUNT(*) as play_count
     FROM listening_history lh
     JOIN tracks t ON t.id = lh.track_id
-    WHERE lh.action = 'play'
+    WHERE lh.action = 'play' ${uc}
     GROUP BY t.artist
     ORDER BY play_count DESC
     LIMIT 1
-  `).get() as { artist: string; play_count: number } | undefined;
+  `).get({ ...up }) as { artist: string; play_count: number } | undefined;
 
   return c.json({
     listens: { today: todayCount, week: weekCount, month: monthCount, allTime: totalCount },
@@ -146,6 +147,7 @@ router.get("/overview", (c) => {
 
 router.get("/top-tracks", (c) => {
   const db = getDb();
+  const { clause: uc, params: up } = userScope(c);
   const limit = Math.min(Math.max(1, Number(c.req.query("limit") ?? 20)), 50);
   const period = validatePeriod(c.req.query("period"));
   const cutoff = periodCutoff(period);
@@ -155,20 +157,20 @@ router.get("/top-tracks", (c) => {
         SELECT lh.track_id, t.title, t.artist, t.album, t.cover_url, t.duration, COUNT(*) as play_count
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action = 'play' AND lh.played_at >= $from
+        WHERE lh.action = 'play' AND lh.played_at >= $from ${uc}
         GROUP BY lh.track_id
         ORDER BY play_count DESC
         LIMIT $limit
-      `).all({ $from: cutoff, $limit: limit })
+      `).all({ $from: cutoff, $limit: limit, ...up })
     : db.prepare(`
         SELECT lh.track_id, t.title, t.artist, t.album, t.cover_url, t.duration, COUNT(*) as play_count
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action = 'play'
+        WHERE lh.action = 'play' ${uc}
         GROUP BY lh.track_id
         ORDER BY play_count DESC
         LIMIT $limit
-      `).all({ $limit: limit });
+      `).all({ $limit: limit, ...up });
 
   return c.json({ tracks: rows });
 });
@@ -177,6 +179,7 @@ router.get("/top-tracks", (c) => {
 
 router.get("/top-artists", (c) => {
   const db = getDb();
+  const { clause: uc, params: up } = userScope(c);
   const limit = Math.min(Math.max(1, Number(c.req.query("limit") ?? 10)), 50);
   const period = validatePeriod(c.req.query("period"));
   const cutoff = periodCutoff(period);
@@ -187,21 +190,21 @@ router.get("/top-artists", (c) => {
                MAX(t.cover_url) as cover_url
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action = 'play' AND lh.played_at >= $from
+        WHERE lh.action = 'play' AND lh.played_at >= $from ${uc}
         GROUP BY t.artist
         ORDER BY play_count DESC
         LIMIT $limit
-      `).all({ $from: cutoff, $limit: limit })
+      `).all({ $from: cutoff, $limit: limit, ...up })
     : db.prepare(`
         SELECT t.artist, COUNT(*) as play_count, COUNT(DISTINCT lh.track_id) as unique_tracks,
                MAX(t.cover_url) as cover_url
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action = 'play'
+        WHERE lh.action = 'play' ${uc}
         GROUP BY t.artist
         ORDER BY play_count DESC
         LIMIT $limit
-      `).all({ $limit: limit });
+      `).all({ $limit: limit, ...up });
 
   return c.json({ artists: rows });
 });
@@ -210,6 +213,7 @@ router.get("/top-artists", (c) => {
 
 router.get("/top-albums", (c) => {
   const db = getDb();
+  const { clause: uc, params: up } = userScope(c);
   const limit = Math.min(Math.max(1, Number(c.req.query("limit") ?? 10)), 50);
   const period = validatePeriod(c.req.query("period"));
   const cutoff = periodCutoff(period);
@@ -219,20 +223,20 @@ router.get("/top-albums", (c) => {
         SELECT t.album, t.artist, COUNT(*) as play_count, MAX(t.cover_url) as cover_url
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action = 'play' AND t.album IS NOT NULL AND lh.played_at >= $from
+        WHERE lh.action = 'play' AND t.album IS NOT NULL AND lh.played_at >= $from ${uc}
         GROUP BY t.album, t.artist
         ORDER BY play_count DESC
         LIMIT $limit
-      `).all({ $from: cutoff, $limit: limit })
+      `).all({ $from: cutoff, $limit: limit, ...up })
     : db.prepare(`
         SELECT t.album, t.artist, COUNT(*) as play_count, MAX(t.cover_url) as cover_url
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action = 'play' AND t.album IS NOT NULL
+        WHERE lh.action = 'play' AND t.album IS NOT NULL ${uc}
         GROUP BY t.album, t.artist
         ORDER BY play_count DESC
         LIMIT $limit
-      `).all({ $limit: limit });
+      `).all({ $limit: limit, ...up });
 
   return c.json({ albums: rows });
 });
@@ -241,6 +245,7 @@ router.get("/top-albums", (c) => {
 
 router.get("/heatmap", (c) => {
   const db = getDb();
+  const { clause: uc, params: up } = userScope(c);
   const period = validatePeriod(c.req.query("period") ?? "month");
   const cutoff = periodCutoff(period);
 
@@ -249,18 +254,18 @@ router.get("/heatmap", (c) => {
         SELECT CAST(strftime('%H', played_at, 'unixepoch') AS INTEGER) as hour,
                COUNT(*) as play_count
         FROM listening_history
-        WHERE action = 'play' AND played_at >= $from
+        WHERE action = 'play' AND played_at >= $from ${uc}
         GROUP BY hour
         ORDER BY hour ASC
-      `).all({ $from: cutoff })
+      `).all({ $from: cutoff, ...up })
     : db.prepare(`
         SELECT CAST(strftime('%H', played_at, 'unixepoch') AS INTEGER) as hour,
                COUNT(*) as play_count
         FROM listening_history
-        WHERE action = 'play'
+        WHERE action = 'play' ${uc}
         GROUP BY hour
         ORDER BY hour ASC
-      `).all();
+      `).all({ ...up });
 
   const heatmap: { hour: number; play_count: number }[] = [];
   for (let h = 0; h < 24; h++) {
@@ -275,15 +280,16 @@ router.get("/heatmap", (c) => {
 
 router.get("/monthly", (c) => {
   const db = getDb();
+  const { clause: uc, params: up } = userScope(c);
   const monthStart = startOfMonthUnix();
 
   const rows = db.prepare(`
     SELECT date(played_at, 'unixepoch') as day, COUNT(*) as play_count
     FROM listening_history
-    WHERE action = 'play' AND played_at >= $from
+    WHERE action = 'play' AND played_at >= $from ${uc}
     GROUP BY day
     ORDER BY day ASC
-  `).all({ $from: monthStart });
+  `).all({ $from: monthStart, ...up });
 
   return c.json({ days: rows });
 });
@@ -292,6 +298,7 @@ router.get("/monthly", (c) => {
 
 router.get("/genres", (c) => {
   const db = getDb();
+  const { clause: uc, params: up } = userScope(c);
   const period = validatePeriod(c.req.query("period"));
   const cutoff = periodCutoff(period);
 
@@ -300,20 +307,20 @@ router.get("/genres", (c) => {
         SELECT COALESCE(t.genre, 'Unknown') as genre, COUNT(*) as play_count
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action = 'play' AND lh.played_at >= $from
+        WHERE lh.action = 'play' AND lh.played_at >= $from ${uc}
         GROUP BY genre
         ORDER BY play_count DESC
         LIMIT 8
-      `).all({ $from: cutoff })
+      `).all({ $from: cutoff, ...up })
     : db.prepare(`
         SELECT COALESCE(t.genre, 'Unknown') as genre, COUNT(*) as play_count
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action = 'play'
+        WHERE lh.action = 'play' ${uc}
         GROUP BY genre
         ORDER BY play_count DESC
         LIMIT 8
-      `).all();
+      `).all({ ...up });
 
   const typed = rows as { genre: string; play_count: number }[];
   const total = typed.reduce((s, r) => s + r.play_count, 0);
