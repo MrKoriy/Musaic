@@ -160,15 +160,44 @@ async function getClientId(forceRefresh = false): Promise<string> {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-interface SCTrack {
+interface SCPlaylist {
   id: number;
   title: string;
   user: { username: string; id: number };
+  track_count: number;
   duration: number; // ms
+  artwork_url: string | null;
+  permalink_url: string;
+  tracks: SCTrack[];
+}
+
+export interface ExternalPlaylist {
+  id: string;
+  source: string;
+  title: string;
+  author: string;
+  trackCount: number;
+  coverUrl?: string;
+  duration?: number;
+}
+
+interface SCTrack {
+  id: number;
+  title: string;
+  user?: { username: string; id: number };
+  duration?: number; // ms
   permalink_url: string;
   artwork_url: string | null;
   waveform_url: string | null;
-  streamable: boolean;
+  genre?: string | null;
+  tag_list?: string | null;
+  bpm?: number | null;
+  streamable?: boolean;
+  publisher_metadata?: {
+    artist?: string;
+    album_title?: string;
+    release_title?: string;
+  };
   media?: {
     transcodings: Array<{
       url: string;
@@ -181,16 +210,86 @@ function scId(track: SCTrack): string {
   return `sc_${track.id}`;
 }
 
+function scArtist(track: SCTrack): string {
+  const preferredArtist = track.publisher_metadata?.artist?.trim();
+  if (preferredArtist) return preferredArtist;
+  const username = track.user?.username?.trim();
+  if (username) return username;
+  return "Unknown Artist";
+}
+
+function scAlbum(track: SCTrack): string | undefined {
+  const candidates = [
+    track.publisher_metadata?.album_title,
+    track.publisher_metadata?.release_title,
+  ];
+
+  for (const candidate of candidates) {
+    const value = candidate?.trim();
+    if (value) return value;
+  }
+
+  return undefined;
+}
+
+function parseSCTagList(value: string | null | undefined): string[] {
+  if (!value?.trim()) return [];
+  const parts = value.match(/"[^"]+"|[^\s]+/g) ?? [];
+  return uniqueStrings(parts.map((part) => part.replace(/^"+|"+$/g, "").trim()).filter(Boolean), 8);
+}
+
+function uniqueStrings(values: string[], limit = 8): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = value.trim();
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(normalized);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+function scGenre(track: SCTrack): string | undefined {
+  const tags = uniqueStrings([
+    track.genre?.trim() ?? "",
+    ...parseSCTagList(track.tag_list),
+  ]);
+
+  return tags.length > 0 ? tags.join(", ") : undefined;
+}
+
+function isHydratedSCTrack(track: SCTrack): boolean {
+  return Boolean(
+    track.user?.username &&
+    typeof track.duration === "number" &&
+    track.duration > 45_000 && // must have real duration, not preview duration (30s = 30000ms)
+    typeof track.streamable === "boolean"
+  );
+}
+
 function scTrackToTrack(track: SCTrack): Track {
+  const genre = scGenre(track);
   return {
     id: scId(track),
     source: "soundcloud",
     title: track.title,
-    artist: track.user.username,
-    duration: Math.floor(track.duration / 1000),
+    artist: scArtist(track),
+    album: scAlbum(track),
+    duration: Math.floor((track.duration ?? 0) / 1000),
     coverUrl: track.artwork_url?.replace("-large", "-t300x300") ?? undefined,
     waveformUrl: track.waveform_url ?? undefined,
-    metadata: { permalink: track.permalink_url, scId: track.id },
+    genre,
+    metadata: {
+      permalink: track.permalink_url,
+      scId: track.id,
+      bpm: track.bpm ?? undefined,
+      tagList: parseSCTagList(track.tag_list),
+      soundcloudGenre: track.genre ?? undefined,
+    },
   };
 }
 
@@ -204,9 +303,11 @@ function cacheSCTracks(tracks: Track[]): void {
         source: "soundcloud",
         title: t.title,
         artist: t.artist,
+        album: t.album,
         duration: t.duration,
         cover_url: t.coverUrl,
         waveform_url: t.waveformUrl,
+        genre: t.genre,
         metadata: t.metadata,
       });
     }
@@ -216,6 +317,31 @@ function cacheSCTracks(tracks: Track[]): void {
 // ─── Provider ────────────────────────────────────────────────────────────────
 
 export class SoundCloudProvider implements MusicProvider {
+  private async hydrateTracksIfNeeded(tracks: SCTrack[]): Promise<SCTrack[]> {
+    const missingIDs = Array.from(new Set(
+      tracks
+        .filter((track) => !isHydratedSCTrack(track))
+        .map((track) => track.id)
+    ));
+
+    if (missingIDs.length === 0) {
+      return tracks;
+    }
+
+    const hydratedByID = new Map<number, SCTrack>();
+    for (let index = 0; index < missingIDs.length; index += 50) {
+      const batch = missingIDs.slice(index, index + 50);
+      const hydrated = await this.apiGet<SCTrack[]>("/tracks", {
+        ids: batch.join(","),
+      });
+      for (const track of hydrated) {
+        hydratedByID.set(track.id, track);
+      }
+    }
+
+    return tracks.map((track) => hydratedByID.get(track.id) ?? track);
+  }
+
   private async apiGet<T>(
     path: string,
     params: Record<string, string | number> = {},
@@ -263,9 +389,36 @@ export class SoundCloudProvider implements MusicProvider {
       linked_partitioning: 1,
     });
     const tracks = result.collection
-      .filter((t) => t.streamable && t.duration > 45000) // skip 30-sec previews
+      .filter((t) => t.streamable && (t.duration ?? 0) > 45000) // skip 30-sec previews
       .map(scTrackToTrack);
 
+    cacheSCTracks(tracks);
+    return tracks;
+  }
+
+  async searchPlaylists(query: string, limit = 5): Promise<ExternalPlaylist[]> {
+    const result = await this.apiGet<{ collection: SCPlaylist[] }>("/search/playlists", {
+      q: query,
+      limit,
+    });
+    return result.collection.map((p) => ({
+      id: `sc_playlist_${p.id}`,
+      source: "soundcloud",
+      title: p.title,
+      author: p.user.username,
+      trackCount: p.track_count,
+      coverUrl: p.artwork_url?.replace("-large", "-t300x300") ?? undefined,
+      duration: Math.floor(p.duration / 1000),
+    }));
+  }
+
+  async getPlaylistTracks(playlistId: string): Promise<Track[]> {
+    const scId = playlistId.replace(/^sc_playlist_/, "");
+    const playlist = await this.apiGet<SCPlaylist>(`/playlists/${scId}`);
+    const hydratedTracks = await this.hydrateTracksIfNeeded(playlist.tracks ?? []);
+    const tracks = hydratedTracks
+      .filter((t) => t.streamable && (t.duration ?? 0) > 45000 && t.user?.username)
+      .map(scTrackToTrack);
     cacheSCTracks(tracks);
     return tracks;
   }
@@ -279,15 +432,19 @@ export class SoundCloudProvider implements MusicProvider {
       throw new Error(`SC track ${trackId} is not streamable`);
     }
 
-    // Prefer HLS progressive stream (mp3) over opus
+    // Prefer full-track transcodings over preview clips.
+    // SC URLs containing "/preview/" are 30-second snippets; "/stream/" are full tracks.
     const transcodings = track.media?.transcodings ?? [];
-    const progressive = transcodings.find(
+    const streamTranscodings = transcodings.filter((t) => !t.url.includes("/preview/"));
+    const pool = streamTranscodings.length > 0 ? streamTranscodings : transcodings;
+
+    const progressive = pool.find(
       (t) =>
         t.format.protocol === "progressive" &&
         (t.format.mime_type.includes("mpeg") || t.format.mime_type.includes("mp3"))
     );
-    const hls = transcodings.find((t) => t.format.protocol === "hls");
-    const transcoding = progressive ?? hls ?? transcodings[0];
+    const hls = pool.find((t) => t.format.protocol === "hls");
+    const transcoding = progressive ?? hls ?? pool[0];
 
     if (!transcoding) {
       // Fallback to yt-dlp
@@ -343,8 +500,9 @@ export class SoundCloudProvider implements MusicProvider {
       id: scId(track),
       source: "soundcloud",
       title: track.title,
-      artist: track.user.username,
-      duration: Math.floor(track.duration / 1000),
+      artist: scArtist(track),
+      album: scAlbum(track),
+      duration: Math.floor((track.duration ?? 0) / 1000),
       coverUrl: track.artwork_url?.replace("-large", "-t300x300") ?? undefined,
       bitrate: 64, // Opus 64kbps on free tier
     };
@@ -362,7 +520,9 @@ export class SoundCloudProvider implements MusicProvider {
         limit: 50,
         linked_partitioning: 1,
       });
-      return result.collection.filter((t) => t.streamable && t.duration > 45000).map(scTrackToTrack);
+      const tracks = result.collection.filter((t) => t.streamable && (t.duration ?? 0) > 45000).map(scTrackToTrack);
+      cacheSCTracks(tracks);
+      return tracks;
     } catch {
       // Resolve username to user object first
       const user = await this.apiGet<{ id: number }>("/resolve", {
@@ -372,7 +532,9 @@ export class SoundCloudProvider implements MusicProvider {
         `/users/${user.id}/tracks`,
         { limit: 50 }
       );
-      return result.collection.filter((t) => t.streamable && t.duration > 45000).map(scTrackToTrack);
+      const tracks = result.collection.filter((t) => t.streamable && (t.duration ?? 0) > 45000).map(scTrackToTrack);
+      cacheSCTracks(tracks);
+      return tracks;
     }
   }
 
@@ -415,7 +577,7 @@ export class SoundCloudProvider implements MusicProvider {
     });
     const tracks = result.collection
       .map((item) => item.track)
-      .filter((t) => t.streamable && t.duration > 45000)
+      .filter((t) => t.streamable && (t.duration ?? 0) > 45000)
       .map(scTrackToTrack);
 
     cacheSCTracks(tracks);
@@ -440,7 +602,7 @@ export class SoundCloudProvider implements MusicProvider {
       limit,
       linked_partitioning: 1,
     });
-    const tracks = result.collection.filter((t) => t.streamable && t.duration > 45000).map(scTrackToTrack);
+    const tracks = result.collection.filter((t) => t.streamable && (t.duration ?? 0) > 45000).map(scTrackToTrack);
     cacheSCTracks(tracks);
     return tracks;
   }
