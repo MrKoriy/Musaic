@@ -1,309 +1,400 @@
 # Musaic — Design Specification
 
-> Reference: Spotify-like music app. Glassmorphism + dark minimalism.
-> Screenshot: `/api/assets/fc423b28-d842-450c-a0d5-084f58cc79c8/content`
+> Design system and UI specification for the Musaic music app.
+> Based on reference analysis: dark glassmorphism, minimalist, warm aesthetic.
 
 ---
 
 ## 1. Design Philosophy
 
-**Dark Minimalism + Subtle Glassmorphism**
-- Near-black base with warm undertones
-- Cards float with slight translucency and blur
-- Pink/magenta as the single accent color
-- Maximum content density, minimum chrome
+| Principle | Description |
+|-----------|-------------|
+| **Glassmorphism** | Semi-transparent frosted-glass cards with backdrop blur over a rich background |
+| **Dark-first** | Deep dark base with warm ambient gradients; no pure black (#000) |
+| **Minimalism** | Clean hierarchy, generous whitespace, no visual clutter |
+| **Content-forward** | Album art and music metadata are the visual anchors; chrome stays invisible |
+| **Warm & Immersive** | Subtle warm gradients at screen edges create depth and atmosphere |
 
 ---
 
 ## 2. Color Palette
 
-```ts
-// theme/colors.ts
-export const colors = {
-  // Base
-  bg:           '#0d0d0d',   // deepest background
-  bgElevated:   '#141414',   // panels, sidebars
-  bgCard:       '#1c1c1e',   // card surfaces
-  bgGlass:      'rgba(28, 28, 30, 0.7)',  // glass surface with blur
+### Base Colors
 
-  // Borders
-  border:       'rgba(255, 255, 255, 0.08)',
-  borderLight:  'rgba(255, 255, 255, 0.12)',
+| Token | Value | Usage |
+|-------|-------|-------|
+| `--bg-primary` | `#0d0d14` | App background base |
+| `--bg-secondary` | `#1a1a2e` | Elevated surfaces (sidebar, cards) |
+| `--bg-tertiary` | `#252540` | Hover states, active surfaces |
 
-  // Text
-  textPrimary:  '#ffffff',
-  textSecondary:'#8e8e93',
-  textTertiary: '#636366',
+### Glass Colors
 
-  // Accent
-  accent:       '#e91e8c',   // pink/magenta
-  accentLight:  'rgba(233, 30, 140, 0.15)',
-  accentGlow:   'rgba(233, 30, 140, 0.4)',
+| Token | Value | Usage |
+|-------|-------|-------|
+| `--glass-bg` | `rgba(255, 255, 255, 0.05)` | Default glass card background |
+| `--glass-bg-hover` | `rgba(255, 255, 255, 0.08)` | Hovered glass elements |
+| `--glass-bg-active` | `rgba(255, 255, 255, 0.12)` | Active/selected glass elements |
+| `--glass-border` | `rgba(255, 255, 255, 0.10)` | Subtle border on glass cards |
+| `--glass-blur` | `20px` | Backdrop blur radius |
 
-  // Ambient gradients (warm bottom, cool top)
-  gradientWarm: ['rgba(180, 80, 40, 0.15)', 'rgba(0, 0, 0, 0)'],
-  gradientCool: ['rgba(30, 60, 120, 0.1)', 'rgba(0, 0, 0, 0)'],
-  gradientHero: ['rgba(233, 30, 140, 0.2)', 'rgba(13, 13, 13, 0)'],
-}
-```
+### Text Colors
+
+| Token | Value | Usage |
+|-------|-------|-------|
+| `--text-primary` | `#ffffff` | Headings, song titles, primary labels |
+| `--text-secondary` | `rgba(255, 255, 255, 0.60)` | Artist names, metadata, timestamps |
+| `--text-tertiary` | `rgba(255, 255, 255, 0.40)` | Disabled text, placeholders |
+
+### Accent Colors
+
+| Token | Value | Usage |
+|-------|-------|-------|
+| `--accent-primary` | `#e91e8c` | Primary CTA, active indicators, brand highlights |
+| `--accent-gradient` | `linear-gradient(135deg, #e91e8c, #ff6b6b)` | Upgrade cards, prominent CTAs |
+| `--accent-purple` | `#7c3aed` | Secondary accent (tags, badges) |
+| `--accent-green` | `#22c55e` | Playing indicator, success states |
+
+### Ambient Gradients (Background Layer)
+
+| Token | Value | Usage |
+|-------|-------|-------|
+| `--ambient-warm` | `radial-gradient(ellipse at bottom left, rgba(139, 92, 46, 0.30), transparent 60%)` | Warm glow at bottom-left of viewport |
+| `--ambient-cool` | `radial-gradient(ellipse at top right, rgba(59, 46, 139, 0.15), transparent 60%)` | Cool accent at top-right |
 
 ---
 
 ## 3. Typography
 
-```ts
-// theme/typography.ts
-// Font: Inter (cross-platform) or SF Pro (iOS)
-export const typography = {
-  hero:    { fontSize: 28, fontWeight: '700', letterSpacing: -0.5 },
-  title:   { fontSize: 20, fontWeight: '700', letterSpacing: -0.3 },
-  heading: { fontSize: 17, fontWeight: '600' },
-  body:    { fontSize: 15, fontWeight: '400' },
-  caption: { fontSize: 13, fontWeight: '400' },
-  micro:   { fontSize: 11, fontWeight: '500', letterSpacing: 0.4 },
-}
-```
+**Font Family:** `'Inter', 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif`
+
+| Style | Size | Weight | Line Height | Usage |
+|-------|------|--------|-------------|-------|
+| `heading-xl` | 28px | 700 | 1.2 | Page titles |
+| `heading-lg` | 22px | 700 | 1.3 | Section headers ("Playlist of the day") |
+| `heading-md` | 18px | 600 | 1.3 | Card titles, song titles in player |
+| `heading-sm` | 15px | 600 | 1.4 | Subsection headers |
+| `body` | 14px | 400 | 1.5 | Track names in list, descriptions |
+| `body-sm` | 12px | 400 | 1.5 | Artist names, metadata, timestamps |
+| `caption` | 11px | 500 | 1.4 | Tag labels, tiny metadata |
+| `button` | 14px | 600 | 1.0 | Button text |
 
 ---
 
-## 4. Spacing & Radius
+## 4. Spacing & Grid
 
-```ts
-export const spacing = {
-  xs: 4, sm: 8, md: 12, base: 16, lg: 20, xl: 24, xxl: 32,
-}
+| Token | Value |
+|-------|-------|
+| `--space-xs` | `4px` |
+| `--space-sm` | `8px` |
+| `--space-md` | `12px` |
+| `--space-lg` | `16px` |
+| `--space-xl` | `24px` |
+| `--space-2xl` | `32px` |
+| `--space-3xl` | `48px` |
 
-export const radius = {
-  sm: 8, md: 12, lg: 16, xl: 20, full: 9999,
-}
+### Layout Grid (Desktop)
+
 ```
+┌────────────────────────────────────────────────────────────┐
+│  Left Sidebar (240px)  │  Main Content (flex)  │  Right Sidebar (280px)  │
+│  fixed                 │  scrollable           │  fixed                  │
+├────────────────────────┴───────────────────────┴───────────────────────┤
+│                        Bottom Player Bar (80px, fixed)                 │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### Layout Grid (Mobile)
+
+```
+┌──────────────────────┐
+│  Main Content (full) │
+│  scrollable          │
+├──────────────────────┤
+│  Bottom Player (64px)│
+├──────────────────────┤
+│  Tab Bar (56px)      │
+└──────────────────────┘
+```
+
+- Mobile breakpoint: `< 768px`
+- Tablet breakpoint: `768px – 1024px`
+- Desktop: `> 1024px`
 
 ---
 
-## 5. Glassmorphism Rules
+## 5. Border Radius
 
-### Glass Card (GlassCard)
-- Background: `rgba(28, 28, 30, 0.7)`
-- Blur: `BlurView intensity={40}` (expo-blur)
-- Border: 1px `rgba(255,255,255,0.08)`
-- Border radius: 16px
-- Shadow: `rgba(0,0,0,0.3)` soft
-
-### Glass Surface (GlassSurface)
-- Background: `rgba(28, 28, 30, 0.5)`
-- Blur: `BlurView intensity={20}`
-- Border: 1px `rgba(255,255,255,0.06)`
-
-### Glass Input (search bar)
-- Background: `rgba(255, 255, 255, 0.07)`
-- Blur: `BlurView intensity={30}`
-- Border: 1px `rgba(255,255,255,0.1)`
-- Border radius: full (pill shape)
-
-### Layering constraints
-1. bg (darkest) → panels → cards → glass surfaces → modals
-2. Never stack more than 3 glass layers
-3. Blur values: 15 (subtle), 30 (medium), 60 (strong)
+| Token | Value | Usage |
+|-------|-------|-------|
+| `--radius-sm` | `8px` | Small chips, tags, input fields |
+| `--radius-md` | `12px` | Cards, buttons, dropdowns |
+| `--radius-lg` | `16px` | Large cards, modals |
+| `--radius-xl` | `20px` | Featured cards, hero sections |
+| `--radius-full` | `9999px` | Circular elements (avatars, play button) |
 
 ---
 
-## 6. Ambient Gradient Backgrounds
+## 6. Shadows & Effects
 
-```
-Screen background gradient:
-  - Top area: Cool blue tint rgba(30,60,120,0.1) → transparent
-  - Bottom area: Warm amber tint rgba(180,80,40,0.15) → transparent
-  - Center: Pure black/transparent
-```
-
-For hero cards: pink/magenta radial glow behind album art.
-
----
-
-## 7. Component Specs
-
-### 7.1 Tag Chips (genre/mood)
-- Horizontal ScrollView, no scrollbar
-- Height: 32px
-- Padding: 8px 14px
-- Background: `rgba(255,255,255,0.07)` default, `rgba(233,30,140,0.15)` active
-- Border: `rgba(255,255,255,0.1)` default, `rgba(233,30,140,0.4)` active
-- Text: 13px medium, white default, accent active
-- Border radius: full
-
-### 7.2 Hero Card (Playlist of the Day)
-- Full width card, height ~200px
-- Album art image fills card (object-fit: cover)
-- Linear gradient overlay (bottom-up: rgba(0,0,0,0.7) → transparent)
-- Title + metadata text overlay on bottom-left
-- Play button centered (48px, white with rgba(0,0,0,0.3) bg)
-- Border radius: 16px
-
-### 7.3 Track List Item
-- Height: 56px
-- Album thumbnail: 40×40px, border radius 6px
-- Title 15px/600, Artist 13px secondary, Duration 13px tertiary
-- On hover/active: background rgba(255,255,255,0.06)
-- Track number shown when not playing, animated bars when playing
-- Heart button + more (···) on right, visible on hover
-
-### 7.4 Mini Player Bar
-- Height: 64px (+ safe area)
-- Glass surface (BlurView intensity=60)
-- Border top: `rgba(255,255,255,0.08)`
-- Album art: 42×42px, radius 6px
-- Title + artist text center
-- Play/pause + next buttons right
-- Progress: thin line under the bar (1px accent color, animated width)
-
-### 7.5 Expanded Player
-- Full screen modal, slides up from mini player
-- Large album art: 280×280px centered, radius 16px, drop shadow
-- Title (20px/700) + artist (15px secondary) below art
-- Heart button left of title
-- Progress scrubber with time labels
-- Main controls (shuffle, prev, play/pause, next, repeat)
-- Volume slider
-- Bottom actions (queue, lyrics, share)
-- Background: ambient gradient matching album art colors
-
-### 7.6 Sidebar (tablet/desktop — mobile uses bottom tabs)
-- Width: 240px
-- Background: `rgba(20,20,20,0.85)` + BlurView
-- Navigation items: icon + label, 44px tall
-- Active item: accent left border (3px) + text white
-- Library list below
-
-### 7.7 Bottom Tab Bar (mobile)
-- 5 tabs: Home, Search, Library, (Now Playing), Profile
-- Icons: 24px
-- Active: accent color
-- Background: glass surface with intense blur
-
-### 7.8 Playing Indicator (animated bars)
-- 3 vertical bars, 3px wide each, 2px gap
-- Heights animate between 4px and 14px continuously
-- Color: accent pink
-- Animation: staggered ease-in-out, 0.4s each bar, different offsets
-
-### 7.9 Heart Button (like/favorite)
-- Default: outline heart, gray
-- Liked: filled heart, accent pink
-- Tap animation: scale 0 → 1.3 → 1.0 with spring
-- Particle burst on like (6 dots, spread animation)
+| Effect | Value |
+|--------|-------|
+| Glass card shadow | `0 8px 32px rgba(0, 0, 0, 0.30)` |
+| Elevated shadow | `0 4px 16px rgba(0, 0, 0, 0.20)` |
+| Subtle shadow | `0 2px 8px rgba(0, 0, 0, 0.15)` |
+| Glass backdrop | `backdrop-filter: blur(var(--glass-blur))` |
+| Inner glow (active) | `inset 0 0 0 1px rgba(255, 255, 255, 0.10)` |
 
 ---
 
-## 8. Screen Map (Mobile)
+## 7. Component Specifications
 
-### 8.1 Home Screen
+### 7.1 Left Sidebar
+
+- **Width:** 240px (desktop), hidden on mobile (replaced by tab bar)
+- **Background:** `var(--glass-bg)` with blur, `var(--glass-border)` right edge
+- **Content:**
+  - Navigation links (Home, Search, Explore) with icons — 20px icon + 14px label
+  - Divider line (`rgba(255,255,255,0.06)`, 1px)
+  - "Your Library" header with search icon
+  - Filter tabs: Playlists | Albums | Podcasts (chip style, `var(--radius-sm)`)
+  - Library list items: 48px album art (rounded `var(--radius-sm)`) + title + subtitle + type badge
+  - "+ new playlist" button at bottom (outline style, `var(--glass-border)`)
+
+### 7.2 Main Content Area
+
+#### Search Bar
+- **Height:** 40px
+- **Background:** `var(--glass-bg)`, border `var(--glass-border)`
+- **Border radius:** `var(--radius-full)` (pill shape)
+- **Placeholder:** "Search by artists, songs or albums" in `var(--text-tertiary)`
+- **Icons:** Search (left), microphone (right)
+
+#### Genre/Mood Tags
+- **Layout:** Horizontal scroll row
+- **Tag style:** Pill chips, `var(--radius-full)`, padding `6px 16px`
+- **Background:** `var(--glass-bg)`, border `var(--glass-border)`
+- **Active state:** `var(--accent-primary)` background, white text
+- Tags: Energise, Feel good, Relax, Workout, Sad, Party, Focus, Romance, Sleep
+
+#### Playlist of the Day (Hero Card)
+- **Height:** ~220px
+- **Border radius:** `var(--radius-xl)`
+- **Background:** Album art as background with dark overlay gradient (`linear-gradient(to top, rgba(0,0,0,0.8), rgba(0,0,0,0.2))`)
+- **Content overlay:**
+  - Metadata: "49 songs · 4 hours 37 minutes" (`body-sm`, `var(--text-secondary)`)
+  - Title: "Playlist of the day" (`heading-lg`, white)
+  - Album name: e.g. "Blue" (`heading-xl`, white)
+  - Artist badge: Artist name + date tag
+  - Play button: 56px circle, white, centered
+  - Progress bar: thin (3px), pink accent fill, rounded
+
+#### Content Tabs
+- **Style:** Underlined text tabs
+- **Tabs:** Playlist, Artists, Albums, Streams, Favorites
+- **Active:** White text + 2px bottom border in `var(--accent-primary)`
+- **Inactive:** `var(--text-secondary)`
+
+#### Track List
+- **Row height:** 56px
+- **Columns:** # (index) | Album art (40px, `var(--radius-sm)`) + Title + Artist | Duration
+- **Hover:** `var(--glass-bg-hover)` background
+- **Playing indicator:** `var(--accent-green)` animated bars icon replacing track number
+- **Dividers:** None (clean rows, separation by whitespace)
+
+### 7.3 Right Sidebar
+
+- **Width:** 280px (desktop), hidden on mobile
+- **Background:** `var(--glass-bg)` with blur
+
+#### Recent Played Section
+- **Header:** "Recent Played" + "See All" link in `var(--accent-primary)`
+- **Items:** 48px album art (rounded `var(--radius-sm)`) + song title + artist + heart icon
+- **Heart icon:** Outline by default, filled pink when liked
+
+#### Upgrade / Promo Card
+- **Background:** `var(--accent-gradient)`
+- **Border radius:** `var(--radius-lg)`
+- **Icon:** Headphones icon with circular background
+- **Text:** "Listen music offline" (heading-sm) + description (body-sm)
+- **CTA:** "Upgrade Now" button, white bg, dark text, `var(--radius-md)`
+- **Close button:** Small X in top-right corner
+
+### 7.4 Bottom Player Bar
+
+- **Height:** 80px (desktop), 64px (mobile)
+- **Background:** `var(--glass-bg)` with stronger blur (30px), top border `var(--glass-border)`
+- **Position:** Fixed bottom, full width
+- **Layout (3 sections):**
+
 ```
-[Status bar]
-[Header: "Good evening, Name" + avatar]
-[Genre/mood tag chips — horizontal scroll]
-[Playlist of the Day — hero card]
-[Tabs: Playlist | Artists | Albums | Streams | Favorites]
-[Track list — vertical scroll]
-[Mini player — fixed bottom]
+┌─────────────────┬──────────────────────────┬─────────────────┐
+│  Now Playing     │  Controls + Progress     │  Volume/Extra   │
+│  (album art +    │  (prev/play/next +       │  (shuffle,      │
+│   title/artist)  │   timeline bar)          │   repeat, vol)  │
+└─────────────────┴──────────────────────────┴─────────────────┘
 ```
 
-### 8.2 Search Screen
-```
-[Search input — glass pill, full width]
-[Browse categories — 2-column grid]
-  - Recent searches
-  - Trending
-[Search results — track list items]
-```
+- **Album art:** 48px, rounded `var(--radius-sm)`
+- **Controls:** Previous (24px), Play/Pause (40px circle, white fill), Next (24px)
+- **Progress bar:** Full-width thin bar (3px) above controls, pink accent fill, time labels on sides
+- **Volume:** Slider, mute icon
 
-### 8.3 Library Screen
-```
-[Header: "Your Library"]
-[Filter chips: Playlists | Albums | Artists | Podcasts]
-[Library items — list or 2-column grid]
-[+ New playlist FAB — bottom right]
-```
+#### Mobile Player (Collapsed)
+- **Height:** 64px
+- **Shows:** Mini album art (40px) + title + artist + play/pause button
+- **Tap to expand:** Full-screen player view
 
-### 8.4 Player Screen (expanded)
-```
-[Back chevron + track source info]
-[Large album art — rounded square, drop shadow]
-[Title + Artist + Heart]
-[Progress bar + time]
-[Controls: shuffle prev play next repeat]
-[Volume slider]
-[Queue | Lyrics | Share]
-```
+### 7.5 Mobile Tab Bar
 
-### 8.5 Now Playing Queue (Sheet)
-```
-[Handle + "Next in queue" header]
-[Current track highlighted in accent]
-[Upcoming tracks list]
-[Drag to reorder]
-```
+- **Height:** 56px
+- **Background:** `var(--bg-secondary)` with top border
+- **Items:** Home, Search, Library, Profile (icon + small label)
+- **Active:** `var(--accent-primary)` icon + label
+- **Inactive:** `var(--text-tertiary)`
 
 ---
 
-## 9. Animation Specs
+## 8. Glassmorphism Implementation Rules
 
-### Page Transitions
-- Navigate forward: fade in + slide up 20px (200ms ease-out)
-- Navigate back: fade out + slide down 20px (200ms ease-in)
-- Tab switch: crossfade only (150ms)
-
-### Player Expand/Collapse
-- Mini player → expanded: slide up (spring, stiffness=200, damping=25)
-- Album art: scales from mini thumbnail position (shared element-like)
-
-### Playing Bars (indicator)
-```js
-// 3 bars, staggered animation
-bar1: interpolate(0→14→4→14, duration=800, delay=0)
-bar2: interpolate(4→14→4→14, duration=600, delay=100)
-bar3: interpolate(8→14→4→14, duration=700, delay=200)
-// loop infinitely
-```
-
-### Heart Button
-```js
-// On like:
-scale: 1 → 0 → 1.3 → 1.0  (spring)
-color: gray → accent (at scale 0)
-// Particle burst: 6 dots spread radially
-```
-
-### Tag Chip Selection
-- Background/border color: animated via interpolateColor (150ms)
-
-### Track Row Hover/Press
-- Background opacity: 0 → 0.06 (100ms)
-- Show action buttons (heart, more): fade in (150ms)
-
-### Progress Bar
-- Width animated with `Animated.timing` or reanimated's `withTiming`
-- Updates every 500ms during playback
+1. **Never use pure transparent backgrounds** — always minimum `rgba(255, 255, 255, 0.03)` tint
+2. **Always pair blur with a semi-transparent border** — the border defines the glass edge
+3. **Layer ambient gradients behind glass elements** — the glow underneath makes the glass visible
+4. **Limit glass nesting** — max 2 levels deep (glass on glass gets muddy)
+5. **Use subtle inner shadows** on glass cards for depth: `inset 0 1px 0 rgba(255, 255, 255, 0.05)`
+6. **Background blur values:**
+   - Sidebar/cards: `blur(20px)`
+   - Player bar: `blur(30px)` (stronger for legibility)
+   - Overlays/modals: `blur(40px)`
 
 ---
 
-## 10. Tech Stack
+## 9. Iconography
 
-```
-React Native + Expo SDK 55
-expo-blur              — BlurView for glassmorphism
-expo-linear-gradient   — gradient backgrounds
-react-native-reanimated — smooth 60fps animations
-react-native-gesture-handler — swipe gestures
-@react-navigation/native + bottom-tabs — navigation
-react-native-safe-area-context — safe area
-expo-haptics           — haptic feedback on interactions
-```
+- **Style:** Outlined, 1.5px stroke, rounded caps
+- **Size system:** 16px (inline), 20px (nav), 24px (controls), 40px (player main)
+- **Color:** `var(--text-primary)` default, `var(--text-secondary)` for secondary actions
+- **Library:** Lucide Icons or Phosphor Icons (consistent with minimalist aesthetic)
+
+### Required Icons
+
+| Context | Icons |
+|---------|-------|
+| Navigation | Home, Search, Compass (Explore), Library, User |
+| Player | Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, Volume, VolumeX |
+| Actions | Heart, HeartFilled, Plus, MoreHorizontal (three dots), Download, Share |
+| Library | Music, ListMusic, Mic2 (podcasts), Disc |
+| Misc | ChevronRight, X, Settings, Bell |
 
 ---
 
-## 11. Accessibility
+## 10. Animation & Motion
 
-- All interactive elements: minimum 44×44px touch target
-- Text contrast: WCAG AA (4.5:1 for body, 3:1 for large text)
-- Reduce motion: skip animations when `useReducedMotion()` is true
-- Screen reader labels on all icon buttons
+| Interaction | Animation | Duration | Easing |
+|-------------|-----------|----------|--------|
+| Page transitions | Fade + slide up 8px | 250ms | `ease-out` |
+| Card hover | Scale 1.02 + shadow lift | 200ms | `ease-out` |
+| Glass card appear | Fade in + blur (0→20px) | 300ms | `ease-out` |
+| Button press | Scale 0.97 | 100ms | `ease-in-out` |
+| Player expand (mobile) | Slide up from bottom | 350ms | `cubic-bezier(0.4, 0, 0.2, 1)` |
+| Track list item appear | Stagger fade-in, 30ms delay per item | 200ms | `ease-out` |
+| Playing indicator | Equalizer bars loop | 600ms | `ease-in-out`, infinite |
+| Progress bar | Smooth width transition | 100ms | `linear` |
+
+---
+
+## 11. Screen Map
+
+### Mobile Screens
+
+| Screen | Description |
+|--------|-------------|
+| **Home** | Featured playlist hero + genre tags + recent tracks list |
+| **Search** | Search bar + genre grid (large cards) + results list |
+| **Library** | Tabs (Playlists/Albums/Podcasts) + grid/list toggle + library items |
+| **Playlist Detail** | Hero header (album art blur bg) + track list |
+| **Artist Detail** | Artist banner + popular tracks + albums grid |
+| **Now Playing** | Full-screen expanded player with large album art, lyrics, queue |
+| **Profile** | Settings, account info, theme toggle |
+
+### Desktop Screens
+
+| Screen | Description |
+|--------|-------------|
+| **Main** | Three-column layout as described (sidebar + content + recent) |
+| **Search Results** | Main area becomes search results (tracks, artists, albums, playlists sections) |
+| **Playlist/Album Detail** | Hero card replaces "playlist of the day", track list below |
+| **Artist Page** | Banner + top tracks + discography + similar artists |
+
+---
+
+## 12. Responsive Behavior
+
+| Breakpoint | Behavior |
+|------------|----------|
+| `< 768px` | Single column. Sidebars hidden. Tab bar visible. Player collapsed. |
+| `768px – 1024px` | Left sidebar visible (compact, icons only 64px). Right sidebar hidden. |
+| `> 1024px` | Full three-column layout. Both sidebars visible. |
+| `> 1440px` | Max content width 1400px, centered. Sidebars stretch. |
+
+---
+
+## 13. Key Interaction Patterns
+
+### Track Playback
+1. Tap/click track row → begins playback, player bar updates
+2. Player bar shows current track info + controls
+3. Mobile: tap player bar → expands to full-screen Now Playing
+4. Desktop: double-click row = play, single-click = select
+
+### Library Management
+1. "+ new playlist" → modal with name input
+2. Long-press/right-click track → context menu (Add to playlist, Like, Share, Queue)
+3. Heart icon toggles liked status with scale animation
+4. Drag-and-drop to reorder playlist tracks (desktop)
+
+### Search
+1. Focus search bar → genre cards grid appears
+2. Typing → real-time results (debounced 300ms)
+3. Results grouped: Top Result card + Songs + Artists + Albums + Playlists
+
+---
+
+## 14. Asset Requirements
+
+| Asset | Format | Notes |
+|-------|--------|-------|
+| Album covers | JPEG/WebP | 300x300 standard, 600x600 for hero cards |
+| Artist photos | JPEG/WebP | 400x400 square, with blur-expanded version for banners |
+| App icon | PNG/SVG | Musaic logo, works on dark and light backgrounds |
+| Placeholder art | SVG | Music note icon on gradient background for missing art |
+| Background gradient | CSS | Generated via CSS radial gradients, not images |
+
+---
+
+## 15. Tech Stack Recommendation
+
+| Layer | Technology | Rationale |
+|-------|-----------|-----------|
+| Framework | React Native (Expo) | Cross-platform mobile (iOS + Android) from single codebase |
+| Styling | NativeWind (Tailwind for RN) | Rapid styling matching this spec's token system |
+| Navigation | React Navigation | Standard for RN, supports tab bar + stack + bottom sheet |
+| State | Zustand | Lightweight, perfect for player state + library management |
+| Audio | expo-av or react-native-track-player | Background playback, lock screen controls |
+| Glass effects | `expo-blur` (BlurView) | Native blur for glassmorphism |
+| Icons | Lucide React Native | Clean outlined icons matching design language |
+| Animations | React Native Reanimated | Smooth 60fps animations for player transitions |
+
+---
+
+## 16. Accessibility
+
+| Requirement | Guideline |
+|-------------|-----------|
+| **Touch targets** | All interactive elements: minimum 44×44px touch target |
+| **Text contrast** | WCAG AA — 4.5:1 for body text, 3:1 for large text (≥18px or ≥14px bold) |
+| **Reduced motion** | Skip animations when `useReducedMotion()` / `prefers-reduced-motion` is true |
+| **Screen reader labels** | All icon-only buttons must have accessible labels (`accessibilityLabel` / `aria-label`) |
+
+---
+
+*This specification should be used as the source of truth for implementing all Musaic UI screens and components.*

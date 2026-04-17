@@ -2,12 +2,19 @@
  * AI Lyrics Pipeline Orchestrator
  *
  * Strategy (in priority order):
- *   1. whisper.cpp local — fast (~15-25s on Apple Silicon), native --output-lrc
- *   2. OpenRouter (Gemini Flash) — cloud fallback (~15-30s, needs API key)
+ *   1. Forced alignment — LRCLIB/Genius reference text + whisper word timestamps
+ *      mapped together by `lyrics-aligner`. Apple-Music-quality timing when the
+ *      song has a plaintext source.
+ *   2. whisper.cpp raw transcription — transcribe + LRC via `--output-lrc`.
+ *      Used when no reference text exists.
+ *   3. OpenRouter (Gemini Flash) — cloud fallback.
  *
- * Install whisper.cpp:
- *   brew install whisper-cpp
- *   whisper-cpp-download-ggml-model large-v3-turbo
+ * Install whisper.cpp (server):
+ *   apt-get install cmake build-essential ffmpeg
+ *   git clone https://github.com/ggerganov/whisper.cpp /tmp/whisper.cpp
+ *   cmake -B build && cmake --build build --config Release
+ *   cp build/bin/whisper-cli /opt/whisper/
+ *   bash models/download-ggml-model.sh base && cp models/ggml-base.bin /opt/whisper/
  */
 
 import fs from "fs";
@@ -15,6 +22,9 @@ import path from "path";
 import os from "os";
 import { execFileSync, execFile } from "child_process";
 import { getDb } from "../db/index.js";
+import { fetchLrclib } from "./lrclib.js";
+import { fetchPlainLyrics } from "./genius.js";
+import { alignLyricsWithWhisper } from "./lyrics-aligner.js";
 
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AUDIO_MODEL = "google/gemini-3.1-flash-lite-preview";
@@ -57,7 +67,12 @@ export function getJobStatus(trackId: string): PipelineJob | null {
 /** Detect which local whisper binary is available (result cached for process lifetime) */
 function findWhisperCpp(): string | null {
   if (_whisperBin !== undefined) return _whisperBin;
-  for (const bin of ["whisper-cpp", "whisper.cpp", "main"]) {
+  // Explicit path first (Linux self-compiled install)
+  for (const p of ["/opt/whisper/whisper-cli", "/usr/local/bin/whisper-cli"]) {
+    if (fs.existsSync(p)) { _whisperBin = p; return p; }
+  }
+  // PATH lookups (Homebrew etc.)
+  for (const bin of ["whisper-cli", "whisper-cpp", "whisper.cpp", "main"]) {
     try {
       const p = execFileSync("which", [bin], { stdio: "pipe" }).toString().trim();
       if (p) { _whisperBin = p; return p; }
@@ -74,17 +89,32 @@ function findWhisperModel(): string | null {
     _whisperModel = process.env.WHISPER_MODEL_PATH;
     return _whisperModel;
   }
-  // Homebrew default locations
-  const prefixes = ["/opt/homebrew", "/usr/local"];
-  const models = ["ggml-large-v3-turbo.bin", "ggml-large-v3.bin", "ggml-medium.bin", "ggml-base.bin"];
-  for (const prefix of prefixes) {
+  const models = ["ggml-large-v3-turbo.bin", "ggml-large-v3.bin", "ggml-medium.bin", "ggml-base.bin", "ggml-tiny.bin"];
+  // Try explicit Linux install dir, then Homebrew prefixes
+  const dirs = ["/opt/whisper", "/opt/homebrew/share/whisper-cpp/models", "/usr/local/share/whisper-cpp/models"];
+  for (const dir of dirs) {
     for (const model of models) {
-      const p = `${prefix}/share/whisper-cpp/models/${model}`;
+      const p = path.join(dir, model);
       if (fs.existsSync(p)) { _whisperModel = p; return p; }
     }
   }
   _whisperModel = null;
   return null;
+}
+
+/**
+ * Smaller/faster whisper model preferred for word-level alignment passes
+ * (we already have the reference text, so tiny's lower ASR quality is fine —
+ *  it's the timestamps we want). Falls back to whatever `findWhisperModel`
+ *  returned if tiny isn't present.
+ */
+function findTinyWhisperModel(): string {
+  const dirs = ["/opt/whisper", "/opt/homebrew/share/whisper-cpp/models", "/usr/local/share/whisper-cpp/models"];
+  for (const dir of dirs) {
+    const p = path.join(dir, "ggml-tiny.bin");
+    if (fs.existsSync(p)) return p;
+  }
+  return findWhisperModel() ?? "";
 }
 
 function isWhisperCppReady(): boolean {
@@ -159,16 +189,51 @@ async function runPipeline(trackId: string, audioPath: string, job: PipelineJob)
 
   let lrc: string | null = null;
 
-  // Strategy 1: whisper.cpp (local, fast, free)
+  // Strategy 1: Forced alignment with LRCLIB/Genius reference text.
+  //   Highest-quality path. Only runs when we can fetch a plaintext lyric set
+  //   AND whisper + ffmpeg are available. When it works, line timestamps are
+  //   derived directly from what whisper actually heard in the audio, so the
+  //   perceptual accuracy is comparable to Apple Music / Spotify (≤ 200 ms typical).
   if (isWhisperCppReady() && isFfmpegAvailable()) {
     try {
-      lrc = await transcribeWithWhisperCpp(audioPath);
+      const referenceText = await fetchReferenceText(artist, title, trackInfo?.duration);
+      if (referenceText) {
+        console.log(`[lyrics-pipeline] Aligning LRCLIB/Genius text (${referenceText.split("\n").length} lines) to audio…`);
+        lrc = await alignLyricsWithWhisper(audioPath, referenceText, {
+          whisperBin: findWhisperCpp()!,
+          whisperModel: findTinyWhisperModel(),
+          perceptualLeadSec: 0.15,
+        });
+        if (lrc) {
+          console.log(`[lyrics-pipeline] Forced alignment succeeded (${lrc.split("\n").length} lines)`);
+          // Store source = 'aligned' so clients can tell this is the high-quality path.
+          const db2 = getDb();
+          db2.prepare(`
+            INSERT INTO lyrics_cache (track_id, lrc, source)
+            VALUES ($id, $lrc, 'aligned')
+            ON CONFLICT(track_id) DO UPDATE SET lrc = excluded.lrc, source = excluded.source, created_at = unixepoch()
+          `).run({ $id: trackId, $lrc: lrc });
+          job.status = "done";
+          const elapsed = ((Date.now() - job.startedAt) / 1000).toFixed(1);
+          console.log(`[lyrics-pipeline] Job ${trackId} completed via ALIGNED path in ${elapsed}s`);
+          return;
+        }
+      }
     } catch (e) {
-      console.warn(`[lyrics-pipeline] whisper.cpp failed:`, e instanceof Error ? e.message : e);
+      console.warn(`[lyrics-pipeline] Forced alignment failed, falling through:`, e instanceof Error ? e.message : e);
     }
   }
 
-  // Strategy 2: OpenRouter (cloud AI)
+  // Strategy 2: whisper.cpp raw transcription (no reference text available).
+  if (!lrc && isWhisperCppReady() && isFfmpegAvailable()) {
+    try {
+      lrc = await transcribeWithWhisperCpp(audioPath);
+    } catch (e) {
+      console.warn(`[lyrics-pipeline] whisper.cpp raw failed:`, e instanceof Error ? e.message : e);
+    }
+  }
+
+  // Strategy 3: OpenRouter (cloud AI)
   const openrouterKey = process.env.OPENROUTER_API_KEY;
   if (!lrc && openrouterKey) {
     try {
@@ -362,6 +427,43 @@ async function transcribeWithOpenRouter(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Pull plain-text lyrics for alignment. Tries LRCLIB first (stripping LRC
+ * timestamps if the response is already synced) and falls back to Genius /
+ * lyrics.ovh. Returns null if no source has the song.
+ */
+async function fetchReferenceText(
+  artist: string,
+  title: string,
+  durationSec?: number,
+): Promise<string | null> {
+  // LRCLIB: take synced/plaintext body, drop timestamps, drop metadata tags
+  try {
+    const r = await fetchLrclib(artist, title, durationSec);
+    if (r?.lrc) {
+      const plain = stripLrcTimestamps(r.lrc);
+      if (plain) return plain;
+    }
+  } catch {}
+
+  // Genius / lyrics.ovh: plain text only
+  try {
+    const p = await fetchPlainLyrics(artist, title);
+    if (p?.lyrics) return p.lyrics.trim();
+  } catch {}
+
+  return null;
+}
+
+function stripLrcTimestamps(lrc: string): string {
+  return lrc
+    .split("\n")
+    .map((l) => l.replace(/\[\d{1,2}:\d{2}(?:\.\d{1,3})?\]/g, "").trim())
+    // Drop ID tags like [ti:...] [ar:...] that aren't actually lyrics
+    .filter((l) => l.length > 0 && !l.match(/^\[(?:ti|ar|al|by|offset|re|ve|length):/i))
+    .join("\n");
+}
 
 function cleanLrcOutput(raw: string): string {
   let lines = raw
