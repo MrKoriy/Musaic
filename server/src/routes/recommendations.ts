@@ -20,6 +20,7 @@ import {
   getCached,
   setCached,
   clearCached,
+  isDiscoverableRow,
 } from "../providers/taste-engine.js";
 
 const LASTFM_BASE = "https://ws.audioscrobbler.com/2.0/";
@@ -380,6 +381,7 @@ function querySimilarTrackMatches(db: ReturnType<typeof getDb>, signal: SimilarT
   return rows
     .map(normalizeTrackRow)
     .filter((row) => {
+      if (!isDiscoverableRow(row)) return false;
       const rowArtist = normalizeArtistKey(row.artist);
       const rowTitle = normalizeTitleKey(row.title);
       const artistMatch = rowArtist.includes(wantedArtist) || wantedArtist.includes(rowArtist);
@@ -422,6 +424,7 @@ function selectDiverseTracks(
     for (const row of rankedRows) {
       if (selected.length >= limit) return selected;
       if (selectedIDs.has(row.id)) continue;
+      if (!isDiscoverableRow(row)) continue;
 
       const artistKey = normalizeArtistKey(row.artist);
       const titleKey = `${artistKey}::${normalizeTitleKey(row.title)}`;
@@ -838,7 +841,7 @@ recommendationsRouter.get("/home", async (c) => {
   }
 
   const result = {
-    tracks: recommendations.slice(0, 20),
+    tracks: recommendations.filter((r) => isDiscoverableRow(r as { source?: unknown })).slice(0, 20),
     profile: { topArtists: topArtistNames, playCount: profile.playCount },
     source: getLastfmKey() ? "lastfm_similar" : "local_favorites",
   };
@@ -950,7 +953,8 @@ recommendationsRouter.get("/discover", async (c) => {
       ? `WHERE artist NOT IN (${topArtistNames.map((_, i) => `$a${i}`).join(",")})` : "";
     const params = topArtistNames.length > 0
       ? Object.fromEntries(topArtistNames.map((a, i) => [`$a${i}`, a])) : {};
-    const rows = db.prepare(`SELECT * FROM tracks ${placeholders} ORDER BY RANDOM() LIMIT 20`).all(params);
+    const rows = (db.prepare(`SELECT * FROM tracks ${placeholders} ORDER BY RANDOM() LIMIT 20`).all(params) as unknown[])
+      .filter((r) => isDiscoverableRow(r as { source?: unknown }));
     const result = { tracks: rows, source: "local_discovery", description: "New from your library" };
     setCached("discover", result, 24 * 3600_000);
     return c.json(result);
@@ -972,7 +976,7 @@ recommendationsRouter.get("/discover", async (c) => {
     }
 
     const result = {
-      tracks: tracks.slice(0, 20),
+      tracks: tracks.filter((r) => isDiscoverableRow(r as { source?: unknown })).slice(0, 20),
       source: "lastfm_discovery",
       description: "Based on what you love",
       similarArtists: newArtists.slice(0, 5),

@@ -39,3 +39,15 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# media sidecar (Python venv + runtime logs)
+server/sidecar/.venv/
+server/sidecar/sidecar.log
+server/sidecar/__pycache__/
+
+# secrets + local databases (never commit)
+*.secret
+.musaic.secret
+*.db
+*.db-wal
+*.db-shm

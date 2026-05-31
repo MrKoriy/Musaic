@@ -126,6 +126,22 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_tracks_album_artist ON tracks(album, artist);
     `,
   },
+  {
+    version: 8,
+    description: "Backfill legacy anonymous likes for single-user installs",
+    up: `
+      INSERT OR IGNORE INTO liked_tracks (user_id, track_id, liked_at)
+      SELECT u.id, legacy.track_id, legacy.liked_at
+      FROM users u
+      JOIN (
+        SELECT track_id, MAX(played_at) AS liked_at
+        FROM listening_history
+        WHERE user_id IS NULL AND action = 'like'
+        GROUP BY track_id
+      ) legacy
+      WHERE (SELECT COUNT(*) FROM users) = 1;
+    `,
+  },
 ];
 
 /**

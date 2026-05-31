@@ -7,6 +7,8 @@ import fs from "fs";
 import path from "path";
 import { createReadStream } from "fs";
 import vkRoutes from "./routes/vk.js";
+import yandexRoutes from "./routes/yandex.js";
+import youtubeRoutes from "./routes/youtube.js";
 import scRoutes from "./routes/soundcloud.js";
 import searchRoutes from "./routes/search.js";
 import { localRouter, coversRouter, albumsRouter, artistsRouter, playlistsRouter, downloadsRouter } from "./routes/local.js";
@@ -16,7 +18,7 @@ import statsRoutes from "./routes/stats.js";
 import smartPlaylistRoutes from "./routes/playlists-smart.js";
 import authRoutes from "./routes/auth.js";
 import importRoutes from "./routes/import.js";
-import { getDb, logListening } from "./db/index.js";
+import { getDb, logListening, dropTracksSourceCheck } from "./db/index.js";
 import { runMigrations } from "./db/migrations.js";
 import { getLocalProvider } from "./providers/local.js";
 import { getSoundCloudProvider } from "./providers/soundcloud.js";
@@ -192,6 +194,8 @@ app.use("/api/auth/*", async (c, next) => {
 app.route("/api/auth", authRoutes);
 app.route("/api/import", importRoutes);
 app.route("/api/vk", vkRoutes);
+app.route("/api/yandex", yandexRoutes);
+app.route("/api/youtube", youtubeRoutes);
 app.route("/api/sc", scRoutes);
 app.route("/api/search", searchRoutes);
 app.route("/api/local", localRouter);
@@ -503,6 +507,8 @@ log.info("server", `DB: ${process.env.DB_PATH ?? "musaic.db"} | Downloads: ${pro
 try {
   const db = getDb();
   runMigrations(db);
+  // After column migrations: drop the legacy source CHECK so yandex/youtube cache.
+  dropTracksSourceCheck(db);
 } catch (err: unknown) {
   log.error("server", "Migration failed — aborting startup:", err instanceof Error ? err.message : String(err));
   process.exit(1);

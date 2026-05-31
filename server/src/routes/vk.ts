@@ -19,10 +19,11 @@ setInterval(() => {
   }
 }, 60_000).unref();
 
-function callbackBaseUrl(c: { req: { header(name: string): string | undefined } }): string {
+function callbackBaseUrl(c: { req: { header(name: string): string | undefined; url?: string } }): string {
   const forwardedProto = c.req.header("x-forwarded-proto");
   const host = c.req.header("host") ?? "localhost:3001";
-  const protocol = forwardedProto ?? (host.startsWith("localhost") || host.startsWith("127.0.0.1") ? "http" : "https");
+  const requestProtocol = c.req.url ? new URL(c.req.url).protocol.replace(":", "") : undefined;
+  const protocol = forwardedProto ?? requestProtocol ?? "http";
   return `${protocol}://${host}`;
 }
 
@@ -52,14 +53,60 @@ router.post("/auth", async (c) => {
 });
 
 /**
- * GET /api/vk/oauth-url — returns OAuth URL for browser-based login
+ * GET /api/vk/oauth-url — returns OAuth URL for browser-based login.
+ *
+ * client_id is configurable via VK_OAUTH_CLIENT_ID. VK gates audio methods
+ * per app: e.g. Kate Mobile (2685278) currently returns "Unknown method passed"
+ * for audio.search and others. Default `6121396` (VK Admin) historically keeps
+ * broader audio access; if it stops working, swap via env without redeploying.
+ *
+ * Known IDs to try: 2685278 (Kate), 6121396 (VK Admin), 2274003 (VK iOS),
+ * 5350052 (Boom).
  */
+const configuredVKClientId = process.env.VK_OAUTH_CLIENT_ID?.trim();
+const VK_OAUTH_CLIENT_ID = configuredVKClientId && configuredVKClientId !== "2685278"
+  ? configuredVKClientId
+  : "6121396";
+
 router.get("/oauth-url", (c) => {
   const redirectUri = `${callbackBaseUrl(c)}/api/vk/oauth-callback`;
   const state = crypto.randomBytes(16).toString("hex");
   csrfStateStore.set(state, Date.now() + CSRF_STATE_TTL_MS);
-  const url = `https://oauth.vk.ru/authorize?client_id=2685278&display=mobile&redirect_uri=${encodeURIComponent(redirectUri)}&scope=audio,offline&response_type=token&v=5.131&revoke=1&state=${state}`;
-  return c.json({ url, redirectUri });
+  const url = `https://oauth.vk.ru/authorize?client_id=${VK_OAUTH_CLIENT_ID}&display=mobile&redirect_uri=${encodeURIComponent(redirectUri)}&scope=audio,offline&response_type=token&v=5.131&revoke=1&state=${state}`;
+  return c.json({ url, redirectUri, clientId: VK_OAUTH_CLIENT_ID });
+});
+
+/**
+ * GET /api/vk/_probe — checks which VK audio methods the current token can call.
+ * Used to diagnose "search returns empty" without grepping server logs.
+ */
+router.get("/_probe", async (c) => {
+  const { getVkConfig } = await import("../db/index.js");
+  const token = getVkConfig().token;
+  if (!token) return c.json({ error: "not authenticated" }, 401);
+
+  const probeMethods: Array<{ method: string; params: Record<string, string> }> = [
+    { method: "users.get", params: {} },
+    { method: "audio.search", params: { q: "test", count: "1" } },
+    { method: "audio.get", params: { count: "1" } },
+    { method: "audio.getById", params: { audios: "1_1" } },
+    { method: "audio.getRecommendations", params: { count: "1" } },
+    { method: "audio.searchPlaylists", params: { q: "test", count: "1" } },
+  ];
+
+  const UA = "KateMobileAndroid/56 lite-460 (Android 4.4.2; SDK 19; x86; unknown Android SDK built for x86; en)";
+  const out: Record<string, string> = {};
+  for (const { method, params } of probeMethods) {
+    try {
+      const url = `https://api.vk.ru/method/${method}?${new URLSearchParams({ ...params, v: "5.131", access_token: token })}`;
+      const r = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(8_000) });
+      const j = await r.json() as { error?: { error_msg?: string }; response?: unknown };
+      out[method] = j.error ? `ERR: ${j.error.error_msg}` : "OK";
+    } catch (e) {
+      out[method] = `THROW: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+  return c.json({ clientId: VK_OAUTH_CLIENT_ID, methods: out });
 });
 
 /**
@@ -153,10 +200,13 @@ router.post("/auth-token", async (c) => {
   }
 
   try {
-    getVKProvider().setToken(body.token, body.username ?? "VK User");
+    const provider = getVKProvider();
+    provider.setToken(body.token, body.username ?? "VK User");
+    await provider.validateAudioAccess();
     return c.json({ ok: true });
   } catch (err: unknown) {
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    getVKProvider().logout();
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 401);
   }
 });
 
@@ -281,10 +331,20 @@ router.get("/proxy/:trackId", async (c) => {
 /**
  * GET /api/vk/me — returns authenticated user info
  */
-router.get("/me", (c) => {
+router.get("/me", async (c) => {
   const p = getVKProvider();
   if (!p.isAuthenticated()) return c.json({ authenticated: false, username: null });
-  return c.json({ authenticated: true, username: p.getUsername() });
+  try {
+    await p.validateAudioAccess();
+    return c.json({ authenticated: true, username: p.getUsername() });
+  } catch (err) {
+    p.logout();
+    return c.json({
+      authenticated: false,
+      username: null,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 /**

@@ -48,9 +48,49 @@ import {
   clearPlaylistCoverData,
 } from "../db/index.js";
 import { fetchOnlineArtwork } from "../providers/artwork.js";
+import { getArtistProfile, normaliseArtistSources } from "../providers/artists.js";
 import { getLocalProvider } from "../providers/local.js";
 
 const AUDIO_EXTENSIONS = new Set([".flac", ".mp3", ".m4a", ".wav", ".ogg", ".opus", ".aiff", ".aif"]);
+
+/** Map the app's stream-quality label to a target bitrate (kbps). */
+function qualityToBitrate(quality: string | undefined): number {
+  switch (quality) {
+    case "low": return 128;
+    case "normal": return 192;
+    case "high":
+    default: return 320;
+  }
+}
+
+/**
+ * Resolve the upstream audio URL for a non-local track by source. This is the
+ * playback path for every streaming source — including VK, which stays here so
+ * already-liked VK tracks keep playing even though VK is gone from discovery.
+ *
+ * `bitrate` is honored by Yandex (real quality tiers); other sources serve a
+ * fixed quality determined by the source, so it's a no-op there.
+ */
+async function resolveUpstreamUrl(source: string, trackId: string, bitrate = 320): Promise<string> {
+  switch (source) {
+    case "vk": {
+      const { getVKProvider } = await import("../providers/vk.js");
+      return getVKProvider().getStreamUrl(trackId);
+    }
+    case "yandex": {
+      const { getYandexProvider } = await import("../providers/yandex.js");
+      return getYandexProvider().getStreamUrl(trackId, { bitrate });
+    }
+    case "youtube": {
+      const { getYouTubeProvider } = await import("../providers/youtube.js");
+      return getYouTubeProvider().getStreamUrl(trackId);
+    }
+    default: {
+      const { getSoundCloudProvider } = await import("../providers/soundcloud.js");
+      return getSoundCloudProvider().getStreamUrl(trackId);
+    }
+  }
+}
 
 let scanStatus: { scanning: boolean; scanned: number; total: number; lastScanAt: number | null } = {
   scanning: false,
@@ -336,6 +376,24 @@ albumsRouter.get("/tracks", (c) => {
 // ─── Artists Router ───────────────────────────────────────────────────────────
 
 export const artistsRouter = new Hono();
+
+artistsRouter.get("/profile", async (c) => {
+  const artist = c.req.query("artist")?.trim();
+  if (!artist) return c.json({ error: "artist required" }, 400);
+
+  try {
+    const profile = await getArtistProfile({
+      artist,
+      sources: normaliseArtistSources(c.req.query("sources")),
+      sourceId: c.req.query("sourceId") ?? undefined,
+      preferredSource: c.req.query("source") ?? undefined,
+      limit: Number(c.req.query("limit") ?? 100),
+    });
+    return c.json(profile);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : "Failed to load artist" }, 500);
+  }
+});
 
 artistsRouter.get("/", (c) => {
   const db = getDb();
@@ -653,23 +711,21 @@ downloadsRouter.get("/stream/:trackId", async (c) => {
     return serveFileWithRange(filePath, c.req.header("range") ?? null);
   }
 
-  // For VK and SoundCloud: download to local cache, then serve with Range support.
+  // For streaming sources: download to local cache, then serve with Range support.
   // SoundCloud CDN does NOT support HTTP Range requests (signed CloudFront URLs),
   // so AVPlayer cannot seek in a proxied stream. We must cache locally first.
+  // Cache is keyed by quality so changing Stream Quality genuinely re-fetches
+  // (matters for Yandex, which has real bitrate tiers).
+  const quality = c.req.query("quality") ?? "high";
+  const bitrate = qualityToBitrate(quality);
   const CACHE_DIR = path.resolve(process.env.DOWNLOADS_DIR ?? "downloads");
-  const cachedPath = path.join(CACHE_DIR, `${trackId}.mp3`);
+  const cacheSuffix = track.source === "yandex" ? `__${quality}` : "";
+  const cachedPath = path.join(CACHE_DIR, `${trackId}${cacheSuffix}.mp3`);
 
   try {
     // Download if not cached
     if (!fs.existsSync(cachedPath)) {
-      let upstreamUrl: string;
-      if (track.source === "vk") {
-        const { getVKProvider } = await import("../providers/vk.js");
-        upstreamUrl = await getVKProvider().getStreamUrl(trackId);
-      } else {
-        const { getSoundCloudProvider } = await import("../providers/soundcloud.js");
-        upstreamUrl = await getSoundCloudProvider().getStreamUrl(trackId);
-      }
+      const upstreamUrl = await resolveUpstreamUrl(track.source, trackId, bitrate);
 
       fs.mkdirSync(CACHE_DIR, { recursive: true });
       const upstream = await fetch(upstreamUrl, { signal: AbortSignal.timeout(60_000) });
@@ -736,14 +792,7 @@ downloadsRouter.get("/compressed/:trackId", async (c) => {
     const rawCachedPath = path.join(CACHE_DIR, `${trackId}.mp3`);
     if (!fs.existsSync(rawCachedPath)) {
       try {
-        let upstreamUrl: string;
-        if (track.source === "vk") {
-          const { getVKProvider } = await import("../providers/vk.js");
-          upstreamUrl = await getVKProvider().getStreamUrl(trackId);
-        } else {
-          const { getSoundCloudProvider } = await import("../providers/soundcloud.js");
-          upstreamUrl = await getSoundCloudProvider().getStreamUrl(trackId);
-        }
+        const upstreamUrl = await resolveUpstreamUrl(track.source, trackId);
         fs.mkdirSync(CACHE_DIR, { recursive: true });
         const upstream = await fetch(upstreamUrl, { signal: AbortSignal.timeout(60_000) });
         if (!upstream.ok || !upstream.body) {

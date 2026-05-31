@@ -171,6 +171,17 @@ interface SCPlaylist {
   tracks: SCTrack[];
 }
 
+interface SCUser {
+  id: number;
+  username: string;
+  full_name?: string | null;
+  avatar_url?: string | null;
+  permalink?: string | null;
+  permalink_url?: string | null;
+  track_count?: number;
+  followers_count?: number;
+}
+
 export interface ExternalPlaylist {
   id: string;
   source: string;
@@ -179,6 +190,18 @@ export interface ExternalPlaylist {
   trackCount: number;
   coverUrl?: string;
   duration?: number;
+}
+
+export interface ExternalArtist {
+  id: string;
+  source: "soundcloud";
+  artist: string;
+  track_count: number;
+  album_count: number;
+  cover_url?: string;
+  source_id?: string;
+  handle?: string;
+  subtitle?: string;
 }
 
 interface SCTrack {
@@ -206,6 +229,11 @@ interface SCTrack {
   };
 }
 
+interface SCCollection<T> {
+  collection: T[];
+  next_href?: string | null;
+}
+
 function scId(track: SCTrack): string {
   return `sc_${track.id}`;
 }
@@ -230,6 +258,28 @@ function scAlbum(track: SCTrack): string | undefined {
   }
 
   return undefined;
+}
+
+function scAvatarUrl(user: SCUser): string | undefined {
+  return user.avatar_url?.replace("-large", "-t500x500") ?? undefined;
+}
+
+function scUserDisplayName(user: SCUser): string {
+  return user.full_name?.trim() || user.username.trim() || "Unknown Artist";
+}
+
+function scUserToArtist(user: SCUser): ExternalArtist {
+  return {
+    id: `soundcloud:${user.id}`,
+    source: "soundcloud",
+    artist: scUserDisplayName(user),
+    track_count: user.track_count ?? 0,
+    album_count: 0,
+    cover_url: scAvatarUrl(user),
+    source_id: String(user.id),
+    handle: user.username,
+    subtitle: user.username === scUserDisplayName(user) ? undefined : user.username,
+  };
 }
 
 function parseSCTagList(value: string | null | undefined): string[] {
@@ -293,6 +343,19 @@ function scTrackToTrack(track: SCTrack): Track {
   };
 }
 
+function nextHrefRequest(nextHref: string): { path: string; params: Record<string, string> } | null {
+  try {
+    const url = new URL(nextHref);
+    const params: Record<string, string> = {};
+    url.searchParams.forEach((value, key) => {
+      if (key !== "client_id") params[key] = value;
+    });
+    return { path: url.pathname, params };
+  } catch {
+    return null;
+  }
+}
+
 /** Batch-upsert SC tracks into the DB inside a single transaction. */
 function cacheSCTracks(tracks: Track[]): void {
   const db = getDb();
@@ -317,6 +380,16 @@ function cacheSCTracks(tracks: Track[]): void {
 // ─── Provider ────────────────────────────────────────────────────────────────
 
 export class SoundCloudProvider implements MusicProvider {
+  private async getUser(artistId: string): Promise<SCUser> {
+    if (/^\d+$/.test(artistId)) {
+      return this.apiGet<SCUser>(`/users/${artistId}`);
+    }
+
+    return this.apiGet<SCUser>("/resolve", {
+      url: `https://soundcloud.com/${artistId}`,
+    });
+  }
+
   private async hydrateTracksIfNeeded(tracks: SCTrack[]): Promise<SCTrack[]> {
     const missingIDs = Array.from(new Set(
       tracks
@@ -382,7 +455,7 @@ export class SoundCloudProvider implements MusicProvider {
   }
 
   async search(query: string, limit = 30, offset = 0): Promise<Track[]> {
-    const result = await this.apiGet<{ collection: SCTrack[] }>("/search/tracks", {
+    const result = await this.apiGet<SCCollection<SCTrack>>("/search/tracks", {
       q: query,
       limit,
       offset,
@@ -397,7 +470,7 @@ export class SoundCloudProvider implements MusicProvider {
   }
 
   async searchPlaylists(query: string, limit = 5): Promise<ExternalPlaylist[]> {
-    const result = await this.apiGet<{ collection: SCPlaylist[] }>("/search/playlists", {
+    const result = await this.apiGet<SCCollection<SCPlaylist>>("/search/playlists", {
       q: query,
       limit,
     });
@@ -410,6 +483,20 @@ export class SoundCloudProvider implements MusicProvider {
       coverUrl: p.artwork_url?.replace("-large", "-t300x300") ?? undefined,
       duration: Math.floor(p.duration / 1000),
     }));
+  }
+
+  async searchArtists(query: string, limit = 5): Promise<ExternalArtist[]> {
+    const result = await this.apiGet<SCCollection<SCUser>>("/search/users", {
+      q: query,
+      limit,
+      linked_partitioning: 1,
+    });
+    return result.collection.map(scUserToArtist);
+  }
+
+  async getArtistInfo(artistId: string): Promise<ExternalArtist> {
+    const user = await this.getUser(artistId);
+    return scUserToArtist(user);
   }
 
   async getPlaylistTracks(playlistId: string): Promise<Track[]> {
@@ -508,33 +595,47 @@ export class SoundCloudProvider implements MusicProvider {
     };
   }
 
-  async getArtistTracks(artistId: string): Promise<Track[]> {
-    // artistId can be a username or numeric user ID
-    const isNumeric = /^\d+$/.test(artistId);
-    const path = isNumeric
-      ? `/users/${artistId}/tracks`
-      : `/users/${encodeURIComponent(artistId)}/tracks`;
+  private async getUserTracksPaged(userId: string | number, maxTracks: number): Promise<Track[]> {
+    const pageLimit = 50;
+    const maxPages = 8;
+    let path = `/users/${userId}/tracks`;
+    let params: Record<string, string | number> = {
+      limit: pageLimit,
+      linked_partitioning: 1,
+    };
+    const seen = new Set<number>();
+    const tracks: Track[] = [];
 
+    for (let page = 0; page < maxPages && tracks.length < maxTracks; page += 1) {
+      const result = await this.apiGet<SCCollection<SCTrack>>(path, params);
+      const collection = result.collection ?? [];
+      if (collection.length === 0) break;
+
+      for (const item of collection) {
+        if (seen.has(item.id)) continue;
+        seen.add(item.id);
+        if (!item.streamable || (item.duration ?? 0) <= 45_000) continue;
+        tracks.push(scTrackToTrack(item));
+        if (tracks.length >= maxTracks) break;
+      }
+
+      const next = result.next_href ? nextHrefRequest(result.next_href) : null;
+      if (!next) break;
+      path = next.path;
+      params = next.params;
+    }
+
+    cacheSCTracks(tracks);
+    return tracks;
+  }
+
+  async getArtistTracks(artistId: string, limit = 150): Promise<Track[]> {
+    const maxTracks = Math.max(1, Math.min(limit, 300));
     try {
-      const result = await this.apiGet<{ collection: SCTrack[] }>(path, {
-        limit: 50,
-        linked_partitioning: 1,
-      });
-      const tracks = result.collection.filter((t) => t.streamable && (t.duration ?? 0) > 45000).map(scTrackToTrack);
-      cacheSCTracks(tracks);
-      return tracks;
+      const user = await this.getUser(artistId);
+      return this.getUserTracksPaged(user.id, maxTracks);
     } catch {
-      // Resolve username to user object first
-      const user = await this.apiGet<{ id: number }>("/resolve", {
-        url: `https://soundcloud.com/${artistId}`,
-      });
-      const result = await this.apiGet<{ collection: SCTrack[] }>(
-        `/users/${user.id}/tracks`,
-        { limit: 50 }
-      );
-      const tracks = result.collection.filter((t) => t.streamable && (t.duration ?? 0) > 45000).map(scTrackToTrack);
-      cacheSCTracks(tracks);
-      return tracks;
+      return this.getUserTracksPaged(encodeURIComponent(artistId), maxTracks);
     }
   }
 
@@ -569,7 +670,7 @@ export class SoundCloudProvider implements MusicProvider {
    * genre: e.g. 'soundcloud:genres:all-music', 'soundcloud:genres:electronic', etc.
    */
   async getCharts(kind: "trending" | "top" = "trending", genre = "soundcloud:genres:all-music", limit = 20): Promise<Track[]> {
-    const result = await this.apiGet<{ collection: Array<{ track: SCTrack }> }>("/charts", {
+    const result = await this.apiGet<SCCollection<{ track: SCTrack }>>("/charts", {
       kind,
       genre,
       limit,
@@ -598,7 +699,7 @@ export class SoundCloudProvider implements MusicProvider {
       });
       numericId = String(user.id);
     }
-    const result = await this.apiGet<{ collection: SCTrack[] }>(`/users/${numericId}/likes/tracks`, {
+    const result = await this.apiGet<SCCollection<SCTrack>>(`/users/${numericId}/likes/tracks`, {
       limit,
       linked_partitioning: 1,
     });

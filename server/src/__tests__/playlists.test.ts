@@ -16,6 +16,16 @@ function buildApp() {
   return app;
 }
 
+async function createPlaylist(app: Hono, name: string): Promise<string> {
+  const res = await app.request("/api/playlists", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  const body = await res.json() as { id: string };
+  return body.id;
+}
+
 describe("Playlists API", () => {
   beforeEach(setupTestDb);
   afterEach(teardownTestDb);
@@ -92,11 +102,7 @@ describe("Playlists API", () => {
 
   it("DELETE /api/playlists/:id — removes the playlist", async () => {
     const app = buildApp();
-    const { id } = await app.request("/api/playlists", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "To Delete" }),
-    }).then((r) => r.json()) as { id: string };
+    const id = await createPlaylist(app, "To Delete");
 
     const delRes = await app.request(`/api/playlists/${id}`, { method: "DELETE" });
     expect(delRes.status).toBe(200);
@@ -112,11 +118,7 @@ describe("Playlists API", () => {
 
   it("GET /api/playlists/:id/tracks — empty initially", async () => {
     const app = buildApp();
-    const { id } = await app.request("/api/playlists", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "Empty" }),
-    }).then((r) => r.json()) as { id: string };
+    const id = await createPlaylist(app, "Empty");
 
     const res = await app.request(`/api/playlists/${id}/tracks`);
     expect(res.status).toBe(200);
@@ -128,11 +130,7 @@ describe("Playlists API", () => {
     const app = buildApp();
     const trackId = seedTrack({ title: "Test Song", artist: "Test Artist" });
 
-    const { id } = await app.request("/api/playlists", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "My Mix" }),
-    }).then((r) => r.json()) as { id: string };
+    const id = await createPlaylist(app, "My Mix");
 
     const addRes = await app.request(`/api/playlists/${id}/tracks`, {
       method: "POST",
@@ -154,11 +152,7 @@ describe("Playlists API", () => {
     const app = buildApp();
     const trackId = seedTrack();
 
-    const { id } = await app.request("/api/playlists", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "Mix" }),
-    }).then((r) => r.json()) as { id: string };
+    const id = await createPlaylist(app, "Mix");
 
     await app.request(`/api/playlists/${id}/tracks`, {
       method: "POST",
@@ -178,11 +172,7 @@ describe("Playlists API", () => {
 
   it("POST /api/playlists/:id/tracks — rejects missing trackId", async () => {
     const app = buildApp();
-    const { id } = await app.request("/api/playlists", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "Mix" }),
-    }).then((r) => r.json()) as { id: string };
+    const id = await createPlaylist(app, "Mix");
 
     const res = await app.request(`/api/playlists/${id}/tracks`, {
       method: "POST",
@@ -196,11 +186,7 @@ describe("Playlists API", () => {
 
   it("PATCH /api/playlists/:id — updates playlist name", async () => {
     const app = buildApp();
-    const { id } = await app.request("/api/playlists", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "Old Name" }),
-    }).then((r) => r.json()) as { id: string };
+    const id = await createPlaylist(app, "Old Name");
 
     const patchRes = await app.request(`/api/playlists/${id}`, {
       method: "PATCH",

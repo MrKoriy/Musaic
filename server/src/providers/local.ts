@@ -13,19 +13,21 @@ import fs from "fs";
 export class LocalFLACProvider implements MusicProvider {
   constructor(private musicDir: string) {}
 
-  async search(query: string): Promise<Track[]> {
+  async search(query: string, limit = 50, offset = 0): Promise<Track[]> {
     const db = getDb();
     const q = query.trim();
     if (!q) return [];
+    const safeLimit = Math.max(1, Math.min(limit, 200));
+    const safeOffset = Math.max(0, offset);
     // FTS5 search
     const rows = db
       .prepare(
         `SELECT t.* FROM tracks t
          JOIN tracks_fts fts ON t.rowid = fts.rowid
          WHERE fts MATCH $q AND t.source = 'local'
-         ORDER BY rank LIMIT 50`
+         ORDER BY rank LIMIT $limit OFFSET $offset`
       )
-      .all({ $q: `${q}*` }) as Record<string, unknown>[];
+      .all({ $q: `${q}*`, $limit: safeLimit, $offset: safeOffset }) as Record<string, unknown>[];
     return rows.map(rowToTrack);
   }
 

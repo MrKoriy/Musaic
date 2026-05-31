@@ -3,10 +3,12 @@
  */
 
 import { Hono } from "hono";
-import { getVKProvider } from "../providers/vk.js";
+import { getYandexProvider, searchCachedYandexTracks } from "../providers/yandex.js";
+import { getYouTubeProvider, searchCachedYouTubeTracks } from "../providers/youtube.js";
 import { getLocalProvider } from "../providers/local.js";
 import { getSoundCloudProvider } from "../providers/soundcloud.js";
 import { hydrateCachedCoverUrls } from "../providers/artwork.js";
+import { normaliseArtistSources, searchArtists } from "../providers/artists.js";
 import type { Track } from "../types.js";
 import type { ExternalPlaylist } from "../providers/soundcloud.js";
 
@@ -20,14 +22,20 @@ router.get("/", async (c) => {
   const q = c.req.query("q")?.trim();
   if (!q) return c.json({ error: "q required" }, 400);
 
-  const sourcesParam = c.req.query("sources") ?? "local,vk,soundcloud";
+  // VK is intentionally excluded from discovery — its audio API is dead for new
+  // tracks. Liked VK tracks still play (stream dispatch keeps a VK branch), but
+  // search/recommendations surface only living sources.
+  const sourcesParam = c.req.query("sources") ?? "local,yandex,youtube,soundcloud";
   const sources = sourcesParam.split(",").map((s) => s.trim());
-  const limit = Math.min(Number(c.req.query("limit") ?? 30), 50);
+  const limit = Math.max(1, Math.min(Number(c.req.query("limit") ?? 30), 100));
   const offset = Math.max(0, Number(c.req.query("offset") ?? 0));
-  const fetchWindow = Math.min(limit + offset, 100);
+  // Each provider paginates from `offset` and returns up to `limit` items.
+  // We over-fetch slightly so dedup loss across sources doesn't shrink the page.
+  const perProviderLimit = Math.min(limit + 10, 100);
 
   const results: Record<string, Track[]> = {};
   const playlists: ExternalPlaylist[] = [];
+  let artists: Awaited<ReturnType<typeof searchArtists>> = [];
   const errors: Record<string, string> = {};
 
   const tasks: Promise<void>[] = [];
@@ -35,48 +43,73 @@ router.get("/", async (c) => {
   if (sources.includes("local")) {
     tasks.push(
       getLocalProvider()
-        .search(q)
+        .search(q, perProviderLimit, offset)
         .then((t) => { results.local = t; })
         .catch((e: unknown) => { errors.local = e instanceof Error ? e.message : String(e); })
     );
   }
 
-  if (sources.includes("vk") && getVKProvider().isAuthenticated()) {
+  if (sources.includes("yandex")) {
+    if (getYandexProvider().isAuthenticated()) {
+      tasks.push(
+        getYandexProvider()
+          .search(q, perProviderLimit, offset)
+          .then((t) => { results.yandex = t; })
+          .catch((e: unknown) => {
+            errors.yandex = e instanceof Error ? e.message : String(e);
+            results.yandex = searchCachedYandexTracks(q, perProviderLimit, offset);
+          })
+      );
+    } else {
+      errors.yandex = "Yandex is not connected. Add your Yandex token in Settings.";
+      results.yandex = searchCachedYandexTracks(q, perProviderLimit, offset);
+    }
+  }
+
+  if (sources.includes("youtube")) {
     tasks.push(
-      getVKProvider()
-        .search(q)
-        .then((t) => { results.vk = t; })
-        .catch((e: unknown) => { errors.vk = e instanceof Error ? e.message : String(e); })
-    );
-    tasks.push(
-      getVKProvider()
-        .searchPlaylists(q)
-        .then((p) => { playlists.push(...p); })
-        .catch(() => {})
+      getYouTubeProvider()
+        .search(q, perProviderLimit, offset)
+        .then((t) => { results.youtube = t; })
+        .catch((e: unknown) => {
+          errors.youtube = e instanceof Error ? e.message : String(e);
+          results.youtube = searchCachedYouTubeTracks(q, perProviderLimit, offset);
+        })
     );
   }
 
   if (sources.includes("soundcloud")) {
     tasks.push(
       getSoundCloudProvider()
-        .search(q, fetchWindow, offset)
+        .search(q, perProviderLimit, offset)
         .then((t) => { results.soundcloud = t; })
         .catch((e: unknown) => { errors.soundcloud = e instanceof Error ? e.message : String(e); })
     );
+    if (offset === 0) {
+      tasks.push(
+        getSoundCloudProvider()
+          .searchPlaylists(q, 5)
+          .then((p) => { playlists.push(...p); })
+          .catch(() => {})
+      );
+    }
+  }
+
+  if (offset === 0) {
     tasks.push(
-      getSoundCloudProvider()
-        .searchPlaylists(q, 5)
-        .then((p) => { playlists.push(...p); })
+      searchArtists(q, normaliseArtistSources(sourcesParam), 8)
+        .then((a) => { artists = a; })
         .catch(() => {})
     );
   }
 
   await Promise.all(tasks);
 
-  // Merge: local first (best quality), then VK, then SoundCloud — deduplicate by artist+title
+  // Merge: local first (best quality), then Yandex, YouTube, SoundCloud — dedup by artist+title
   const allTracks: Track[] = [
     ...(results.local ?? []),
-    ...(results.vk ?? []),
+    ...(results.yandex ?? []),
+    ...(results.youtube ?? []),
     ...(results.soundcloud ?? []),
   ];
   const seen = new Map<string, Track>();
@@ -100,16 +133,24 @@ router.get("/", async (c) => {
     waveform_url: t.waveformUrl,
   });
 
-  const normalisedMerged = merged.slice(offset, offset + limit).map(normalise);
+  const normalisedMerged = merged.slice(0, limit).map(normalise);
   const normalisedBySource: Record<string, ReturnType<typeof normalise>[]> = {};
   for (const [src, tracks] of Object.entries(results)) {
-    normalisedBySource[src] = tracks.slice(offset, offset + limit).map(normalise);
+    normalisedBySource[src] = tracks.slice(0, limit).map(normalise);
   }
+
+  // hasMore: providers can filter/dedupe after fetching, so a source returning
+  // `limit` visible items is enough signal to let the client ask for the next page.
+  const hasMore = merged.length > limit || Object.values(results).some((t) => t.length >= limit);
 
   return c.json({
     query: q,
+    offset,
+    limit,
+    hasMore,
     tracks: normalisedMerged,
     playlists: playlists.length > 0 ? playlists : undefined,
+    artists: artists.length > 0 ? artists : undefined,
     bySource: normalisedBySource,
     errors: Object.keys(errors).length > 0 ? errors : undefined,
   });
@@ -134,6 +175,9 @@ router.get("/playlist/:playlistId/tracks", async (c) => {
     }
 
     if (id.startsWith("vk_playlist_")) {
+      // VK is gone from discovery, but a previously-imported VK playlist can
+      // still be opened — load its provider on demand for playback.
+      const { getVKProvider } = await import("../providers/vk.js");
       const parts = id.replace("vk_playlist_", "").split("_");
       const ownerId = Number(parts[0]);
       const playlistId = Number(parts[1]);

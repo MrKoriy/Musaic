@@ -1,6 +1,6 @@
 export interface Track {
   id: string;
-  source: "local" | "vk" | "soundcloud";
+  source: "local" | "vk" | "soundcloud" | "yandex" | "youtube";
   title: string;
   artist: string;
   album?: string;
@@ -16,7 +16,7 @@ export interface Track {
 
 export interface TrackMeta {
   id: string;
-  source: "local" | "vk" | "soundcloud";
+  source: "local" | "vk" | "soundcloud" | "yandex" | "youtube";
   title: string;
   artist: string;
   album?: string;

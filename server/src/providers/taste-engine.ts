@@ -228,6 +228,16 @@ export function getTimeContextArtists(profile: TasteProfile): string[] {
 }
 
 /**
+ * VK is excluded from all discovery/recommendation surfaces — its audio API is
+ * dead for new tracks, so we never want to suggest a VK track the user can't
+ * reliably stream. Already-liked VK tracks remain in the library and still play
+ * (the stream proxy keeps a VK branch); they're just never surfaced as picks.
+ */
+export function isDiscoverableRow(row: { source?: unknown }): boolean {
+  return row.source !== "vk";
+}
+
+/**
  * Build a Daily Mix playlist (20 tracks) from taste profile.
  * Mixes top favorites with some discovery candidates.
  */
@@ -279,6 +289,7 @@ export function buildDailyMix(
   // Deduplicate and shuffle
   const seen = new Set<string>();
   const deduped = candidates.filter((t) => {
+    if (!isDiscoverableRow(t)) return false;
     const id = t.id as string;
     if (seen.has(id)) return false;
     seen.add(id);
@@ -319,7 +330,7 @@ export function getTracksByMood(mood: string, limit = 20): Record<string, unknow
   const moodLower = mood.toLowerCase().trim();
 
   // 1. Exact keyword search
-  const exact = db.prepare(`
+  const exact = (db.prepare(`
     SELECT * FROM tracks
     WHERE lower(mood) LIKE lower($mood)
        OR lower(genre) LIKE lower($mood)
@@ -328,7 +339,7 @@ export function getTracksByMood(mood: string, limit = 20): Record<string, unknow
        OR lower(album) LIKE lower($mood)
     ORDER BY RANDOM()
     LIMIT $limit
-  `).all({ $mood: `%${moodLower}%`, $limit: limit }) as Record<string, unknown>[];
+  `).all({ $mood: `%${moodLower}%`, $limit: limit }) as Record<string, unknown>[]).filter(isDiscoverableRow);
 
   if (exact.length >= limit) return exact;
 
@@ -347,7 +358,7 @@ export function getTracksByMood(mood: string, limit = 20): Record<string, unknow
       LIMIT $lim
     `).all({ $kw: `%${kw}%`, $lim: limit - combined.length }) as Record<string, unknown>[];
     for (const row of rows) {
-      if (!seen.has(row.id as string)) {
+      if (isDiscoverableRow(row) && !seen.has(row.id as string)) {
         seen.add(row.id as string);
         combined.push(row);
       }
@@ -387,7 +398,7 @@ export function getTracksByMood(mood: string, limit = 20): Record<string, unknow
   const fallback = db.prepare(`SELECT * FROM tracks ORDER BY RANDOM() LIMIT $limit`)
     .all({ $limit: limit - combined.length }) as Record<string, unknown>[];
   for (const row of fallback) {
-    if (!seen.has(row.id as string)) combined.push(row);
+    if (isDiscoverableRow(row) && !seen.has(row.id as string)) combined.push(row);
   }
   return shuffled(combined).slice(0, limit);
 }

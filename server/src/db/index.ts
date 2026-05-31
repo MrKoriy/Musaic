@@ -61,11 +61,14 @@ export function getDb(): Database {
   return _db;
 }
 
-function initSchema(db: Database): void {
+export function initSchema(db: Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS tracks (
       id TEXT PRIMARY KEY,
-      source TEXT NOT NULL CHECK(source IN ('local', 'vk', 'soundcloud')),
+      -- No CHECK on source: the provider set evolves (local/vk/soundcloud/
+      -- yandex/youtube/…) and is validated in the app layer. See
+      -- dropTracksSourceCheck() for the one-time migration off the old CHECK.
+      source TEXT NOT NULL,
       title TEXT NOT NULL,
       artist TEXT NOT NULL,
       album TEXT,
@@ -94,6 +97,13 @@ function initSchema(db: Database): void {
       password_enc TEXT,
       token TEXT,
       token_expiry INTEGER,
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    CREATE TABLE IF NOT EXISTS yandex_config (
+      id INTEGER PRIMARY KEY CHECK(id = 1),
+      username TEXT,
+      token TEXT,
       updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
@@ -175,6 +185,72 @@ function initSchema(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_tracks_updated_at ON tracks(updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_tracks_lower_artist ON tracks(lower(artist));
   `);
+}
+
+const TRACKS_COLUMNS =
+  "id, source, title, artist, album, duration, cover_url, local_path, waveform_url, " +
+  "mood, genre, play_count, last_played_at, metadata, created_at, updated_at";
+
+/**
+ * One-time rebuild of the `tracks` table to drop the legacy
+ * `CHECK(source IN ('local','vk','soundcloud'))` constraint so yandex/youtube
+ * (and future) sources can be cached.
+ *
+ * Must run AFTER column migrations (so every column referenced below exists).
+ * SQLite can't ALTER a CHECK, so we recreate the table. Foreign keys are
+ * disabled during the swap — otherwise DROP TABLE tracks would implicitly
+ * DELETE all rows and cascade into playlist_tracks, wiping playlist contents.
+ * No-op on fresh DBs (which never had the CHECK).
+ */
+export function dropTracksSourceCheck(db: Database): void {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='tracks'")
+    .get() as { sql?: string } | undefined;
+  if (!row?.sql || !/CHECK\s*\(\s*source\s+IN/i.test(row.sql)) return; // already migrated / fresh
+
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    db.exec("BEGIN");
+    db.exec("DROP TRIGGER IF EXISTS tracks_ai");
+    db.exec("DROP TRIGGER IF EXISTS tracks_ad");
+    db.exec("DROP TRIGGER IF EXISTS tracks_au");
+    db.exec(`
+      CREATE TABLE tracks_new (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        title TEXT NOT NULL,
+        artist TEXT NOT NULL,
+        album TEXT,
+        duration INTEGER NOT NULL DEFAULT 0,
+        cover_url TEXT,
+        local_path TEXT,
+        waveform_url TEXT,
+        mood TEXT,
+        genre TEXT,
+        play_count INTEGER NOT NULL DEFAULT 0,
+        last_played_at INTEGER,
+        metadata TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      )
+    `);
+    db.exec(`INSERT INTO tracks_new (${TRACKS_COLUMNS}) SELECT ${TRACKS_COLUMNS} FROM tracks`);
+    db.exec("DROP TABLE tracks");
+    db.exec("ALTER TABLE tracks_new RENAME TO tracks");
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    db.exec("PRAGMA foreign_keys = ON");
+    throw err;
+  }
+  db.exec("PRAGMA foreign_keys = ON");
+
+  // Restore indexes + FTS triggers dropped with the old table, then repopulate
+  // the external-content FTS index from the rebuilt table.
+  initSchema(db);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_tracks_album_artist ON tracks(album, artist)");
+  db.exec("INSERT INTO tracks_fts(tracks_fts) VALUES('rebuild')");
+  console.log("[db] migrated tracks table: dropped legacy source CHECK constraint");
 }
 
 // Track operations
@@ -289,6 +365,34 @@ export function setVkConfig(config: { username?: string; token?: string; tokenEx
 export function clearVkConfig(): void {
   const db = getDb();
   db.prepare("DELETE FROM vk_config WHERE id = 1").run();
+}
+
+// Yandex Music config (single row, id=1). Token is the account OAuth token,
+// stored encrypted at rest exactly like the VK token.
+export function getYandexConfig(): { token: string | null; username: string | null } {
+  const db = getDb();
+  const row = db.prepare("SELECT token, username FROM yandex_config WHERE id = 1")
+    .get() as { token: string | null; username: string | null } | null;
+  if (!row) return { token: null, username: null };
+  return { token: decryptStoredValue(row.token), username: row.username };
+}
+
+export function setYandexConfig(config: { username?: string; token?: string }): void {
+  const db = getDb();
+  const encryptedToken = config.token ? encryptStoredValue(config.token) : null;
+  db.prepare(`
+    INSERT INTO yandex_config (id, username, token, updated_at)
+    VALUES (1, $username, $token, unixepoch())
+    ON CONFLICT(id) DO UPDATE SET
+      username = COALESCE($username, username),
+      token = COALESCE($token, token),
+      updated_at = unixepoch()
+  `).run({ $username: config.username ?? null, $token: encryptedToken });
+}
+
+export function clearYandexConfig(): void {
+  const db = getDb();
+  db.prepare("DELETE FROM yandex_config WHERE id = 1").run();
 }
 
 // Listening history

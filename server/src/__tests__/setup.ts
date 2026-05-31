@@ -15,7 +15,7 @@ function createSchema(db: Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS tracks (
       id TEXT PRIMARY KEY,
-      source TEXT NOT NULL CHECK(source IN ('local', 'vk', 'soundcloud')),
+      source TEXT NOT NULL,
       title TEXT NOT NULL,
       artist TEXT NOT NULL,
       album TEXT,

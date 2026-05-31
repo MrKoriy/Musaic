@@ -11,6 +11,16 @@ import crypto from "crypto";
 import { getDb, upsertTrack } from "../db/index.js";
 
 const router = new Hono();
+const VALID_TRACK_SOURCES = new Set(["local", "vk", "soundcloud"]);
+
+type LikeTrackMetadata = {
+  source?: string;
+  title?: string;
+  artist?: string;
+  album?: string;
+  duration?: number;
+  coverUrl?: string;
+};
 
 function hashPassword(password: string, salt?: string): { hash: string; salt: string } {
   const s = salt ?? crypto.randomBytes(16).toString("hex");
@@ -27,6 +37,26 @@ function verifyPassword(password: string, stored: string): boolean {
 
 function generateToken(): string {
   return crypto.randomBytes(32).toString("hex");
+}
+
+function persistTrackMetadata(trackId: string, track?: LikeTrackMetadata): void {
+  if (!track?.title || !track.artist || !track.source || !VALID_TRACK_SOURCES.has(track.source)) {
+    return;
+  }
+
+  try {
+    upsertTrack({
+      id: trackId,
+      source: track.source,
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      duration: track.duration ?? 0,
+      cover_url: track.coverUrl,
+    });
+  } catch {
+    // Best effort only. Liking a track should not fail because metadata could not be cached.
+  }
 }
 
 // POST /api/auth/register
@@ -176,9 +206,23 @@ router.post("/likes/sync", async (c) => {
   const userId = (c as any).get("userId") as string | undefined;
   if (!userId) return c.json({ error: "Not authenticated" }, 401);
 
-  const body = await c.req.json<{ trackIds?: string[] }>();
+  const body = await c.req.json<{ trackIds?: string[]; tracks?: Array<LikeTrackMetadata & { id?: string }> }>();
   const trackIds = body.trackIds;
   if (!trackIds || !Array.isArray(trackIds)) return c.json({ error: "trackIds required" }, 400);
+
+  const normalizedTrackIds = Array.from(new Set(
+    trackIds
+      .filter((tid): tid is string => typeof tid === "string")
+      .map((tid) => tid.trim())
+      .filter(Boolean)
+  )).slice(0, 5000);
+
+  const metadataById = new Map<string, LikeTrackMetadata>();
+  for (const track of body.tracks ?? []) {
+    if (typeof track.id === "string" && track.id.trim()) {
+      metadataById.set(track.id.trim(), track);
+    }
+  }
 
   const db = getDb();
   db.transaction(() => {
@@ -190,7 +234,8 @@ router.post("/likes/sync", async (c) => {
 
     // Add new likes from client
     const insert = db.prepare("INSERT OR IGNORE INTO liked_tracks (user_id, track_id) VALUES ($uid, $tid)");
-    for (const tid of trackIds) {
+    for (const tid of normalizedTrackIds) {
+      persistTrackMetadata(tid, metadataById.get(tid));
       if (!serverLikes.has(tid)) {
         insert.run({ $uid: userId, $tid: tid });
       }
@@ -202,6 +247,35 @@ router.post("/likes/sync", async (c) => {
     .all({ $uid: userId }) as { track_id: string }[];
 
   return c.json({ trackIds: allLikes.map((r) => r.track_id), count: allLikes.length });
+});
+
+// POST /api/auth/likes/set — idempotently set a track like state
+// Body: { trackId: string, liked: boolean, track?: metadata }
+router.post("/likes/set", async (c) => {
+  const userId = (c as any).get("userId") as string | undefined;
+  if (!userId) return c.json({ error: "Not authenticated" }, 401);
+
+  const body = await c.req.json<{
+    trackId?: string;
+    liked?: boolean;
+    track?: LikeTrackMetadata;
+  }>();
+  const trackId = body.trackId?.trim();
+  if (!trackId) return c.json({ error: "trackId required" }, 400);
+  if (typeof body.liked !== "boolean") return c.json({ error: "liked boolean required" }, 400);
+
+  persistTrackMetadata(trackId, body.track);
+
+  const db = getDb();
+  if (body.liked) {
+    db.prepare("INSERT OR IGNORE INTO liked_tracks (user_id, track_id) VALUES ($uid, $tid)")
+      .run({ $uid: userId, $tid: trackId });
+  } else {
+    db.prepare("DELETE FROM liked_tracks WHERE user_id = $uid AND track_id = $tid")
+      .run({ $uid: userId, $tid: trackId });
+  }
+
+  return c.json({ liked: body.liked, trackId });
 });
 
 // POST /api/auth/likes/toggle — like/unlike a track
@@ -226,21 +300,28 @@ router.post("/likes/toggle", async (c) => {
   const db = getDb();
 
   // If track metadata is provided, upsert it so liked tracks survive DB cache eviction
-  if (body.track?.title && body.track?.artist && body.track?.source) {
-    const source = body.track.source;
-    if (source === "local" || source === "vk" || source === "soundcloud") {
-      try {
-        upsertTrack({
-          id: body.trackId,
-          source,
-          title: body.track.title,
-          artist: body.track.artist,
-          album: body.track.album,
-          duration: body.track.duration ?? 0,
-          cover_url: body.track.coverUrl,
-        });
-      } catch { /* best effort — don't fail the like operation */ }
-    }
+  persistTrackMetadata(body.trackId, body.track);
+
+  const recentIntent = db.prepare(`
+    SELECT action FROM listening_history
+    WHERE user_id = $uid
+      AND track_id = $tid
+      AND action IN ('like', 'dislike')
+      AND played_at >= unixepoch() - 30
+    ORDER BY played_at DESC
+    LIMIT 1
+  `).get({ $uid: userId, $tid: body.trackId }) as { action: "like" | "dislike" } | null;
+
+  if (recentIntent?.action === "like") {
+    db.prepare("INSERT OR IGNORE INTO liked_tracks (user_id, track_id) VALUES ($uid, $tid)")
+      .run({ $uid: userId, $tid: body.trackId });
+    return c.json({ liked: true, trackId: body.trackId });
+  }
+
+  if (recentIntent?.action === "dislike") {
+    db.prepare("DELETE FROM liked_tracks WHERE user_id = $uid AND track_id = $tid")
+      .run({ $uid: userId, $tid: body.trackId });
+    return c.json({ liked: false, trackId: body.trackId });
   }
 
   const exists = db.prepare("SELECT 1 FROM liked_tracks WHERE user_id = $uid AND track_id = $tid")

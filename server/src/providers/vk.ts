@@ -165,6 +165,52 @@ function vkItemToTrack(item: VKAudioItem): Track {
   };
 }
 
+function dbRowToVKTrack(row: Record<string, unknown>): Track {
+  const id = row.id as string;
+  return {
+    id,
+    source: "vk",
+    title: row.title as string,
+    artist: row.artist as string,
+    album: row.album as string | undefined,
+    duration: Number(row.duration ?? 0),
+    coverUrl: row.cover_url as string | undefined,
+    streamUrl: getCachedVkUrl(id) ?? undefined,
+  };
+}
+
+export function searchCachedVKTracks(query: string, limit = 50, offset = 0): Track[] {
+  const db = getDb();
+  const q = query.trim();
+  if (!q) return [];
+  const safeLimit = Math.max(1, Math.min(limit, 200));
+  const safeOffset = Math.max(0, offset);
+
+  try {
+    const rows = db
+      .prepare(
+        `SELECT t.* FROM tracks t
+         JOIN tracks_fts fts ON t.rowid = fts.rowid
+         WHERE fts MATCH $q AND t.source = 'vk'
+         ORDER BY rank LIMIT $limit OFFSET $offset`
+      )
+      .all({ $q: `${q}*`, $limit: safeLimit, $offset: safeOffset }) as Record<string, unknown>[];
+    return rows.map(dbRowToVKTrack);
+  } catch {
+    const like = `%${q.toLowerCase()}%`;
+    const rows = db
+      .prepare(
+        `SELECT * FROM tracks
+         WHERE source = 'vk'
+           AND (lower(title) LIKE $like OR lower(artist) LIKE $like OR lower(COALESCE(album, '')) LIKE $like)
+         ORDER BY artist ASC, title ASC
+         LIMIT $limit OFFSET $offset`
+      )
+      .all({ $like: like, $limit: safeLimit, $offset: safeOffset }) as Record<string, unknown>[];
+    return rows.map(dbRowToVKTrack);
+  }
+}
+
 /** Batch-upsert VK tracks into the DB inside a single transaction. */
 function cacheVKTracks(tracks: Track[]): void {
   const db = getDb();
@@ -230,6 +276,7 @@ export class VKMusicProvider implements MusicProvider {
         }
         const data = (await res.json()) as {
           access_token?: string;
+          expires_in?: number;
           error?: string;
           error_description?: string;
           redirect_uri?: string;
@@ -253,8 +300,12 @@ export class VKMusicProvider implements MusicProvider {
         }
 
         this.token = data.access_token;
-        setVkConfig({ username, token: this.token });
-        console.log(`[VK] Authenticated successfully via ${client.name}`);
+        // expires_in = 0 means non-expiring (Kate Mobile); otherwise unixepoch deadline
+        const tokenExpiry = data.expires_in && data.expires_in > 0
+          ? Math.floor(Date.now() / 1000) + data.expires_in
+          : undefined;
+        setVkConfig({ username, token: this.token, tokenExpiry });
+        console.log(`[VK] Authenticated successfully via ${client.name}${tokenExpiry ? ` (expires in ${data.expires_in}s)` : ""}`);
         return;
       } catch (e) {
         if (e instanceof Error && e.message.includes("2FA")) throw e;
@@ -316,6 +367,9 @@ export class VKMusicProvider implements MusicProvider {
         const captchaImg = (json.error as any).captcha_img;
         throw new Error(`VK captcha required${captchaImg ? `: ${captchaImg}` : ". Slow down requests."}`);
       }
+      if (code === 3 && method.startsWith("audio.")) {
+        throw new Error("VK token has no audio API access. Reconnect VK with a client_id that supports audio methods.");
+      }
       throw new Error(`VK API error ${code}: ${json.error.error_msg}`);
     }
     if (json.response === undefined) {
@@ -358,10 +412,12 @@ export class VKMusicProvider implements MusicProvider {
     });
   }
 
-  async search(query: string): Promise<Track[]> {
+  async search(query: string, count = 50, offset = 0): Promise<Track[]> {
+    const safeCount = Math.max(1, Math.min(count, 300));
+    const safeOffset = Math.max(0, offset);
     const resp = await this.apiCall<{ count: number; items: VKAudioItem[] }>(
       "audio.search",
-      { q: query, count: 50, auto_complete: 1, sort: 2 }
+      { q: query, count: safeCount, offset: safeOffset, auto_complete: 1, sort: 2 }
     );
     const items = await this.hydrateArtworkIfNeeded(resp.items);
     const tracks = await hydrateFallbackArtwork(items.map(vkItemToTrack));
@@ -573,6 +629,14 @@ export class VKMusicProvider implements MusicProvider {
     this.token = token;
     setVkConfig({ username, token });
     console.log(`[VK] Token set for ${username}`);
+  }
+
+  /** Verify that the current token can call VK audio methods. */
+  async validateAudioAccess(): Promise<void> {
+    await this.apiCall<{ count: number; items: VKAudioItem[] }>(
+      "audio.search",
+      { q: "test", count: 1 }
+    );
   }
 
   isAuthenticated(): boolean {
