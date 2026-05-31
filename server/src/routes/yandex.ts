@@ -9,8 +9,68 @@ const router = new Hono();
 const YANDEX_OAUTH_CLIENT_ID = process.env.YANDEX_OAUTH_CLIENT_ID?.trim() || "23cabbbdc6cd418abb4b39c32c41195d";
 const YANDEX_OAUTH_CLIENT_SECRET = process.env.YANDEX_OAUTH_CLIENT_SECRET?.trim() || "53bc75238f0c4d08a118e51fe9203300";
 
-// Single pending device authorization (1-2 user app → one at a time is fine).
-let pendingDevice: { code: string; expiresAt: number } | null = null;
+// Device-flow auth state. The SERVER polls Yandex in the background (independent
+// of the app's lifecycle) because the app must leave to a browser to authorize,
+// which would suspend any client-side polling. The app just reads /device/status.
+type DeviceAuthState = "idle" | "pending" | "done" | "expired" | "error";
+let deviceAuth: { state: DeviceAuthState; login: string | null; plus: boolean; error: string | null } = {
+  state: "idle", login: null, plus: false, error: null,
+};
+let devicePollTimer: ReturnType<typeof setInterval> | null = null;
+
+function stopDevicePoll(): void {
+  if (devicePollTimer) { clearInterval(devicePollTimer); devicePollTimer = null; }
+}
+
+async function exchangeDeviceToken(deviceCode: string): Promise<{ access_token?: string; error?: string }> {
+  const res = await fetch("https://oauth.yandex.ru/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "device_code",
+      code: deviceCode,
+      client_id: YANDEX_OAUTH_CLIENT_ID,
+      client_secret: YANDEX_OAUTH_CLIENT_SECRET,
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  return (await res.json()) as { access_token?: string; error?: string };
+}
+
+function beginDevicePolling(deviceCode: string, expiresAt: number, intervalMs: number): void {
+  stopDevicePoll();
+  devicePollTimer = setInterval(async () => {
+    if (Date.now() > expiresAt) {
+      deviceAuth = { state: "expired", login: null, plus: false, error: null };
+      stopDevicePoll();
+      return;
+    }
+    try {
+      const tok = await exchangeDeviceToken(deviceCode);
+      if (tok.error === "authorization_pending" || tok.error === "slow_down") return; // keep waiting
+      if (!tok.access_token) {
+        deviceAuth = { state: "error", login: null, plus: false, error: tok.error ?? "Authorization failed" };
+        stopDevicePoll();
+        return;
+      }
+      // Got a token — store it, then validate against Yandex via the sidecar.
+      stopDevicePoll();
+      const provider = getYandexProvider();
+      provider.setToken(tok.access_token);
+      try {
+        const { login, plus } = await provider.validate();
+        deviceAuth = { state: "done", login, plus, error: null };
+        console.log(`[yandex] connected via device flow${login ? ` as ${login}` : ""} (plus=${plus})`);
+      } catch (err) {
+        provider.logout();
+        deviceAuth = { state: "error", login: null, plus: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    } catch {
+      // Transient network error talking to Yandex — keep polling.
+    }
+  }, intervalMs);
+  devicePollTimer.unref?.();
+}
 
 /**
  * POST /api/yandex/token
@@ -61,9 +121,13 @@ router.post("/device/start", async (c) => {
       interval?: number; expires_in?: number; error?: string;
     };
     if (!res.ok || !data.device_code) {
+      deviceAuth = { state: "error", login: null, plus: false, error: data.error ?? "device code error" };
       return c.json({ error: data.error ?? `Yandex device code error (HTTP ${res.status})` }, 502);
     }
-    pendingDevice = { code: data.device_code, expiresAt: Date.now() + (data.expires_in ?? 300) * 1000 };
+    deviceAuth = { state: "pending", login: null, plus: false, error: null };
+    const expiresAt = Date.now() + (data.expires_in ?? 300) * 1000;
+    const intervalMs = Math.max(3, data.interval ?? 5) * 1000;
+    beginDevicePolling(data.device_code, expiresAt, intervalMs);
     return c.json({
       userCode: data.user_code,
       verificationUrl: data.verification_url ?? "https://ya.ru/device",
@@ -71,57 +135,24 @@ router.post("/device/start", async (c) => {
       expiresIn: data.expires_in ?? 300,
     });
   } catch (err: unknown) {
+    deviceAuth = { state: "error", login: null, plus: false, error: err instanceof Error ? err.message : String(err) };
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });
 
 /**
- * POST /api/yandex/device/poll — exchange the pending device code for a token.
- * Returns { pending: true } until the user authorizes, then { ok, login, plus }.
+ * GET /api/yandex/device/status — poll this from the app. The server captures
+ * the token in the background, so this survives the app backgrounding while the
+ * user authorizes in a browser.
  */
-router.post("/device/poll", async (c) => {
-  if (!pendingDevice) return c.json({ error: "No pending authorization. Start again." }, 400);
-  if (Date.now() > pendingDevice.expiresAt) {
-    pendingDevice = null;
-    return c.json({ error: "Code expired. Start again." }, 410);
-  }
-  try {
-    const body = new URLSearchParams({
-      grant_type: "device_code",
-      code: pendingDevice.code,
-      client_id: YANDEX_OAUTH_CLIENT_ID,
-      client_secret: YANDEX_OAUTH_CLIENT_SECRET,
-    });
-    const res = await fetch("https://oauth.yandex.ru/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body,
-      signal: AbortSignal.timeout(15_000),
-    });
-    const data = (await res.json()) as { access_token?: string; error?: string };
-    if (data.error === "authorization_pending" || data.error === "slow_down") {
-      return c.json({ pending: true });
-    }
-    if (!data.access_token) {
-      pendingDevice = null;
-      return c.json({ error: data.error ?? "Yandex authorization failed" }, 401);
-    }
-    pendingDevice = null;
-    const provider = getYandexProvider();
-    provider.setToken(data.access_token);
-    try {
-      const { login, plus } = await provider.validate();
-      return c.json({
-        ok: true, login, plus,
-        warning: plus ? undefined : "Account has no active Yandex Plus — only 30s previews will be available.",
-      });
-    } catch (err: unknown) {
-      provider.logout();
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 401);
-    }
-  } catch (err: unknown) {
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
-  }
+router.get("/device/status", (c) => {
+  return c.json({
+    authenticated: getYandexProvider().isAuthenticated(),
+    state: deviceAuth.state,
+    login: deviceAuth.login,
+    plus: deviceAuth.plus,
+    error: deviceAuth.error,
+  });
 });
 
 /** GET /api/yandex/status */
