@@ -6,8 +6,8 @@ const router = new Hono();
 
 // Yandex OAuth device-flow credentials. Defaults are the public Yandex Music
 // app client (widely used by unofficial tooling); override via env if needed.
-const YANDEX_OAUTH_CLIENT_ID = process.env.YANDEX_OAUTH_CLIENT_ID?.trim() || "23cabbbdc6cd418abb4b39c32c41195d";
-const YANDEX_OAUTH_CLIENT_SECRET = process.env.YANDEX_OAUTH_CLIENT_SECRET?.trim() || "53bc75238f0c4d08a118e51fe9203300";
+const YANDEX_OAUTH_CLIENT_ID = process.env.YANDEX_OAUTH_CLIENT_ID?.trim() || "";
+const YANDEX_OAUTH_CLIENT_SECRET = process.env.YANDEX_OAUTH_CLIENT_SECRET?.trim() || "";
 
 // Device-flow auth state. The SERVER polls Yandex in the background (independent
 // of the app's lifecycle) because the app must leave to a browser to authorize,
