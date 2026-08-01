@@ -45,9 +45,16 @@ server/sidecar/.venv/
 server/sidecar/sidecar.log
 server/sidecar/__pycache__/
 
+# local tool/IDE folders
+.bg-shell/
+.claude/
+.xcode-home/
+.gemini/
+
 # secrets + local databases (never commit)
 *.secret
 .musaic.secret
 *.db
 *.db-wal
 *.db-shm
+

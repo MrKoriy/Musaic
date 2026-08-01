@@ -17,6 +17,9 @@ const router = new Hono();
 const VALID_PERIODS = ["today", "week", "month", "alltime"] as const;
 type Period = (typeof VALID_PERIODS)[number];
 
+const QUALIFIED_LISTEN = "((action = 'play' AND played_ratio IS NULL) OR (action IN ('play', 'complete', 'skip') AND played_ratio >= 0.5))";
+const QUALIFIED_LISTEN_LH = "((lh.action = 'play' AND lh.played_ratio IS NULL) OR (lh.action IN ('play', 'complete', 'skip') AND lh.played_ratio >= 0.5))";
+
 function validatePeriod(raw: string | undefined): Period {
   const p = raw ?? "alltime";
   return VALID_PERIODS.includes(p as Period) ? (p as Period) : "alltime";
@@ -68,7 +71,7 @@ router.get("/overview", (c) => {
       SUM(CASE WHEN played_at >= $today THEN 1 ELSE 0 END) as today,
       SUM(CASE WHEN played_at >= $week THEN 1 ELSE 0 END) as week,
       SUM(CASE WHEN played_at >= $month THEN 1 ELSE 0 END) as month
-    FROM listening_history WHERE action = 'play' ${uc}
+    FROM listening_history WHERE ${QUALIFIED_LISTEN} ${uc}
   `).get({ $today: todayStart, $week: weekStart, $month: monthStart, ...up }) as
     { total: number; today: number; week: number; month: number } | undefined;
 
@@ -79,13 +82,13 @@ router.get("/overview", (c) => {
 
   const times = db.prepare(`
     SELECT
-      COALESCE(SUM(t.duration), 0) as total,
-      COALESCE(SUM(CASE WHEN lh.played_at >= $today THEN t.duration ELSE 0 END), 0) as today,
-      COALESCE(SUM(CASE WHEN lh.played_at >= $week THEN t.duration ELSE 0 END), 0) as week,
-      COALESCE(SUM(CASE WHEN lh.played_at >= $month THEN t.duration ELSE 0 END), 0) as month
+      COALESCE(SUM(COALESCE(lh.played_ms / 1000.0, t.duration)), 0) as total,
+      COALESCE(SUM(CASE WHEN lh.played_at >= $today THEN COALESCE(lh.played_ms / 1000.0, t.duration) ELSE 0 END), 0) as today,
+      COALESCE(SUM(CASE WHEN lh.played_at >= $week THEN COALESCE(lh.played_ms / 1000.0, t.duration) ELSE 0 END), 0) as week,
+      COALESCE(SUM(CASE WHEN lh.played_at >= $month THEN COALESCE(lh.played_ms / 1000.0, t.duration) ELSE 0 END), 0) as month
     FROM listening_history lh
     JOIN tracks t ON t.id = lh.track_id
-    WHERE lh.action = 'play' ${uc}
+    WHERE ${QUALIFIED_LISTEN_LH} ${uc}
   `).get({ $today: todayStart, $week: weekStart, $month: monthStart, ...up }) as
     { total: number; today: number; week: number; month: number } | undefined;
 
@@ -98,7 +101,7 @@ router.get("/overview", (c) => {
   const dailyDates = db.prepare(`
     SELECT DISTINCT date(played_at, 'unixepoch') as day
     FROM listening_history
-    WHERE action = 'play' ${uc}
+    WHERE ${QUALIFIED_LISTEN} ${uc}
     ORDER BY day DESC
     LIMIT 365
   `).all({ ...up }) as { day: string }[];
@@ -118,7 +121,7 @@ router.get("/overview", (c) => {
     SELECT lh.track_id, t.title, t.artist, COUNT(*) as play_count
     FROM listening_history lh
     JOIN tracks t ON t.id = lh.track_id
-    WHERE lh.action = 'play' ${uc}
+    WHERE ${QUALIFIED_LISTEN_LH} ${uc}
     GROUP BY lh.track_id
     ORDER BY play_count DESC
     LIMIT 1
@@ -128,7 +131,7 @@ router.get("/overview", (c) => {
     SELECT t.artist, COUNT(*) as play_count
     FROM listening_history lh
     JOIN tracks t ON t.id = lh.track_id
-    WHERE lh.action = 'play' ${uc}
+    WHERE ${QUALIFIED_LISTEN_LH} ${uc}
     GROUP BY t.artist
     ORDER BY play_count DESC
     LIMIT 1
@@ -157,7 +160,7 @@ router.get("/top-tracks", (c) => {
         SELECT lh.track_id, t.title, t.artist, t.album, t.cover_url, t.duration, COUNT(*) as play_count
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action = 'play' AND lh.played_at >= $from ${uc}
+        WHERE ${QUALIFIED_LISTEN_LH} AND lh.played_at >= $from ${uc}
         GROUP BY lh.track_id
         ORDER BY play_count DESC
         LIMIT $limit
@@ -166,7 +169,7 @@ router.get("/top-tracks", (c) => {
         SELECT lh.track_id, t.title, t.artist, t.album, t.cover_url, t.duration, COUNT(*) as play_count
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action = 'play' ${uc}
+        WHERE ${QUALIFIED_LISTEN_LH} ${uc}
         GROUP BY lh.track_id
         ORDER BY play_count DESC
         LIMIT $limit
@@ -190,7 +193,7 @@ router.get("/top-artists", (c) => {
                MAX(t.cover_url) as cover_url
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action = 'play' AND lh.played_at >= $from ${uc}
+        WHERE ${QUALIFIED_LISTEN_LH} AND lh.played_at >= $from ${uc}
         GROUP BY t.artist
         ORDER BY play_count DESC
         LIMIT $limit
@@ -200,7 +203,7 @@ router.get("/top-artists", (c) => {
                MAX(t.cover_url) as cover_url
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action = 'play' ${uc}
+        WHERE ${QUALIFIED_LISTEN_LH} ${uc}
         GROUP BY t.artist
         ORDER BY play_count DESC
         LIMIT $limit
@@ -223,7 +226,7 @@ router.get("/top-albums", (c) => {
         SELECT t.album, t.artist, COUNT(*) as play_count, MAX(t.cover_url) as cover_url
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action = 'play' AND t.album IS NOT NULL AND lh.played_at >= $from ${uc}
+        WHERE ${QUALIFIED_LISTEN_LH} AND t.album IS NOT NULL AND lh.played_at >= $from ${uc}
         GROUP BY t.album, t.artist
         ORDER BY play_count DESC
         LIMIT $limit
@@ -232,7 +235,7 @@ router.get("/top-albums", (c) => {
         SELECT t.album, t.artist, COUNT(*) as play_count, MAX(t.cover_url) as cover_url
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action = 'play' AND t.album IS NOT NULL ${uc}
+        WHERE ${QUALIFIED_LISTEN_LH} AND t.album IS NOT NULL ${uc}
         GROUP BY t.album, t.artist
         ORDER BY play_count DESC
         LIMIT $limit
@@ -254,7 +257,7 @@ router.get("/heatmap", (c) => {
         SELECT CAST(strftime('%H', played_at, 'unixepoch') AS INTEGER) as hour,
                COUNT(*) as play_count
         FROM listening_history
-        WHERE action = 'play' AND played_at >= $from ${uc}
+        WHERE ${QUALIFIED_LISTEN} AND played_at >= $from ${uc}
         GROUP BY hour
         ORDER BY hour ASC
       `).all({ $from: cutoff, ...up })
@@ -262,7 +265,7 @@ router.get("/heatmap", (c) => {
         SELECT CAST(strftime('%H', played_at, 'unixepoch') AS INTEGER) as hour,
                COUNT(*) as play_count
         FROM listening_history
-        WHERE action = 'play' ${uc}
+        WHERE ${QUALIFIED_LISTEN} ${uc}
         GROUP BY hour
         ORDER BY hour ASC
       `).all({ ...up });
@@ -286,7 +289,7 @@ router.get("/monthly", (c) => {
   const rows = db.prepare(`
     SELECT date(played_at, 'unixepoch') as day, COUNT(*) as play_count
     FROM listening_history
-    WHERE action = 'play' AND played_at >= $from ${uc}
+    WHERE ${QUALIFIED_LISTEN} AND played_at >= $from ${uc}
     GROUP BY day
     ORDER BY day ASC
   `).all({ $from: monthStart, ...up });
@@ -307,7 +310,7 @@ router.get("/genres", (c) => {
         SELECT COALESCE(t.genre, 'Unknown') as genre, COUNT(*) as play_count
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action = 'play' AND lh.played_at >= $from ${uc}
+        WHERE ${QUALIFIED_LISTEN_LH} AND lh.played_at >= $from ${uc}
         GROUP BY genre
         ORDER BY play_count DESC
         LIMIT 8
@@ -316,7 +319,7 @@ router.get("/genres", (c) => {
         SELECT COALESCE(t.genre, 'Unknown') as genre, COUNT(*) as play_count
         FROM listening_history lh
         JOIN tracks t ON t.id = lh.track_id
-        WHERE lh.action = 'play' ${uc}
+        WHERE ${QUALIFIED_LISTEN_LH} ${uc}
         GROUP BY genre
         ORDER BY play_count DESC
         LIMIT 8

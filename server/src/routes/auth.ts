@@ -9,9 +9,10 @@
 import { Hono } from "hono";
 import crypto from "crypto";
 import { getDb, upsertTrack } from "../db/index.js";
+import { clearUserRecommendationCaches } from "../providers/taste-engine.js";
 
 const router = new Hono();
-const VALID_TRACK_SOURCES = new Set(["local", "vk", "soundcloud"]);
+const VALID_TRACK_SOURCES = new Set(["local", "vk", "soundcloud", "yandex", "youtube"]);
 
 type LikeTrackMetadata = {
   source?: string;
@@ -169,7 +170,9 @@ router.get("/me", (c) => {
       COUNT(*) as totalPlays,
       COUNT(DISTINCT track_id) as uniqueTracks
     FROM listening_history
-    WHERE user_id = $uid AND action = 'play'
+    WHERE user_id = $uid
+      AND ((action = 'play' AND played_ratio IS NULL)
+        OR (action IN ('play', 'complete', 'skip') AND played_ratio >= 0.5))
   `).get({ $uid: userId }) as { totalPlays: number; uniqueTracks: number };
 
   const playlistCount = (db.prepare(
@@ -206,12 +209,22 @@ router.post("/likes/sync", async (c) => {
   const userId = (c as any).get("userId") as string | undefined;
   if (!userId) return c.json({ error: "Not authenticated" }, 401);
 
-  const body = await c.req.json<{ trackIds?: string[]; tracks?: Array<LikeTrackMetadata & { id?: string }> }>();
+  const body = await c.req.json<{
+    trackIds?: string[];
+    tracks?: Array<LikeTrackMetadata & { id?: string }>;
+    removedTrackIds?: string[];
+  }>();
   const trackIds = body.trackIds;
   if (!trackIds || !Array.isArray(trackIds)) return c.json({ error: "trackIds required" }, 400);
 
   const normalizedTrackIds = Array.from(new Set(
     trackIds
+      .filter((tid): tid is string => typeof tid === "string")
+      .map((tid) => tid.trim())
+      .filter(Boolean)
+  )).slice(0, 5000);
+  const removedTrackIds = Array.from(new Set(
+    (body.removedTrackIds ?? [])
       .filter((tid): tid is string => typeof tid === "string")
       .map((tid) => tid.trim())
       .filter(Boolean)
@@ -226,6 +239,11 @@ router.post("/likes/sync", async (c) => {
 
   const db = getDb();
   db.transaction(() => {
+    const remove = db.prepare("DELETE FROM liked_tracks WHERE user_id = $uid AND track_id = $tid");
+    for (const tid of removedTrackIds) {
+      remove.run({ $uid: userId, $tid: tid });
+    }
+
     // Get current server likes
     const serverLikes = new Set(
       (db.prepare("SELECT track_id FROM liked_tracks WHERE user_id = $uid").all({ $uid: userId }) as { track_id: string }[])
@@ -246,6 +264,7 @@ router.post("/likes/sync", async (c) => {
   const allLikes = db.prepare("SELECT track_id FROM liked_tracks WHERE user_id = $uid ORDER BY liked_at DESC")
     .all({ $uid: userId }) as { track_id: string }[];
 
+  clearUserRecommendationCaches(userId);
   return c.json({ trackIds: allLikes.map((r) => r.track_id), count: allLikes.length });
 });
 
@@ -275,6 +294,7 @@ router.post("/likes/set", async (c) => {
       .run({ $uid: userId, $tid: trackId });
   }
 
+  clearUserRecommendationCaches(userId);
   return c.json({ liked: body.liked, trackId });
 });
 
@@ -315,12 +335,14 @@ router.post("/likes/toggle", async (c) => {
   if (recentIntent?.action === "like") {
     db.prepare("INSERT OR IGNORE INTO liked_tracks (user_id, track_id) VALUES ($uid, $tid)")
       .run({ $uid: userId, $tid: body.trackId });
+    clearUserRecommendationCaches(userId);
     return c.json({ liked: true, trackId: body.trackId });
   }
 
   if (recentIntent?.action === "dislike") {
     db.prepare("DELETE FROM liked_tracks WHERE user_id = $uid AND track_id = $tid")
       .run({ $uid: userId, $tid: body.trackId });
+    clearUserRecommendationCaches(userId);
     return c.json({ liked: false, trackId: body.trackId });
   }
 
@@ -330,10 +352,12 @@ router.post("/likes/toggle", async (c) => {
   if (exists) {
     db.prepare("DELETE FROM liked_tracks WHERE user_id = $uid AND track_id = $tid")
       .run({ $uid: userId, $tid: body.trackId });
+    clearUserRecommendationCaches(userId);
     return c.json({ liked: false, trackId: body.trackId });
   } else {
     db.prepare("INSERT INTO liked_tracks (user_id, track_id) VALUES ($uid, $tid)")
       .run({ $uid: userId, $tid: body.trackId });
+    clearUserRecommendationCaches(userId);
     return c.json({ liked: true, trackId: body.trackId });
   }
 });

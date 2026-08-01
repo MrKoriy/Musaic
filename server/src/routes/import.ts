@@ -8,7 +8,8 @@
 import { Hono } from "hono";
 import { getVKProvider } from "../providers/vk.js";
 import { getSoundCloudProvider } from "../providers/soundcloud.js";
-import { getDb, createPlaylist, addTrackToPlaylist, upsertTrack } from "../db/index.js";
+import { getDb, createPlaylist, addTrackToPlaylist, upsertTrack, getYandexConfig } from "../db/index.js";
+import { sidecarGet } from "../providers/sidecar.js";
 import type { Track } from "../types.js";
 
 const router = new Hono();
@@ -44,13 +45,21 @@ function parseYandexMusicURL(url: string): { owner: string; kind: string } | { s
 }
 
 async function resolveYandexShareUrl(shareId: string): Promise<{ owner: string; kind: string }> {
+  const token = getYandexConfig().token;
+  const headers: Record<string, string> = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  };
+  if (token) {
+    headers["Authorization"] = `OAuth ${token}`;
+  }
+
   // Fetch HTML page and extract owner login + kind — retry up to 2 times
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const res = await fetch(
         `https://music.yandex.ru/playlists/${encodeURIComponent(shareId)}`,
         {
-          headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" },
+          headers,
           signal: AbortSignal.timeout(20_000),
           redirect: "follow",
         }
@@ -72,9 +81,17 @@ async function resolveYandexShareUrl(shareId: string): Promise<{ owner: string; 
 }
 
 async function fetchYandexPlaylist(owner: string, kind: string): Promise<{ title: string; tracks: ExternalTrack[] }> {
+  const token = getYandexConfig().token;
+  const headers: Record<string, string> = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+  };
+  if (token) {
+    headers["Authorization"] = `OAuth ${token}`;
+  }
+
   const res = await fetch(
     `https://music.yandex.ru/handlers/playlist.jsx?owner=${encodeURIComponent(owner)}&kinds=${kind}&light=false`,
-    { headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" }, signal: AbortSignal.timeout(15_000) }
+    { headers, signal: AbortSignal.timeout(15_000) }
   );
   if (!res.ok) throw new Error(`Yandex Music returned ${res.status}`);
 
@@ -202,20 +219,35 @@ router.post("/playlist", async (c) => {
   if (ym) {
     source = "yandex";
     try {
-      let owner: string, kind: string;
-      if ("shareId" in ym) {
-        const resolved = await resolveYandexShareUrl(ym.shareId);
-        owner = resolved.owner;
-        kind = resolved.kind;
-      } else {
-        owner = ym.owner;
-        kind = ym.kind;
-      }
-      const result = await fetchYandexPlaylist(owner, kind);
+      const identifier = "shareId" in ym ? ym.shareId : `${ym.owner}:${ym.kind}`;
+      const token = getYandexConfig().token ?? "";
+      const reqHeaders: Record<string, string> = {};
+      if (token) reqHeaders["X-Yandex-Token"] = token;
+
+      const result = await sidecarGet<{ title: string; tracks: ExternalTrack[] }>(
+        `/yandex/playlist?id=${encodeURIComponent(identifier)}`,
+        reqHeaders,
+        35_000
+      );
       playlistTitle = result.title;
       externalTracks = result.tracks;
     } catch (err) {
-      return c.json({ error: `Failed to fetch Yandex playlist: ${err instanceof Error ? err.message : "unknown"}` }, 502);
+      try {
+        let owner: string, kind: string;
+        if ("shareId" in ym) {
+          const resolved = await resolveYandexShareUrl(ym.shareId);
+          owner = resolved.owner;
+          kind = resolved.kind;
+        } else {
+          owner = ym.owner;
+          kind = ym.kind;
+        }
+        const result = await fetchYandexPlaylist(owner, kind);
+        playlistTitle = result.title;
+        externalTracks = result.tracks;
+      } catch (err2) {
+        return c.json({ error: `Failed to fetch Yandex playlist: ${err2 instanceof Error ? err2.message : String(err2)}` }, 502);
+      }
     }
   } else {
     return c.json({ error: "Unsupported URL. Currently supported: Yandex Music playlists" }, 400);

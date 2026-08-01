@@ -12,21 +12,32 @@
  */
 
 import { Hono } from "hono";
-import { getDb } from "../db/index.js";
+import { getDb, logListening } from "../db/index.js";
 import {
   buildWeightedProfile,
   buildDailyMix,
+  getTimeContextArtists,
   getTracksByMood,
   getCached,
   setCached,
-  clearCached,
   isDiscoverableRow,
+  userCacheKey,
+  clearUserRecommendationCaches,
 } from "../providers/taste-engine.js";
+import { getYandexProvider } from "../providers/yandex.js";
+import { getYouTubeProvider } from "../providers/youtube.js";
+import {
+  baseTrackTitle,
+  normalizeArtistIdentity,
+  songFamilyKey,
+  trackVariantPenalty,
+} from "../utils/track-identity.js";
 
 const LASTFM_BASE = "https://ws.audioscrobbler.com/2.0/";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL ?? "minimax/minimax-m2.5:free";
 const OPENROUTER_TIMEOUT_MS = 15_000;
+const YANDEX_WAVE_CACHE_KEY = "catalog-warm:yandex-wave";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -87,6 +98,22 @@ interface RankedVibeCandidate {
   signalCount: number;
 }
 
+interface UserTrackStats {
+  positiveCount: number;
+  earlySkipCount: number;
+  lastPlayedAt: number | null;
+  lastSkippedAt: number | null;
+  lastDislikedAt: number | null;
+  lastLikedAt: number | null;
+}
+
+interface UserArtistStats {
+  positiveCount: number;
+  earlySkipCount: number;
+  dislikeCount: number;
+  likeCount: number;
+}
+
 interface SimilarTrackSignal {
   artist: string;
   title: string;
@@ -103,12 +130,16 @@ const VIBE_STOP_WORDS = new Set([
 const VIBE_CYRILLIC_RE = /[А-Яа-яЁё]/u;
 const VIBE_MOOD_ALIASES: Record<string, string[]> = {
   energy: ["energy", "energise", "energetic", "workout", "gym", "power", "dance", "бодро", "энергия", "заряд", "тренировка"],
+  energise: ["energy", "energise", "energetic", "edm", "dance", "rock", "rap", "power", "бодро", "энергия", "заряд"],
   feelgood: ["feel good", "feelgood", "happy", "sunny", "bright", "positive", "светло", "радость", "позитив"],
   calm: ["relax", "calm", "chill", "sleep", "ambient", "спокойно", "сон", "тихо", "мягко"],
+  relax: ["relax", "calm", "chill", "ambient", "downtempo", "acoustic", "jazz", "спокойно", "тихо", "мягко"],
+  workout: ["workout", "gym", "energy", "hip hop", "rap", "rock", "metal", "edm", "drum", "тренировка", "спорт"],
   focus: ["focus", "study", "work", "deep", "concentration", "фокус", "учеба", "работа", "концентрация"],
   romance: ["romance", "romantic", "love", "date", "романтика", "любовь"],
   sad: ["sad", "melancholy", "cry", "грусть", "меланхолия", "печаль"],
   party: ["party", "club", "dance", "вечеринка", "клуб", "танцы"],
+  sleep: ["sleep", "ambient", "classical", "piano", "meditation", "downtempo", "chill", "сон", "тихо"],
   night: ["night", "late night", "midnight", "afterhours", "ночь", "поздний вечер"],
 };
 
@@ -191,6 +222,87 @@ function normalizeTitleKey(value: string | null | undefined): string {
   return normalizePhrase(value).replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
 
+function canonicalSongKey(row: Pick<VibeTrackRow, "artist" | "title">): string {
+  return songFamilyKey(row);
+}
+
+function collapseTrackVariants<T extends Record<string, unknown>>(tracks: T[]): T[] {
+  const seenIds = new Set<string>();
+  const seenFamilies = new Set<string>();
+  const baseTitleVariantState = new Map<string, boolean>();
+
+  return tracks.filter((track) => {
+    const id = String(track.id ?? "").trim();
+    const artist = String(track.artist ?? "").trim();
+    const title = String(track.title ?? "").trim();
+    if (id && seenIds.has(id)) return false;
+
+    const family = songFamilyKey({ artist, title });
+    const baseTitle = baseTrackTitle(title);
+    const isVariant = trackVariantPenalty(title) > 0;
+    if (artist && baseTitle && seenFamilies.has(family)) return false;
+
+    // If artist credits changed between remix releases, exact artist+title
+    // identity is insufficient. Collapse by base title only when at least one
+    // of the colliding records is explicitly an alternate version.
+    if (baseTitle && baseTitleVariantState.has(baseTitle)) {
+      const existingIsVariant = baseTitleVariantState.get(baseTitle) ?? false;
+      if (existingIsVariant || isVariant) return false;
+    }
+
+    if (id) seenIds.add(id);
+    if (artist && baseTitle) seenFamilies.add(family);
+    if (baseTitle && !baseTitleVariantState.has(baseTitle)) {
+      baseTitleVariantState.set(baseTitle, isVariant);
+    }
+    return true;
+  });
+}
+
+function requestUserId(c: unknown): string | null {
+  return ((c as any).get("userId") as string | undefined) ?? null;
+}
+
+function recommendationRequestId(): string {
+  return crypto.randomUUID();
+}
+
+function recommendationEnvelope(
+  payload: Record<string, unknown>,
+  surface: string,
+  userId: string | null
+): Record<string, unknown> {
+  const requestId = recommendationRequestId();
+  const rawTracks = Array.isArray(payload.tracks)
+    ? payload.tracks.filter((track): track is Record<string, unknown> => Boolean(track && typeof track === "object"))
+    : [];
+  const tracks = collapseTrackVariants(rawTracks);
+  const responsePayload = typeof payload.count === "number"
+    ? { ...payload, tracks, count: tracks.length }
+    : { ...payload, tracks };
+  const db = getDb();
+  db.transaction(() => {
+    const insert = db.prepare(`
+      INSERT OR IGNORE INTO recommendation_impressions
+        (request_id, user_id, surface, track_id, position)
+      VALUES ($requestId, $userId, $surface, $trackId, $position)
+    `);
+    tracks.forEach((track, position) => {
+      if (!track || typeof track !== "object") return;
+      const trackId = String((track as Record<string, unknown>).id ?? "").trim();
+      if (!trackId) return;
+      insert.run({
+        $requestId: requestId,
+        $userId: userId,
+        $surface: surface,
+        $trackId: trackId,
+        $position: position,
+      });
+    });
+  })();
+  return { ...responsePayload, requestId };
+}
+
 function artistKeywordOverlap(lhs: string, rhs: string): number {
   const left = new Set(
     normalizePhrase(lhs)
@@ -262,13 +374,18 @@ function scoreVibeCandidate(
     similarTitleKeywords: string[];
     moodTerms: string[];
     filters: Required<Pick<VibeFilters, "character">> & VibeFilters;
+    userStats: Map<string, UserTrackStats>;
+    userArtistStats: Map<string, UserArtistStats>;
   }
 ): number | null {
   const row = candidate.row;
+  const personal = context.userStats.get(canonicalSongKey(row));
+  if (personal?.lastDislikedAt && personal.lastDislikedAt > (personal.lastLikedAt ?? 0)) return null;
   if (!matchesLanguageFilter(row, context.filters.language)) return null;
   if (!matchesMoodFilter(row, context.moodTerms)) return null;
 
   const artist = normalizePhrase(row.artist);
+  const artistPersonal = context.userArtistStats.get(normalizeArtistIdentity(row.artist));
   const album = normalizePhrase(row.album);
   const text = normalizePhrase(`${row.title} ${row.artist} ${row.album ?? ""}`);
   const tags = [
@@ -284,6 +401,18 @@ function scoreVibeCandidate(
   score += fuzzyListMatch(artist, context.similarArtists) * 1.7;
   score += fuzzyTagMatch(tags, context.seedGenres) * 4;
   score += fuzzyTagMatch(tags, context.seedMoods) * 3.6;
+
+  if (artistPersonal) {
+    const dislikeBalance = Math.max(0, artistPersonal.dislikeCount - artistPersonal.likeCount);
+    score -= Math.min(30, dislikeBalance * 12);
+    const skipInteractions = artistPersonal.positiveCount + artistPersonal.earlySkipCount;
+    if (artistPersonal.earlySkipCount >= 2 && skipInteractions > 0) {
+      const earlySkipRate = artistPersonal.earlySkipCount / skipInteractions;
+      score -= Math.min(18, artistPersonal.earlySkipCount * 1.8 + earlySkipRate * 8);
+    } else if (artistPersonal.positiveCount >= 3) {
+      score += Math.min(3, Math.log1p(artistPersonal.positiveCount));
+    }
+  }
 
   if (context.moodTerms.length > 0) {
     score += 10;
@@ -314,9 +443,17 @@ function scoreVibeCandidate(
     }
   }
 
-  const playCount = row.play_count;
-  const lastPlayedAt = row.last_played_at ?? 0;
+  const playCount = personal?.positiveCount ?? 0;
+  const lastPlayedAt = personal?.lastPlayedAt ?? 0;
   const hoursSinceLastPlay = lastPlayedAt > 0 ? (Date.now() / 1000 - lastPlayedAt) / 3600 : Number.POSITIVE_INFINITY;
+  const hoursSinceLastSkip = personal?.lastSkippedAt
+    ? (Date.now() / 1000 - personal.lastSkippedAt) / 3600
+    : Number.POSITIVE_INFINITY;
+
+  if (personal?.earlySkipCount) {
+    if (hoursSinceLastSkip < 24) score -= 18;
+    else if (hoursSinceLastSkip < 24 * 7) score -= 7;
+  }
 
   if (context.mode === "auto_mix") {
     score += Math.min(playCount, 12) * 0.4;
@@ -338,13 +475,23 @@ function scoreVibeCandidate(
         else if (hoursSinceLastPlay < 24 * 45) score -= 3;
         break;
       case "popular":
-        score += Math.min(playCount, 24) * 1.9;
+        score += Math.log1p(row.play_count) * 4;
         if (hoursSinceLastPlay < 24 * 21) score += 1.5;
         break;
     }
   }
 
-  score += Math.min((row.updated_at ?? 0) / 1_000_000_000, 2);
+  // Global popularity is a weak prior only; personal behaviour dominates.
+  score += Math.log1p(row.play_count) * 0.25;
+  // Prefer the most reliable playable copy when the same recording exists in
+  // several catalogues. Canonical-song dedupe will keep the highest one.
+  if (row.source === "local") score += 3;
+  else if (row.source === "yandex") score += 2.5;
+  else if (row.source === "soundcloud") score += 1.25;
+  else if (row.source === "youtube") score += 0.25;
+  score -= trackVariantPenalty(row.title);
+  if (row.genre) score += 0.35;
+  if (row.mood) score += 0.35;
   return score;
 }
 
@@ -400,6 +547,7 @@ function selectDiverseTracks(
     filters: Required<Pick<VibeFilters, "character">> & VibeFilters;
   }
 ): VibeTrackRow[] {
+  const familySafeRows = collapseTrackVariants(rankedRows);
   const selected: VibeTrackRow[] = [];
   const selectedIDs = new Set<string>();
   const selectedTitles = new Set<string>();
@@ -421,13 +569,13 @@ function selectDiverseTracks(
   ];
 
   for (const pass of passes) {
-    for (const row of rankedRows) {
-      if (selected.length >= limit) return selected;
+    for (const row of familySafeRows) {
+      if (selected.length >= limit) break;
       if (selectedIDs.has(row.id)) continue;
       if (!isDiscoverableRow(row)) continue;
 
       const artistKey = normalizeArtistKey(row.artist);
-      const titleKey = `${artistKey}::${normalizeTitleKey(row.title)}`;
+      const titleKey = canonicalSongKey(row);
       const albumKey = row.album ? `${artistKey}::${normalizeTitleKey(row.album)}` : "";
       const seedRelatedArtist = seedArtistSet.has(artistKey) || context.seedArtists.some((seedArtist) => artistKeywordOverlap(artistKey, seedArtist) > 0);
       const artistLimit = seedRelatedArtist ? pass.seedArtistMax : pass.otherArtistMax;
@@ -444,16 +592,58 @@ function selectDiverseTracks(
         albumCounts.set(albumKey, (albumCounts.get(albumKey) ?? 0) + 1);
       }
     }
+    if (selected.length >= limit) break;
   }
 
-  for (const row of rankedRows) {
+  for (const row of familySafeRows) {
     if (selected.length >= limit) break;
-    if (selectedIDs.has(row.id)) continue;
+    const songKey = canonicalSongKey(row);
+    if (selectedIDs.has(row.id) || selectedTitles.has(songKey) || !isDiscoverableRow(row)) continue;
     selected.push(row);
     selectedIDs.add(row.id);
+    selectedTitles.add(songKey);
   }
 
-  return selected;
+  return sequenceForPlayback(selected.slice(0, limit), familySafeRows);
+}
+
+function sequenceForPlayback(selected: VibeTrackRow[], rankedRows: VibeTrackRow[]): VibeTrackRow[] {
+  if (selected.length < 3) return selected;
+  const rank = new Map(rankedRows.map((row, index) => [row.id, index]));
+  const remaining = selected.slice(1);
+  const result = [selected[0]];
+
+  const tags = (row: VibeTrackRow) => new Set([
+    ...splitTagField(row.genre).map(normalizePhrase),
+    ...splitTagField(row.mood).map(normalizePhrase),
+  ]);
+
+  while (remaining.length > 0) {
+    const previous = result[result.length - 1];
+    const previousTags = tags(previous);
+    let bestIndex = 0;
+    let bestScore = Number.NEGATIVE_INFINITY;
+
+    for (let index = 0; index < remaining.length; index++) {
+      const candidate = remaining[index];
+      const candidateTags = tags(candidate);
+      let sharedTags = 0;
+      for (const tag of candidateTags) if (previousTags.has(tag)) sharedTags++;
+
+      let score = 12 - (rank.get(candidate.id) ?? selected.length) * 0.22;
+      score += Math.min(sharedTags, 2) * 1.8;
+      if (normalizeArtistKey(candidate.artist) === normalizeArtistKey(previous.artist)) score -= 7;
+      if (candidate.album && previous.album && normalizeTitleKey(candidate.album) === normalizeTitleKey(previous.album)) score -= 3;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = index;
+      }
+    }
+
+    result.push(remaining.splice(bestIndex, 1)[0]);
+  }
+  return result;
 }
 
 // OpenRouter simple rate limiter (token bucket: 10 req/min)
@@ -472,17 +662,141 @@ function consumeOpenRouterToken(): boolean {
   return true;
 }
 
-async function getSimilarArtistsFromLastfm(artists: string[]): Promise<string[]> {
-  const similar = new Set<string>();
-  for (const artist of artists.slice(0, 3)) {
-    try {
-      const data = await lastfmGet({ method: "artist.getSimilar", artist, limit: "5" }) as {
-        similarartists?: { artist?: Array<{ name: string }> }
-      };
-      (data.similarartists?.artist ?? []).forEach((a) => similar.add(a.name));
-    } catch { /* skip */ }
+function profileSeeds(profile: ReturnType<typeof buildWeightedProfile>, limit = 6): VibeSeed[] {
+  const contextualArtists = new Set(getTimeContextArtists(profile).map(normalizeArtistKey));
+  const contextual = profile.topTracks.filter((track) => contextualArtists.has(normalizeArtistKey(track.artist)));
+  const ordered = uniqueStrings(
+    [
+      ...profile.topTracks.slice(0, Math.max(2, Math.ceil(limit * 0.6))),
+      ...contextual,
+      ...profile.topTracks,
+    ].map((track) => JSON.stringify(track)),
+    limit
+  ).map((track) => JSON.parse(track) as (typeof profile.topTracks)[number]);
+
+  return ordered.map((track) => ({
+    id: track.id,
+    artist: track.artist,
+    title: track.title,
+  }));
+}
+
+interface SessionTransitionEvent {
+  id: number;
+  session_id: string;
+  track_id: string;
+  action: string;
+  played_at: number;
+  played_ratio: number | null;
+  artist: string;
+  title: string;
+}
+
+function acceptedSessionEvent(event: SessionTransitionEvent): boolean {
+  if (event.action === "complete") return true;
+  if (event.action === "play" && event.played_ratio == null) return true;
+  return event.played_ratio != null && event.played_ratio >= 0.5;
+}
+
+function sessionTransitionSignals(
+  userId: string | null,
+  seedIDs: string[],
+  seedArtists: string[]
+): Map<string, number> {
+  if (seedIDs.length === 0 && seedArtists.length === 0) return new Map();
+  const db = getDb();
+  const cutoff = Math.floor(Date.now() / 1000) - 120 * 86400;
+  const events = db.prepare(`
+    SELECT lh.id, lh.session_id, lh.track_id, lh.action, lh.played_at,
+           lh.played_ratio, t.artist, t.title
+    FROM listening_history lh
+    JOIN tracks t ON t.id = lh.track_id
+    WHERE lh.session_id IS NOT NULL
+      AND lh.played_at >= $cutoff
+      AND lh.action IN ('play', 'complete', 'skip')
+      AND (lh.user_id = $userId OR (lh.user_id IS NULL AND $userId IS NULL))
+    ORDER BY lh.session_id, lh.played_at, lh.id
+    LIMIT 5000
+  `).all({ $cutoff: cutoff, $userId: userId }) as SessionTransitionEvent[];
+
+  const seedIdSet = new Set(seedIDs);
+  const seedArtistKeys = seedArtists.map(normalizeArtistKey);
+  const scores = new Map<string, number>();
+  let previous: SessionTransitionEvent | null = null;
+
+  for (const event of events) {
+    const sameSession = previous?.session_id === event.session_id;
+    const closeInTime = previous != null && event.played_at - previous.played_at <= 45 * 60;
+    if (sameSession && closeInTime && previous && acceptedSessionEvent(previous) && acceptedSessionEvent(event)) {
+      const exactSeed = seedIdSet.has(previous.track_id);
+      const previousArtist = normalizeArtistKey(previous.artist);
+      const artistSeed = seedArtistKeys.some((seed) =>
+        seed === previousArtist || artistKeywordOverlap(seed, previousArtist) > 0
+      );
+      if ((exactSeed || artistSeed) && !seedIdSet.has(event.track_id)
+        && canonicalSongKey(previous) !== canonicalSongKey(event)) {
+        const ageDays = Math.max(0, (Date.now() / 1000 - event.played_at) / 86400);
+        const recency = Math.exp(-Math.LN2 * ageDays / 30);
+        const ratio = event.action === "complete" ? 1 : Math.min(event.played_ratio ?? 0.65, 1);
+        const strength = (exactSeed ? 3.2 : 1.25) * (0.7 + ratio * 0.6) * recency;
+        scores.set(event.track_id, Math.min(12, (scores.get(event.track_id) ?? 0) + strength));
+      }
+    }
+    previous = event;
   }
-  return [...similar];
+
+  return scores;
+}
+
+function balanceFamiliarity(
+  rows: VibeTrackRow[],
+  userStats: Map<string, UserTrackStats>,
+  candidates: Map<string, RankedVibeCandidate>,
+  limit: number,
+  mode: StationMode,
+  character: NonNullable<VibeFilters["character"]>
+): VibeTrackRow[] {
+  const discoveryRatio = mode === "auto_mix"
+    ? 0.45
+    : character === "unfamiliar"
+      ? 0.7
+      : character === "popular"
+        ? 0.2
+        : 0.3;
+  const candidateWindow = rows.slice(0, Math.max(30, limit * 3));
+  const familiar = candidateWindow.filter((row) => (userStats.get(canonicalSongKey(row))?.positiveCount ?? 0) > 0);
+  const discovery = candidateWindow.filter((row) => {
+    const stats = userStats.get(canonicalSongKey(row));
+    if ((stats?.positiveCount ?? 0) > 0) return false;
+    const provenance = candidates.get(row.id);
+    // Do not promote arbitrary global-cache filler into the exploration lane.
+    // Every discovery item needs a real relation signal from Rotor,
+    // artist/album/genre, Last.fm or learned session transitions.
+    if ((provenance?.baseScore ?? 0) <= 0.5) return false;
+    const daysSinceSkip = stats?.lastSkippedAt
+      ? (Date.now() / 1000 - stats.lastSkippedAt) / 86400
+      : Number.POSITIVE_INFINITY;
+    return !(stats?.earlySkipCount && daysSinceSkip < 30);
+  });
+  if (familiar.length === 0 || discovery.length === 0) return rows;
+
+  const result: VibeTrackRow[] = [];
+  let familiarIndex = 0;
+  let discoveryIndex = 0;
+  let discoveryCount = 0;
+  while (result.length < candidateWindow.length) {
+    const targetDiscovery = Math.round((result.length + 1) * discoveryRatio);
+    const useDiscovery = discoveryCount < targetDiscovery && discoveryIndex < discovery.length;
+    const next = useDiscovery
+      ? discovery[discoveryIndex++]
+      : familiar[familiarIndex++] ?? discovery[discoveryIndex++];
+    if (!next) break;
+    if (useDiscovery || familiarIndex > familiar.length) discoveryCount++;
+    result.push(next);
+  }
+
+  const selected = new Set(result.map((row) => row.id));
+  return [...result, ...rows.filter((row) => !selected.has(row.id))];
 }
 
 async function getSimilarTracksFromLastfm(seeds: VibeSeed[]): Promise<SimilarTrackSignal[]> {
@@ -551,21 +865,87 @@ async function getSimilarTracksFromLastfm(seeds: VibeSeed[]): Promise<SimilarTra
     .slice(0, 24);
 }
 
+const catalogWarmInFlight = new Map<string, Promise<void>>();
+
+async function warmExternalCandidateCatalog(
+  seedArtists: string[],
+  similarSignals: SimilarTrackSignal[]
+): Promise<void> {
+  const warmKey = `catalog-warm:${seedArtists.slice(0, 2).join("|")}:${similarSignals
+    .slice(0, 8)
+    .map((signal) => `${signal.artist}:${signal.title}`)
+    .join("|")}`.toLowerCase();
+  if (getCached<boolean>(warmKey)) return;
+  const existingWarm = catalogWarmInFlight.get(warmKey);
+  if (existingWarm) return existingWarm;
+
+  const db = getDb();
+  const yandexProvider = getYandexProvider();
+  const provider = yandexProvider.isAuthenticated() ? yandexProvider : getYouTubeProvider();
+
+  const warm = (async () => {
+    // Populate a small slice of the real provider catalogue instead of limiting
+    // recommendations to tracks that happened to be cached by previous searches.
+    const artistTasks = seedArtists.slice(0, 2).map(async (artist) => {
+      const count = (db.prepare(
+        "SELECT COUNT(*) AS n FROM tracks WHERE lower(artist) LIKE lower($artist)"
+      ).get({ $artist: `%${artist}%` }) as { n: number }).n;
+      if (count < 6) await provider.getArtistTracks(artist);
+    });
+
+    const signalTasks = similarSignals.slice(0, 8).map(async (signal) => {
+      if (querySimilarTrackMatches(db, signal).length > 0) return;
+      await provider.search(`${signal.artist} ${signal.title}`, 5, 0);
+    });
+
+    const stationTasks: Promise<unknown>[] = [];
+    if (yandexProvider.isAuthenticated()
+      && !getCached<Array<Record<string, unknown>>>(YANDEX_WAVE_CACHE_KEY)) {
+      stationTasks.push(
+        yandexProvider.getStationTracks("user:onyourwave", 60).then((tracks) => {
+          setCached(YANDEX_WAVE_CACHE_KEY, tracks.map((track) => ({ ...track })), 15 * 60_000);
+        })
+      );
+    }
+
+    await Promise.allSettled([...artistTasks, ...signalTasks, ...stationTasks]);
+    setCached(warmKey, true, 15 * 60_000);
+  })();
+  catalogWarmInFlight.set(warmKey, warm);
+  try {
+    await warm;
+  } finally {
+    catalogWarmInFlight.delete(warmKey);
+  }
+}
+
 async function buildStationTracks(options: {
   mode: StationMode;
   seeds: VibeSeed[];
   excludeIds?: string[];
   limit?: number;
   filters?: VibeFilters;
+  userId?: string | null;
 }): Promise<{
   tracks: VibeTrackRow[];
   filters: Required<Pick<VibeFilters, "character">> & VibeFilters;
   seedCount: number;
 }> {
   const db = getDb();
-  const limit = Math.max(8, Math.min(Number(options.limit ?? 24), 60));
+  const requestedLimit = Number(options.limit ?? 24);
+  const limit = Number.isFinite(requestedLimit) ? Math.max(8, Math.min(Math.floor(requestedLimit), 60)) : 24;
   const seeds = options.seeds;
-  const exclude = new Set<string>(options.excludeIds ?? []);
+  const userId = options.userId ?? null;
+  const exclude = new Set<string>((options.excludeIds ?? []).slice(0, 500));
+  const excludedSongKeys = new Set<string>();
+  if (exclude.size > 0) {
+    const ids = [...exclude];
+    const placeholders = ids.map((_, index) => `$excluded${index}`).join(", ");
+    const params = Object.fromEntries(ids.map((id, index) => [`$excluded${index}`, id]));
+    const rows = db.prepare(`SELECT artist, title FROM tracks WHERE id IN (${placeholders})`)
+      .all(params) as Array<Pick<VibeTrackRow, "artist" | "title">>;
+    rows.forEach((row) => excludedSongKeys.add(canonicalSongKey(row)));
+  }
   const seedIDs = uniqueStrings(seeds.map((seed) => seed.id), 20);
   const filters: Required<Pick<VibeFilters, "character">> & VibeFilters = {
     character: options.filters?.character ?? "favorite",
@@ -593,7 +973,7 @@ async function buildStationTracks(options: {
   }
 
   if (seedArtists.length === 0 && seedGenres.length === 0 && seedMoods.length === 0) {
-    const profile = buildWeightedProfile();
+    const profile = buildWeightedProfile(userId);
     seedArtists.push(...uniqueStrings(profile.topArtists.map((artist) => artist.artist), 6).map(normalizePhrase));
     seedGenres.push(...uniqueStrings(profile.topGenres.map((genre) => genre.genre), 4).map(normalizePhrase));
     seedMoods.push(...uniqueStrings(profile.topMoods.map((mood) => mood.mood), 4).map(normalizePhrase));
@@ -606,6 +986,7 @@ async function buildStationTracks(options: {
   const seedArtistSet = new Set(seedArtists);
 
   const similarTrackSignals = await getSimilarTracksFromLastfm(seeds);
+  await warmExternalCandidateCatalog(seedArtists, similarTrackSignals);
   const similarArtists = uniqueStrings(similarTrackSignals.map((track) => track.artist), 12).map(normalizePhrase);
   const similarTitleKeywords = extractVibeKeywords(similarTrackSignals.map((track) => track.title), 16);
 
@@ -614,7 +995,7 @@ async function buildStationTracks(options: {
     for (const row of rows) {
       const normalizedRow = normalizeTrackRow(row);
       const id = normalizedRow.id;
-      if (!id || exclude.has(id)) continue;
+      if (!id || exclude.has(id) || excludedSongKeys.has(canonicalSongKey(normalizedRow))) continue;
       const existing = candidates.get(id);
       if (existing) {
         existing.baseScore += score;
@@ -624,6 +1005,29 @@ async function buildStationTracks(options: {
       }
     }
   };
+
+  const transitionSignals = sessionTransitionSignals(userId, seedIDs, seedArtists);
+  if (transitionSignals.size > 0) {
+    const transitionIDs = [...transitionSignals.keys()];
+    const placeholders = transitionIDs.map((_, index) => `$transition${index}`).join(", ");
+    const params = Object.fromEntries(transitionIDs.map((id, index) => [`$transition${index}`, id]));
+    const rows = db.prepare(`SELECT * FROM tracks WHERE id IN (${placeholders})`).all(params) as Record<string, unknown>[];
+    for (const row of rows) {
+      const id = String(row.id ?? "");
+      addCandidates([row], 2.5 + (transitionSignals.get(id) ?? 0));
+    }
+  }
+
+  const waveCandidates = getCached<Array<Record<string, unknown>>>(YANDEX_WAVE_CACHE_KEY) ?? [];
+  if (waveCandidates.length > 0) {
+    const waveIDs = waveCandidates.map((track) => String(track.id ?? "")).filter(Boolean);
+    if (waveIDs.length > 0) {
+      const placeholders = waveIDs.map((_, index) => `$wave${index}`).join(", ");
+      const params = Object.fromEntries(waveIDs.map((id, index) => [`$wave${index}`, id]));
+      const rows = db.prepare(`SELECT * FROM tracks WHERE id IN (${placeholders})`).all(params) as Record<string, unknown>[];
+      addCandidates(rows, 2.8);
+    }
+  }
 
   for (const signal of similarTrackSignals.slice(0, 18)) {
     const matchedRows = querySimilarTrackMatches(db, signal);
@@ -698,8 +1102,8 @@ async function buildStationTracks(options: {
   }
 
   if (candidates.size < limit * 2) {
-    const profile = buildWeightedProfile();
-    addCandidates(buildDailyMix(profile), 1);
+    const profile = buildWeightedProfile(userId);
+    addCandidates(buildDailyMix(profile, [], userId), 1);
   }
 
   if (candidates.size < limit * 3) {
@@ -709,6 +1113,64 @@ async function buildStationTracks(options: {
       LIMIT 140
     `).all() as Record<string, unknown>[];
     addCandidates(rows, 0);
+  }
+
+  const userStatRows = db.prepare(`
+    SELECT lh.track_id, t.artist, t.title,
+           SUM(CASE
+             WHEN (action = 'play' AND played_ratio IS NULL)
+               OR (action IN ('play', 'complete', 'skip') AND played_ratio >= 0.5)
+             THEN 1 ELSE 0 END) AS positive_count,
+           SUM(CASE
+             WHEN action = 'skip' AND COALESCE(played_ratio, 0) < 0.25
+             THEN 1 ELSE 0 END) AS early_skip_count,
+           SUM(CASE WHEN action = 'dislike' THEN 1 ELSE 0 END) AS dislike_count,
+           SUM(CASE WHEN action = 'like' THEN 1 ELSE 0 END) AS like_count,
+           MAX(CASE
+             WHEN (action = 'play' AND played_ratio IS NULL)
+               OR (action IN ('play', 'complete', 'skip') AND played_ratio >= 0.5)
+             THEN played_at ELSE NULL END) AS last_played_at,
+           MAX(CASE WHEN action = 'skip' THEN played_at ELSE NULL END) AS last_skipped_at,
+           MAX(CASE WHEN action = 'dislike' THEN played_at ELSE NULL END) AS last_disliked_at,
+           MAX(CASE WHEN action = 'like' THEN played_at ELSE NULL END) AS last_liked_at
+    FROM listening_history lh
+    JOIN tracks t ON t.id = lh.track_id
+    WHERE lh.user_id = $userId OR (lh.user_id IS NULL AND $userId IS NULL)
+    GROUP BY lh.track_id, t.artist, t.title
+  `).all({ $userId: userId }) as Array<{
+    track_id: string;
+    artist: string;
+    title: string;
+    positive_count: number;
+    early_skip_count: number;
+    dislike_count: number;
+    like_count: number;
+    last_played_at: number | null;
+    last_skipped_at: number | null;
+    last_disliked_at: number | null;
+    last_liked_at: number | null;
+  }>;
+  const userStats = new Map<string, UserTrackStats>();
+  const userArtistStats = new Map<string, UserArtistStats>();
+  for (const row of userStatRows) {
+    const key = canonicalSongKey({ artist: row.artist, title: row.title });
+    const existing = userStats.get(key);
+    userStats.set(key, {
+      positiveCount: (existing?.positiveCount ?? 0) + Number(row.positive_count ?? 0),
+      earlySkipCount: (existing?.earlySkipCount ?? 0) + Number(row.early_skip_count ?? 0),
+      lastPlayedAt: Math.max(existing?.lastPlayedAt ?? 0, Number(row.last_played_at ?? 0)) || null,
+      lastSkippedAt: Math.max(existing?.lastSkippedAt ?? 0, Number(row.last_skipped_at ?? 0)) || null,
+      lastDislikedAt: Math.max(existing?.lastDislikedAt ?? 0, Number(row.last_disliked_at ?? 0)) || null,
+      lastLikedAt: Math.max(existing?.lastLikedAt ?? 0, Number(row.last_liked_at ?? 0)) || null,
+    });
+    const artistKey = normalizeArtistIdentity(row.artist);
+    const existingArtist = userArtistStats.get(artistKey);
+    userArtistStats.set(artistKey, {
+      positiveCount: (existingArtist?.positiveCount ?? 0) + Number(row.positive_count ?? 0),
+      earlySkipCount: (existingArtist?.earlySkipCount ?? 0) + Number(row.early_skip_count ?? 0),
+      dislikeCount: (existingArtist?.dislikeCount ?? 0) + Number(row.dislike_count ?? 0),
+      likeCount: (existingArtist?.likeCount ?? 0) + Number(row.like_count ?? 0),
+    });
   }
 
   const rankCandidates = (moodTerms: string[]): VibeTrackRow[] => shuffled([...candidates.values()])
@@ -726,6 +1188,8 @@ async function buildStationTracks(options: {
         similarTitleKeywords,
         moodTerms,
         filters,
+        userStats,
+        userArtistStats,
       }),
     }))
     .filter((item): item is { row: VibeTrackRow; score: number } => item.score != null)
@@ -736,7 +1200,15 @@ async function buildStationTracks(options: {
     )
     .map((item) => item.row);
 
-  const strictTracks = selectDiverseTracks(rankCandidates(requestedMoodTerms), limit, {
+  const strictRanked = balanceFamiliarity(
+    rankCandidates(requestedMoodTerms),
+    userStats,
+    candidates,
+    limit,
+    options.mode,
+    filters.character
+  );
+  const strictTracks = selectDiverseTracks(strictRanked, limit, {
     mode: options.mode,
     seedArtists,
     filters,
@@ -747,13 +1219,24 @@ async function buildStationTracks(options: {
   }
 
   const seen = new Set(strictTracks.map((track) => track.id));
-  const fallbackTracks = selectDiverseTracks(rankCandidates([]), limit * 2, {
+  const seenFamilies = new Set(strictTracks.map(canonicalSongKey));
+  const fallbackRanked = balanceFamiliarity(
+    rankCandidates([]),
+    userStats,
+    candidates,
+    limit * 2,
+    options.mode,
+    filters.character
+  );
+  const fallbackTracks = selectDiverseTracks(fallbackRanked, limit * 2, {
     mode: options.mode,
     seedArtists,
     filters,
   }).filter((track) => {
-    if (seen.has(track.id)) return false;
+    const family = canonicalSongKey(track);
+    if (seen.has(track.id) || seenFamilies.has(family)) return false;
     seen.add(track.id);
+    seenFamilies.add(family);
     return true;
   });
 
@@ -772,10 +1255,12 @@ export const recommendationsRouter = new Hono();
  * GET /api/recommendations/taste-profile
  */
 recommendationsRouter.get("/taste-profile", (c) => {
-  const cached = getCached<unknown>("taste-profile");
+  const userId = requestUserId(c);
+  const cacheKey = userCacheKey("taste-profile", userId);
+  const cached = getCached<unknown>(cacheKey);
   if (cached) return c.json(cached);
 
-  const profile = buildWeightedProfile();
+  const profile = buildWeightedProfile(userId);
   const response = {
     topArtists: profile.topArtists.slice(0, 10).map((a) => a.artist),
     topTracks: profile.topTracks.slice(0, 20),
@@ -785,7 +1270,7 @@ recommendationsRouter.get("/taste-profile", (c) => {
     completionRate: profile.completionRate,
     timeOfDayProfile: profile.timeOfDayProfile,
   };
-  setCached("taste-profile", response, 5 * 60_000);
+  setCached(cacheKey, response, 5 * 60_000);
   return c.json(response);
 });
 
@@ -794,59 +1279,52 @@ recommendationsRouter.get("/taste-profile", (c) => {
  * Personalized feed: taste profile + Last.fm similar artists.
  */
 recommendationsRouter.get("/home", async (c) => {
-  const cached = getCached<unknown>("home");
-  if (cached) return c.json(cached);
+  const userId = requestUserId(c);
+  const cacheKey = userCacheKey("home", userId);
+  const cached = getCached<Record<string, unknown>>(cacheKey);
+  if (cached) return c.json(recommendationEnvelope(cached, "home", userId));
 
-  const profile = buildWeightedProfile();
+  const profile = buildWeightedProfile(userId);
   const db = getDb();
 
   if (profile.playCount === 0) {
-    const rows = db.prepare("SELECT * FROM tracks WHERE source = 'local' ORDER BY RANDOM() LIMIT 20").all();
-    const result = { tracks: rows, source: "random" };
-    setCached("home", result, 5 * 60_000);
-    return c.json(result);
+    const yandexProvider = getYandexProvider();
+    if (yandexProvider.isAuthenticated()) {
+      // A connected account provides a much stronger cold start than global
+      // cache popularity. Failure remains non-fatal for offline operation.
+      await yandexProvider.getStationTracks("user:onyourwave", 60).catch(() => []);
+    }
+    const rows = (db.prepare(`
+      SELECT * FROM tracks
+      WHERE source <> 'vk'
+      ORDER BY play_count DESC, updated_at DESC
+      LIMIT 120
+    `).all() as Record<string, unknown>[]).map(normalizeTrackRow);
+    const tracks = selectDiverseTracks(rows, 20, {
+      mode: "my_vibe",
+      seedArtists: [],
+      filters: { character: "popular" },
+    });
+    const result = { tracks, source: "cold_start_popular" };
+    setCached(cacheKey, result, 5 * 60_000);
+    return c.json(recommendationEnvelope(result, "home", userId));
   }
 
-  const topArtistNames = profile.topArtists.slice(0, 5).map((a) => a.artist);
-
-  let discoverArtists: string[] = [];
-  if (getLastfmKey()) {
-    try {
-      discoverArtists = await getSimilarArtistsFromLastfm(topArtistNames);
-    } catch { /* skip */ }
-  }
-
-  const newArtists = discoverArtists.filter((a) => !topArtistNames.includes(a)).slice(0, 8);
-  let recommendations: unknown[] = [];
-
-  if (newArtists.length > 0) {
-    const placeholders = newArtists.map((_, i) => `$a${i}`).join(", ");
-    const params: Record<string, string> = {};
-    newArtists.forEach((a, i) => { params[`$a${i}`] = `%${a.toLowerCase()}%`; });
-    const rows = db.prepare(`
-      SELECT * FROM (
-        SELECT *, ROW_NUMBER() OVER (PARTITION BY lower(artist) ORDER BY RANDOM()) as rn
-        FROM tracks WHERE ${newArtists.map((_, i) => `lower(artist) LIKE $a${i}`).join(" OR ")}
-      ) WHERE rn <= 2 LIMIT 15
-    `).all(params) as unknown[];
-    recommendations = rows;
-  }
-
-  if (recommendations.length < 10 && topArtistNames.length > 0) {
-    const fav = topArtistNames[Math.floor(Math.random() * Math.min(3, topArtistNames.length))];
-    const rows = db.prepare(
-      "SELECT * FROM tracks WHERE artist = $a ORDER BY RANDOM() LIMIT 5"
-    ).all({ $a: fav }) as unknown[];
-    recommendations.push(...rows);
-  }
+  const station = await buildStationTracks({
+    mode: "my_vibe",
+    seeds: profileSeeds(profile),
+    limit: 20,
+    filters: { character: "favorite" },
+    userId,
+  });
 
   const result = {
-    tracks: recommendations.filter((r) => isDiscoverableRow(r as { source?: unknown })).slice(0, 20),
-    profile: { topArtists: topArtistNames, playCount: profile.playCount },
-    source: getLastfmKey() ? "lastfm_similar" : "local_favorites",
+    tracks: station.tracks,
+    profile: { topArtists: profile.topArtists.slice(0, 5).map((artist) => artist.artist), playCount: profile.playCount },
+    source: "personalized_ranker",
   };
-  setCached("home", result, 10 * 60_000);
-  return c.json(result);
+  setCached(cacheKey, result, 10 * 60_000);
+  return c.json(recommendationEnvelope(result, "home", userId));
 });
 
 /**
@@ -854,23 +1332,22 @@ recommendationsRouter.get("/home", async (c) => {
  * Time-of-day aware playlist blending favorites + discovery.
  */
 recommendationsRouter.get("/daily-mix", async (c) => {
+  const userId = requestUserId(c);
+  const cacheKey = userCacheKey("daily-mix", userId);
   const refresh = c.req.query("refresh") === "1";
   if (!refresh) {
-    const cached = getCached<unknown>("daily-mix");
-    if (cached) return c.json(cached);
+    const cached = getCached<Record<string, unknown>>(cacheKey);
+    if (cached) return c.json(recommendationEnvelope(cached, "daily_mix", userId));
   }
 
-  const profile = buildWeightedProfile();
-  const topArtistNames = profile.topArtists.slice(0, 8).map((a) => a.artist);
-
-  let discoverArtists: string[] = [];
-  if (getLastfmKey()) {
-    try {
-      discoverArtists = await getSimilarArtistsFromLastfm(topArtistNames.slice(0, 2));
-    } catch { /* skip */ }
-  }
-  const newArtists = discoverArtists.filter((a) => !topArtistNames.includes(a));
-  const tracks = buildDailyMix(profile, newArtists);
+  const profile = buildWeightedProfile(userId);
+  const station = await buildStationTracks({
+    mode: "my_vibe",
+    seeds: profileSeeds(profile, 8),
+    limit: 20,
+    filters: { character: "favorite" },
+    userId,
+  });
 
   const hour = new Date().getHours();
   const name =
@@ -880,12 +1357,12 @@ recommendationsRouter.get("/daily-mix", async (c) => {
 
   const result = {
     name,
-    tracks,
+    tracks: station.tracks,
     source: "daily_mix",
     refreshAt: new Date(Date.now() + 6 * 3600_000).toISOString(),
   };
-  setCached("daily-mix", result, 6 * 3600_000);
-  return c.json(result);
+  setCached(cacheKey, result, 6 * 3600_000);
+  return c.json(recommendationEnvelope(result, "daily_mix", userId));
 });
 
 /**
@@ -893,6 +1370,7 @@ recommendationsRouter.get("/daily-mix", async (c) => {
  * Builds a queue around liked tracks passed by the iOS client.
  */
 recommendationsRouter.post("/my-vibe", async (c) => {
+  const userId = requestUserId(c);
   const body = await c.req.json<{
     seeds?: VibeSeed[];
     excludeIds?: string[];
@@ -905,17 +1383,19 @@ recommendationsRouter.post("/my-vibe", async (c) => {
     excludeIds: body.excludeIds ?? [],
     limit: body.limit,
     filters: body.filters,
+    userId,
   });
 
-  return c.json({
+  return c.json(recommendationEnvelope({
     tracks: result.tracks,
     source: "my_vibe",
     seedCount: result.seedCount,
     filters: result.filters,
-  });
+  }, "my_vibe", userId));
 });
 
 recommendationsRouter.post("/auto-mix", async (c) => {
+  const userId = requestUserId(c);
   const body = await c.req.json<{
     seeds?: VibeSeed[];
     excludeIds?: string[];
@@ -927,13 +1407,14 @@ recommendationsRouter.post("/auto-mix", async (c) => {
     seeds: body.seeds ?? [],
     excludeIds: body.excludeIds ?? [],
     limit: body.limit ?? 20,
+    userId,
   });
 
-  return c.json({
+  return c.json(recommendationEnvelope({
     tracks: result.tracks,
     source: "auto_mix",
     seedCount: result.seedCount,
-  });
+  }, "auto_mix", userId));
 });
 
 /**
@@ -941,63 +1422,50 @@ recommendationsRouter.post("/auto-mix", async (c) => {
  * Discover Weekly: tracks from similar artists not in top plays.
  */
 recommendationsRouter.get("/discover", async (c) => {
-  const cached = getCached<unknown>("discover");
-  if (cached) return c.json(cached);
+  const userId = requestUserId(c);
+  const cacheKey = userCacheKey("discover", userId);
+  const cached = getCached<Record<string, unknown>>(cacheKey);
+  if (cached) return c.json(recommendationEnvelope(cached, "discover", userId));
 
-  const profile = buildWeightedProfile();
-  const topArtistNames = profile.topArtists.slice(0, 10).map((a) => a.artist);
-  const db = getDb();
-
-  if (!getLastfmKey()) {
-    const placeholders = topArtistNames.length > 0
-      ? `WHERE artist NOT IN (${topArtistNames.map((_, i) => `$a${i}`).join(",")})` : "";
-    const params = topArtistNames.length > 0
-      ? Object.fromEntries(topArtistNames.map((a, i) => [`$a${i}`, a])) : {};
-    const rows = (db.prepare(`SELECT * FROM tracks ${placeholders} ORDER BY RANDOM() LIMIT 20`).all(params) as unknown[])
-      .filter((r) => isDiscoverableRow(r as { source?: unknown }));
-    const result = { tracks: rows, source: "local_discovery", description: "New from your library" };
-    setCached("discover", result, 24 * 3600_000);
-    return c.json(result);
-  }
-
-  try {
-    const discoverArtists = await getSimilarArtistsFromLastfm(topArtistNames.slice(0, 5));
-    const newArtists = discoverArtists.filter((a) =>
-      !topArtistNames.some((ta) => ta.toLowerCase() === a.toLowerCase())
-    );
-
-    const tracks: unknown[] = [];
-    for (const artist of newArtists.slice(0, 10)) {
-      const rows = db.prepare(
-        "SELECT * FROM tracks WHERE lower(artist) LIKE lower($a) ORDER BY RANDOM() LIMIT 2"
-      ).all({ $a: `%${artist}%` }) as unknown[];
-      tracks.push(...rows);
-      if (tracks.length >= 20) break;
-    }
-
-    const result = {
-      tracks: tracks.filter((r) => isDiscoverableRow(r as { source?: unknown })).slice(0, 20),
-      source: "lastfm_discovery",
-      description: "Based on what you love",
-      similarArtists: newArtists.slice(0, 5),
-    };
-    setCached("discover", result, 24 * 3600_000);
-    return c.json(result);
-  } catch (err) {
-    return c.json({ error: (err as Error).message, tracks: [] }, 500);
-  }
+  const profile = buildWeightedProfile(userId);
+  const station = await buildStationTracks({
+    mode: "my_vibe",
+    seeds: profileSeeds(profile, 10),
+    limit: 20,
+    filters: { character: "unfamiliar" },
+    userId,
+  });
+  const result = {
+    tracks: station.tracks,
+    source: "personalized_discovery",
+    description: "New tracks connected to your taste",
+  };
+  setCached(cacheKey, result, 24 * 3600_000);
+  return c.json(recommendationEnvelope(result, "discover", userId));
 });
 
 /**
  * GET /api/recommendations/mood?mood=X&limit=N
  */
-recommendationsRouter.get("/mood", (c) => {
+recommendationsRouter.get("/mood", async (c) => {
   const mood = c.req.query("mood") ?? "";
-  const limit = Math.min(Number(c.req.query("limit") ?? 20), 50);
+  const requestedLimit = Number(c.req.query("limit") ?? 20);
+  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(Math.floor(requestedLimit), 50)) : 20;
   if (!mood) return c.json({ error: "mood parameter required" }, 400);
 
-  const tracks = getTracksByMood(mood, limit);
-  return c.json({ tracks, mood, count: tracks.length });
+  const userId = requestUserId(c);
+  const profile = buildWeightedProfile(userId);
+  const station = await buildStationTracks({
+    mode: "my_vibe",
+    seeds: profileSeeds(profile),
+    limit,
+    filters: { character: "favorite", mood },
+    userId,
+  });
+  const tracks = station.tracks.length > 0
+    ? station.tracks.slice(0, limit)
+    : getTracksByMood(mood, limit, userId);
+  return c.json(recommendationEnvelope({ tracks, mood, count: tracks.length }, "mood", userId));
 });
 
 /**
@@ -1043,6 +1511,68 @@ recommendationsRouter.get("/similar", async (c) => {
 });
 
 /**
+ * GET /api/recommendations/quality?days=30
+ * Behavioural guardrails for evaluating recommendation changes. These are
+ * intentionally computed from recommendation surfaces only.
+ */
+recommendationsRouter.get("/quality", (c) => {
+  const userId = requestUserId(c);
+  const requestedDays = Number(c.req.query("days") ?? 30);
+  const days = Number.isFinite(requestedDays) ? Math.max(1, Math.min(Math.floor(requestedDays), 365)) : 30;
+  const cutoff = Math.floor(Date.now() / 1000) - days * 86400;
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT
+      COUNT(CASE WHEN action IN ('play', 'complete', 'skip') THEN 1 END) AS playback_events,
+      COUNT(CASE WHEN action = 'skip' AND COALESCE(played_ratio, 0) < 0.2 THEN 1 END) AS early_skips,
+      COUNT(CASE WHEN action = 'complete' OR COALESCE(played_ratio, 0) >= 0.8 THEN 1 END) AS long_listens,
+      COUNT(CASE WHEN action = 'like' THEN 1 END) AS likes,
+      COUNT(DISTINCT CASE
+        WHEN action = 'complete' OR COALESCE(played_ratio, 0) >= 0.5 THEN track_id
+        ELSE NULL END) AS accepted_tracks,
+      COUNT(DISTINCT CASE
+        WHEN action = 'complete' OR COALESCE(played_ratio, 0) >= 0.5 THEN session_id
+        ELSE NULL END) AS sessions,
+      COUNT(DISTINCT CASE
+        WHEN action = 'complete' OR COALESCE(played_ratio, 0) >= 0.5 THEN request_id
+        ELSE NULL END) AS accepted_requests
+    FROM listening_history
+    WHERE played_at >= $cutoff
+      AND surface IN ('home', 'daily_mix', 'mood', 'my_vibe', 'auto_mix')
+      AND (user_id = $userId OR (user_id IS NULL AND $userId IS NULL))
+  `).get({ $cutoff: cutoff, $userId: userId }) as {
+    playback_events: number;
+    early_skips: number;
+    long_listens: number;
+    likes: number;
+    accepted_tracks: number;
+    sessions: number;
+    accepted_requests: number;
+  };
+  const impressions = db.prepare(`
+    SELECT COUNT(*) AS impressions, COUNT(DISTINCT request_id) AS requests
+    FROM recommendation_impressions
+    WHERE created_at >= $cutoff
+      AND surface IN ('home', 'daily_mix', 'mood', 'my_vibe', 'auto_mix', 'discover')
+      AND (user_id = $userId OR (user_id IS NULL AND $userId IS NULL))
+  `).get({ $cutoff: cutoff, $userId: userId }) as { impressions: number; requests: number };
+  const playbackEvents = Number(row.playback_events ?? 0);
+  const requestCount = Number(impressions.requests ?? 0);
+  return c.json({
+    days,
+    impressions: Number(impressions.impressions ?? 0),
+    requests: requestCount,
+    playbackEvents,
+    earlySkipRate: playbackEvents > 0 ? Number(row.early_skips ?? 0) / playbackEvents : 0,
+    longListenRate: playbackEvents > 0 ? Number(row.long_listens ?? 0) / playbackEvents : 0,
+    likes: Number(row.likes ?? 0),
+    acceptedTracks: Number(row.accepted_tracks ?? 0),
+    sessions: Number(row.sessions ?? 0),
+    acceptedRequestRate: requestCount > 0 ? Number(row.accepted_requests ?? 0) / requestCount : 0,
+  });
+});
+
+/**
  * POST /api/recommendations/chat
  */
 recommendationsRouter.post("/chat", async (c) => {
@@ -1060,7 +1590,7 @@ recommendationsRouter.post("/chat", async (c) => {
   }
 
   const db = getDb();
-  const profile = buildWeightedProfile();
+  const profile = buildWeightedProfile(requestUserId(c));
   const stats = db.prepare(
     "SELECT COUNT(*) as total, COUNT(DISTINCT artist) as artists FROM tracks WHERE source = 'local'"
   ).get() as { total: number; artists: number };
@@ -1108,26 +1638,27 @@ Library: ${stats.total} tracks, ${stats.artists} artists. Be concise and enthusi
  * POST /api/recommendations/scrobble
  */
 recommendationsRouter.post("/scrobble", async (c) => {
-  const body = await c.req.json<{ trackId: string; action?: string }>();
+  const body = await c.req.json<{
+    trackId: string;
+    action?: string;
+    eventId?: string;
+    playedMs?: number;
+    durationMs?: number;
+    playedRatio?: number;
+    sessionId?: string;
+    requestId?: string;
+    surface?: string;
+    isOrganic?: boolean;
+    position?: number;
+  }>();
   if (!body.trackId) return c.json({ error: "trackId required" }, 400);
 
-  const db = getDb();
   const action = body.action ?? "play";
+  const validActions = new Set(["play", "pause", "skip", "like", "unlike", "dislike", "complete"]);
+  if (!validActions.has(action)) return c.json({ error: "Invalid action" }, 400);
+  const userId = requestUserId(c);
+  const inserted = logListening(body.trackId, action, userId, body);
+  clearUserRecommendationCaches(userId);
 
-  db.prepare("INSERT INTO listening_history (track_id, action) VALUES ($id, $a)")
-    .run({ $id: body.trackId, $a: action });
-
-  try {
-    db.prepare(`
-      UPDATE tracks SET play_count = play_count + 1, last_played_at = unixepoch(), updated_at = unixepoch()
-      WHERE id = $id
-    `).run({ $id: body.trackId });
-  } catch { /* column may not exist yet */ }
-
-  // Invalidate caches
-  clearCached("home");
-  clearCached("taste-profile");
-  clearCached("daily-mix");
-
-  return c.json({ ok: true });
+  return c.json({ ok: true, inserted });
 });

@@ -17,6 +17,7 @@ Why a sidecar:
 Endpoints (all JSON unless noted):
   GET  /health
   GET  /yandex/search?q=&count=            (header: X-Yandex-Token)
+  GET  /yandex/station?station=&count=      (header: X-Yandex-Token)
   GET  /yandex/track/<id>                  (header: X-Yandex-Token)
   GET  /yandex/artist?name=&count=         (header: X-Yandex-Token)
   GET  /yandex/download/<id>?codec=&bitrate=   -> raw audio bytes (header: X-Yandex-Token)
@@ -31,8 +32,10 @@ Run:  python3 app.py            (reads MUSAIC_SIDECAR_PORT, default 8770)
 
 import json
 import os
+import re
 import sys
 import traceback
+import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
@@ -122,14 +125,17 @@ def _yandex_cover(uri, size="400x400"):
 def _yandex_track_to_dict(track):
     artists = ", ".join(a.name for a in (track.artists or []) if a and a.name)
     album = None
+    genre = None
     if track.albums:
         album = track.albums[0].title
+        genre = getattr(track.albums[0], "genre", None)
     return {
         "id": f"yandex_{track.id}",
         "source": "yandex",
         "title": (track.title or "").strip() + (f" ({track.version})" if getattr(track, "version", None) else ""),
         "artist": artists.strip(),
         "album": album,
+        "genre": str(genre) if genre else None,
         "duration": int((track.duration_ms or 0) / 1000),
         "coverUrl": _yandex_cover(getattr(track, "cover_uri", None)),
         "available": bool(getattr(track, "available", True)),
@@ -216,6 +222,31 @@ def yandex_artist(token, name, count):
     return {"tracks": tracks}
 
 
+def yandex_station(token, station, count):
+    """Fetch Rotor (notably user:onyourwave) as a candidate track list."""
+    client = _get_yandex_client(token)
+    station_id = station or "user:onyourwave"
+    result = client.rotor_station_tracks(station_id)
+    tracks = []
+    seen = set()
+    for item in (getattr(result, "sequence", None) or []):
+        track = getattr(item, "track", None)
+        track_id = str(getattr(track, "id", "") or "")
+        if not track or not track_id or track_id in seen:
+            continue
+        seen.add(track_id)
+        mapped = _yandex_track_to_dict(track)
+        if mapped.get("available", True):
+            tracks.append(mapped)
+        if len(tracks) >= count:
+            break
+    return {
+        "station": station_id,
+        "batchId": getattr(result, "batch_id", None),
+        "tracks": tracks,
+    }
+
+
 def yandex_download_bytes(token, track_id, codec, bitrate):
     """Return (bytes, content_type). All Yandex egress (incl. proxy) is here."""
     client = _get_yandex_client(token)
@@ -245,6 +276,47 @@ def yandex_validate(token):
     return {"ok": True, "login": login, "plus": plus}
 
 
+def yandex_playlist(token, identifier):
+    client = _get_yandex_client(token) if token else None
+    if not client:
+        from yandex_music import Client
+        client = Client()
+        client.init()
+
+    p = None
+    if ":" in identifier:
+        owner, kind = identifier.split(":", 1)
+        p = client.users_playlists(kind, owner)
+    else:
+        p = client.playlist(identifier)
+
+    if not p:
+        raise LookupError(f"Yandex playlist not found: {identifier}")
+
+    title = getattr(p, "title", "Yandex Playlist")
+    tracks = []
+    raw_tracks = p.tracks if hasattr(p, "tracks") and p.tracks else p.fetch_tracks()
+    for t_item in (raw_tracks or []):
+        t = getattr(t_item, "track", t_item)
+        if not t:
+            continue
+        try:
+            artists_str = ", ".join(a.name for a in t.artists if getattr(a, "name", None))
+            album_str = t.albums[0].title if t.albums and getattr(t.albums[0], "title", None) else None
+            cover = f"https://{t.albums[0].cover_uri.replace('%%', '200x200')}" if t.albums and getattr(t.albums[0], "cover_uri", None) else None
+            dur_sec = round(t.duration_ms / 1000) if getattr(t, "duration_ms", None) else None
+            tracks.append({
+                "title": t.title,
+                "artist": artists_str,
+                "album": album_str,
+                "durationSec": dur_sec,
+                "coverUrl": cover,
+            })
+        except Exception:
+            continue
+    return {"title": title, "tracks": tracks}
+
+
 # ── YouTube operations ──────────────────────────────────────────────────────
 def yt_search(q, count):
     yt = _get_ytmusic()
@@ -272,15 +344,201 @@ def yt_track(video_id):
     }
 
 
+def _yt_artist_song_to_dict(item):
+    """Map a song entry from get_artist()["songs"]["results"]. Depending on the
+    ytmusicapi version these carry either "artists" (list of dicts, same as
+    search results) or "artist" (plain string); album likewise dict or str."""
+    vid = item.get("videoId")
+    if not vid:
+        return None
+    artist = item.get("artist")
+    if not artist and item.get("artists"):
+        artist = ", ".join(a.get("name", "") for a in item["artists"] if isinstance(a, dict) and a.get("name"))
+    elif isinstance(artist, list):
+        artist = ", ".join(a.get("name", "") for a in artist if isinstance(a, dict) and a.get("name"))
+    album = item.get("album")
+    if isinstance(album, dict):
+        album = album.get("name")
+    dur = item.get("duration_seconds")
+    if dur is None and item.get("duration"):
+        try:
+            parts = [int(p) for p in str(item["duration"]).split(":")]
+            dur = 0
+            for p in parts:
+                dur = dur * 60 + p
+        except Exception:
+            dur = 0
+    return {
+        "id": f"yt_{vid}",
+        "source": "youtube",
+        "title": (item.get("title") or "").strip(),
+        "artist": (artist or "").strip(),
+        "album": album,
+        "duration": int(dur or 0),
+        "coverUrl": _yt_thumb(item.get("thumbnails")),
+    }
+
+
+# Tokens that carry no discriminating power when matching artist names.
+_ARTIST_STOP_TOKENS = {"the", "a", "an", "of", "and", "feat", "ft", "dj", "mc", "band", "official"}
+
+
+def _normalise_artist_text(value):
+    decomposed = unicodedata.normalize("NFKD", str(value or ""))
+    plain = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return re.sub(r"[^\w]+", " ", plain.lower(), flags=re.UNICODE).strip()
+
+
+def _artist_credits(value):
+    parts = re.split(
+        r"\s*(?:,|;|/|\||\+|&|\bfeat(?:uring)?\.?\b|\bft\.?\b|\bwith\b|\bx\b|\band\b)\s*",
+        str(value or ""),
+        flags=re.IGNORECASE | re.UNICODE,
+    )
+    return {credit for credit in (_normalise_artist_text(part) for part in parts) if credit}
+
+
+def _artist_tokens(value):
+    tokens = _normalise_artist_text(value).split()
+    return {
+        t for t in tokens
+        if t and t not in _ARTIST_STOP_TOKENS and (len(t) >= 3 or (t.isdigit() and len(t) >= 2))
+    }
+
+
+def _artist_match_score(query, artist, allow_partial=True):
+    q = _normalise_artist_text(query)
+    a = _normalise_artist_text(artist)
+    if not q or not a:
+        return -1
+    if q == a:
+        return 100
+    if _artist_credits(query) & _artist_credits(artist):
+        return 95
+    q_tokens, a_tokens = _artist_tokens(q), _artist_tokens(a)
+    if not q_tokens or not a_tokens:
+        return -1
+    if len(q_tokens) >= 2 and q_tokens <= a_tokens:
+        return 85
+    if len(q_tokens) == 1 and len(a_tokens) == 1 and q_tokens <= a_tokens:
+        return 90
+    if allow_partial and len(q_tokens) == 1 and q_tokens <= a_tokens:
+        return 60
+    return -1
+
+
+def _artist_matches(query, artist):
+    return _artist_match_score(query, artist, allow_partial=True) >= 0
+
+
+def _artist_credit_matches(query, artist):
+    return _artist_match_score(query, artist, allow_partial=False) >= 0
+
+
+def _pick_artist_match(results, name):
+    """Pick the closest named channel instead of the first substring hit."""
+    matches = []
+    for position, hit in enumerate(results or []):
+        if not hit.get("browseId"):
+            continue
+        score = _artist_match_score(name, hit.get("artist") or hit.get("name") or "", allow_partial=True)
+        if score >= 0:
+            matches.append((score, -position, hit))
+    return max(matches, key=lambda item: (item[0], item[1]))[2] if matches else None
+
+
+def _yt_item_artist_ids(item):
+    values = item.get("artists") or item.get("artist") or []
+    if not isinstance(values, list):
+        values = [values]
+    ids = set()
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        artist_id = value.get("id") or value.get("browseId")
+        if artist_id:
+            ids.add(str(artist_id))
+    return ids
+
+
+def _yt_item_artist_name(item):
+    values = item.get("artists") or item.get("artist") or []
+    if not isinstance(values, list):
+        values = [values]
+    names = []
+    for value in values:
+        if isinstance(value, dict) and (value.get("name") or value.get("artist")):
+            names.append(value.get("name") or value.get("artist"))
+        elif isinstance(value, str):
+            names.append(value)
+    return ", ".join(names)
+
+
+def _yt_item_belongs_to_artist(item, browse_id, artist_name):
+    artist_ids = _yt_item_artist_ids(item)
+    if browse_id and artist_ids:
+        return str(browse_id) in artist_ids
+    return _artist_credit_matches(artist_name, _yt_item_artist_name(item))
+
+
 def yt_artist(name, count):
+    """Artist page tracks: resolve the artist channel first, then take THEIR
+    top songs. A plain song search (previous behaviour) returns whatever YT's
+    relevance likes — e.g. "FORTUNA 812" surfaced unrelated "Amazwi" tracks."""
     yt = _get_ytmusic()
-    results = yt.search(name, filter="songs", limit=count)
     tracks = []
-    for item in results[:count]:
-        d = _yt_song_to_dict(item)
-        if d:
-            tracks.append(d)
-    return {"tracks": tracks}
+
+    artist_hit = None
+    try:
+        artist_hit = _pick_artist_match(yt.search(name, filter="artists", limit=5) or [], name)
+    except Exception:
+        artist_hit = None
+
+    if artist_hit:
+        try:
+            artist_browse_id = artist_hit["browseId"]
+            info = yt.get_artist(artist_browse_id) or {}
+            songs_section = info.get("songs") or {}
+            for item in songs_section.get("results") or []:
+                if not _yt_item_belongs_to_artist(item, artist_browse_id, name):
+                    continue
+                d = _yt_artist_song_to_dict(item)
+                if d:
+                    tracks.append(d)
+            # The artist page shows ~5 top songs; the full list lives in a
+            # linked playlist ("songs" browseId).
+            songs_browse = songs_section.get("browseId")
+            if songs_browse and len(tracks) < count:
+                try:
+                    playlist = yt.get_playlist(songs_browse, limit=min(100, max(count, 20))) or {}
+                    for item in playlist.get("tracks") or []:
+                        if not _yt_item_belongs_to_artist(item, artist_browse_id, name):
+                            continue
+                        d = _yt_song_to_dict(item)
+                        if d:
+                            tracks.append(d)
+                except Exception:
+                    pass
+        except Exception:
+            tracks = []
+
+    if not tracks:
+        # Fallback: plain song search, but keep only tracks actually performed
+        # by the requested artist (still better than an empty card).
+        results = yt.search(name, filter="songs", limit=count)
+        for item in results[:count]:
+            d = _yt_song_to_dict(item)
+            if d and _artist_credit_matches(name, d["artist"]):
+                tracks.append(d)
+
+    # Dedupe by video id, preserving order.
+    seen, unique = set(), []
+    for t in tracks:
+        if t["id"] in seen:
+            continue
+        seen.add(t["id"])
+        unique.append(t)
+    return {"tracks": unique[:count]}
 
 
 def yt_stream_url(video_id, quality):
@@ -375,6 +633,8 @@ class Handler(BaseHTTPRequestHandler):
             # ── Yandex ──
             if path == "/yandex/validate":
                 return self._json(200, yandex_validate(token))
+            if path == "/yandex/playlist":
+                return self._json(200, yandex_playlist(token, q1("id", "")))
             if path == "/yandex/search":
                 count = min(int(q1("count", "30")), 100)
                 page = max(int(q1("page", "0")), 0)
@@ -385,6 +645,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/yandex/artist":
                 count = min(int(q1("count", "50")), 100)
                 return self._json(200, yandex_artist(token, q1("name", ""), count))
+            if path == "/yandex/station":
+                count = max(1, min(int(q1("count", "50")), 100))
+                return self._json(200, yandex_station(token, q1("station", "user:onyourwave"), count))
             if path.startswith("/yandex/download/"):
                 tid = unquote(path[len("/yandex/download/"):])
                 # Token may arrive via header OR query param so callers can hand

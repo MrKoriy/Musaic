@@ -24,6 +24,7 @@ function sidecarTrackToTrack(s: SidecarTrack): Track {
     title: s.title,
     artist: s.artist,
     album: s.album ?? undefined,
+    genre: s.genre ?? undefined,
     duration: s.duration,
     coverUrl: s.coverUrl ?? undefined,
   };
@@ -41,6 +42,7 @@ function cacheYandexTracks(tracks: Track[]): void {
         album: t.album,
         duration: t.duration,
         cover_url: t.coverUrl,
+        genre: t.genre,
       });
     }
   })();
@@ -133,6 +135,20 @@ export class YandexMusicProvider implements MusicProvider {
       this.headers()
     );
     const mapped = await hydrateFallbackArtwork(tracks.map(sidecarTrackToTrack));
+    cacheYandexTracks(mapped);
+    return mapped;
+  }
+
+  /** Yandex Rotor is only a candidate source; Musaic reranks the result. */
+  async getStationTracks(station = "user:onyourwave", count = 50): Promise<Track[]> {
+    const safeCount = Math.max(1, Math.min(Math.floor(count), 100));
+    const { tracks } = await sidecarGet<{ tracks: SidecarTrack[] }>(
+      `/yandex/station?station=${encodeURIComponent(station)}&count=${safeCount}`,
+      this.headers()
+    );
+    const mapped = await hydrateFallbackArtwork(
+      tracks.filter((track) => track.available !== false).map(sidecarTrackToTrack)
+    );
     cacheYandexTracks(mapped);
     return mapped;
   }

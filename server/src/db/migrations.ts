@@ -142,6 +142,64 @@ const MIGRATIONS: Migration[] = [
       WHERE (SELECT COUNT(*) FROM users) = 1;
     `,
   },
+  {
+    version: 9,
+    description: "Add rich playback telemetry and separate unlike from dislike",
+    up: `
+      CREATE TABLE listening_history_v9 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT,
+        track_id TEXT NOT NULL,
+        action TEXT NOT NULL CHECK(action IN ('play', 'pause', 'skip', 'like', 'unlike', 'dislike', 'complete')),
+        played_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        user_id TEXT REFERENCES users(id),
+        played_ms INTEGER,
+        duration_ms INTEGER,
+        played_ratio REAL,
+        session_id TEXT,
+        request_id TEXT,
+        surface TEXT,
+        is_organic INTEGER NOT NULL DEFAULT 1,
+        position INTEGER,
+        context TEXT
+      );
+
+      INSERT INTO listening_history_v9 (id, track_id, action, played_at, user_id)
+      SELECT id, track_id, action, played_at, user_id
+      FROM listening_history;
+
+      DROP TABLE listening_history;
+      ALTER TABLE listening_history_v9 RENAME TO listening_history;
+
+      CREATE UNIQUE INDEX idx_lh_event_id ON listening_history(event_id) WHERE event_id IS NOT NULL;
+      CREATE INDEX idx_lh_action_played_at ON listening_history(action, played_at);
+      CREATE INDEX idx_lh_track_id ON listening_history(track_id);
+      CREATE INDEX idx_lh_track_played ON listening_history(track_id, played_at);
+      CREATE INDEX idx_lh_user_id ON listening_history(user_id);
+      CREATE INDEX idx_lh_user_played ON listening_history(user_id, played_at);
+      CREATE INDEX idx_lh_action_played ON listening_history(action, played_at);
+      CREATE INDEX idx_lh_user_surface_played ON listening_history(user_id, surface, played_at);
+    `,
+  },
+  {
+    version: 10,
+    description: "Track recommendation impressions for offline quality evaluation",
+    up: `
+      CREATE TABLE recommendation_impressions (
+        request_id TEXT NOT NULL,
+        user_id TEXT REFERENCES users(id),
+        surface TEXT NOT NULL,
+        track_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (request_id, track_id)
+      );
+      CREATE INDEX idx_ri_user_surface_created
+        ON recommendation_impressions(user_id, surface, created_at);
+      CREATE INDEX idx_ri_track_created
+        ON recommendation_impressions(track_id, created_at);
+    `,
+  },
 ];
 
 /**

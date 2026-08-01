@@ -14,15 +14,25 @@ import { logListening, getDb } from "../db/index.js";
 function buildApp() {
   const app = new Hono();
   app.post("/api/history", async (c) => {
-    const body = await c.req.json<{ trackId: string; action: string }>();
+    const body = await c.req.json<{
+      trackId: string;
+      action: string;
+      eventId?: string;
+      playedMs?: number;
+      durationMs?: number;
+      playedRatio?: number;
+      sessionId?: string;
+      surface?: string;
+      isOrganic?: boolean;
+    }>();
     if (!body.trackId || !body.action) {
       return c.json({ error: "trackId and action required" }, 400);
     }
-    const validActions = new Set(["play", "pause", "skip", "like", "dislike", "complete"]);
+    const validActions = new Set(["play", "pause", "skip", "like", "unlike", "dislike", "complete"]);
     if (!validActions.has(body.action)) {
       return c.json({ error: "Invalid action" }, 400);
     }
-    logListening(body.trackId, body.action, undefined);
+    logListening(body.trackId, body.action, undefined, body);
     return c.json({ ok: true });
   });
   return app;
@@ -46,7 +56,7 @@ describe("POST /api/history", () => {
 
   it("accepts all valid actions", async () => {
     const trackId = seedTrack();
-    const actions = ["play", "pause", "skip", "like", "dislike", "complete"];
+    const actions = ["play", "pause", "skip", "like", "unlike", "dislike", "complete"];
     for (const action of actions) {
       const res = await buildApp().request("/api/history", {
         method: "POST",
@@ -190,5 +200,85 @@ describe("POST /api/history", () => {
 
     const count = db.prepare("SELECT COUNT(*) as n FROM listening_history WHERE action = 'play'").get() as { n: number };
     expect(count.n).toBe(2);
+  });
+
+  it("stores playback ratio and recommendation context", async () => {
+    const trackId = seedTrack({ duration: 200 });
+    await buildApp().request("/api/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        trackId,
+        action: "skip",
+        eventId: "event-rich-1",
+        playedMs: 150_000,
+        durationMs: 200_000,
+        sessionId: "session-1",
+        surface: "my_vibe",
+        isOrganic: false,
+      }),
+    });
+
+    const row = getDb().prepare(`
+      SELECT event_id, played_ratio, session_id, surface, is_organic
+      FROM listening_history WHERE track_id = $id
+    `).get({ $id: trackId }) as {
+      event_id: string;
+      played_ratio: number;
+      session_id: string;
+      surface: string;
+      is_organic: number;
+    };
+    expect(row.event_id).toBe("event-rich-1");
+    expect(row.played_ratio).toBeCloseTo(0.75, 5);
+    expect(row.session_id).toBe("session-1");
+    expect(row.surface).toBe("my_vibe");
+    expect(row.is_organic).toBe(0);
+  });
+
+  it("deduplicates retried events by stable event id", async () => {
+    const trackId = seedTrack();
+    const app = buildApp();
+    for (let i = 0; i < 3; i++) {
+      await app.request("/api/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trackId, action: "complete", eventId: "same-event-id" }),
+      });
+    }
+
+    const count = getDb().prepare(
+      "SELECT COUNT(*) AS n FROM listening_history WHERE event_id = 'same-event-id'"
+    ).get() as { n: number };
+    const track = getDb().prepare("SELECT play_count FROM tracks WHERE id = $id")
+      .get({ $id: trackId }) as { play_count: number };
+    expect(count.n).toBe(1);
+    expect(track.play_count).toBe(1);
+  });
+
+  it("counts a late manual skip as a qualified listen only once", () => {
+    const trackId = seedTrack();
+    logListening(trackId, "skip", null, {
+      eventId: "late-skip",
+      playedMs: 120_000,
+      durationMs: 180_000,
+    });
+    const track = getDb().prepare("SELECT play_count FROM tracks WHERE id = $id")
+      .get({ $id: trackId }) as { play_count: number };
+    expect(track.play_count).toBe(1);
+  });
+
+  it("normalizes a completion without duration telemetry to a full listen", async () => {
+    const trackId = seedTrack();
+    await buildApp().request("/api/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trackId, action: "complete", eventId: "completion-without-duration" }),
+    });
+
+    const row = getDb().prepare(`
+      SELECT played_ratio FROM listening_history WHERE event_id = 'completion-without-duration'
+    `).get() as { played_ratio: number };
+    expect(row.played_ratio).toBe(1);
   });
 });

@@ -122,6 +122,27 @@ describe("Auth likes sync", () => {
     });
   });
 
+  it("sync applies offline unlike tombstones without deleting unrelated likes", async () => {
+    const app = buildApp();
+    const token = await register(app);
+    const headers = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
+
+    await app.request("/api/auth/likes/sync", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ trackIds: ["keep", "remove"] }),
+    });
+    const response = await app.request("/api/auth/likes/sync", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ trackIds: ["keep"], removedTrackIds: ["remove"] }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { trackIds: string[] };
+    expect(body.trackIds).toEqual(["keep"]);
+  });
+
   it("legacy toggle honors recent like/dislike history intent", async () => {
     const app = buildApp();
     const token = await register(app);

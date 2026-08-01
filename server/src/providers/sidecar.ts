@@ -121,6 +121,7 @@ export interface SidecarTrack {
   title: string;
   artist: string;
   album?: string | null;
+  genre?: string | null;
   duration: number;
   coverUrl?: string | null;
   available?: boolean;

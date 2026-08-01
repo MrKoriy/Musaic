@@ -42,13 +42,18 @@ function decryptStoredValue(value: string | null): string | null {
   if (!value) return null;
   if (!value.startsWith("enc:")) return value;
 
-  const payload = Buffer.from(value.slice(4), "base64");
-  const iv = payload.subarray(0, 12);
-  const tag = payload.subarray(12, 28);
-  const encrypted = payload.subarray(28);
-  const decipher = crypto.createDecipheriv("aes-256-gcm", getConfigSecret(), iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
+  try {
+    const payload = Buffer.from(value.slice(4), "base64");
+    const iv = payload.subarray(0, 12);
+    const tag = payload.subarray(12, 28);
+    const encrypted = payload.subarray(28);
+    const decipher = crypto.createDecipheriv("aes-256-gcm", getConfigSecret(), iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
+  } catch (err) {
+    console.error("[db] Failed to decrypt stored secret (master key changed or secret missing):", err);
+    return null;
+  }
 }
 
 export function getDb(): Database {
@@ -396,26 +401,86 @@ export function clearYandexConfig(): void {
 }
 
 // Listening history
-export function logListening(trackId: string, action: string, userId?: string | null): void {
+export interface ListeningEventDetails {
+  eventId?: string | null;
+  playedMs?: number | null;
+  durationMs?: number | null;
+  playedRatio?: number | null;
+  sessionId?: string | null;
+  requestId?: string | null;
+  surface?: string | null;
+  isOrganic?: boolean;
+  position?: number | null;
+  context?: Record<string, unknown> | null;
+}
+
+function finiteNonNegative(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+export function logListening(
+  trackId: string,
+  action: string,
+  userId?: string | null,
+  details: ListeningEventDetails = {}
+): boolean {
   const db = getDb();
-  db.transaction(() => {
-    // Dedup: skip if same (track_id, user_id, action) was recorded within the last 5 seconds
+  return db.transaction(() => {
     const uid = userId ?? null;
-    const recent = db.prepare(`
-      SELECT 1 FROM listening_history
-      WHERE track_id = $id
-        AND action = $action
-        AND (user_id = $uid OR (user_id IS NULL AND $uid IS NULL))
-        AND played_at >= unixepoch() - 5
-      LIMIT 1
-    `).get({ $id: trackId, $action: action, $uid: uid });
+    const eventId = details.eventId?.trim() || null;
+    const duplicate = eventId
+      ? db.prepare("SELECT 1 FROM listening_history WHERE event_id = $eventId LIMIT 1")
+          .get({ $eventId: eventId })
+      : db.prepare(`
+          SELECT 1 FROM listening_history
+          WHERE track_id = $id
+            AND action = $action
+            AND (user_id = $uid OR (user_id IS NULL AND $uid IS NULL))
+            AND played_at >= unixepoch() - 5
+          LIMIT 1
+        `).get({ $id: trackId, $action: action, $uid: uid });
 
-    if (recent) return;
+    if (duplicate) return false;
 
-    db.prepare("INSERT INTO listening_history (track_id, action, user_id) VALUES ($id, $action, $uid)")
-      .run({ $id: trackId, $action: action, $uid: uid });
+    const playedMs = finiteNonNegative(details.playedMs);
+    const durationMs = finiteNonNegative(details.durationMs);
+    const explicitRatio = finiteNonNegative(details.playedRatio);
+    const computedRatio = explicitRatio ??
+      (playedMs != null && durationMs != null && durationMs > 0
+        ? playedMs / durationMs
+        : action === "complete" ? 1 : null);
+    const playedRatio = computedRatio == null ? null : Math.min(2, computedRatio);
 
-    if (action === "play") {
+    db.prepare(`
+      INSERT INTO listening_history (
+        event_id, track_id, action, user_id, played_ms, duration_ms, played_ratio,
+        session_id, request_id, surface, is_organic, position, context
+      ) VALUES (
+        $eventId, $id, $action, $uid, $playedMs, $durationMs, $playedRatio,
+        $sessionId, $requestId, $surface, $isOrganic, $position, $context
+      )
+    `).run({
+      $eventId: eventId,
+      $id: trackId,
+      $action: action,
+      $uid: uid,
+      $playedMs: playedMs,
+      $durationMs: durationMs,
+      $playedRatio: playedRatio,
+      $sessionId: details.sessionId?.trim() || null,
+      $requestId: details.requestId?.trim() || null,
+      $surface: details.surface?.trim() || null,
+      $isOrganic: details.isOrganic === false ? 0 : 1,
+      $position: finiteNonNegative(details.position),
+      $context: details.context ? JSON.stringify(details.context) : null,
+    });
+
+    // A completed track or a manually advanced track heard past halfway both
+    // count as one qualified listen. The event itself still preserves whether
+    // the exit was a completion or a skip for recommendation training.
+    const qualifiedListen = action === "play" || action === "complete" ||
+      (action === "skip" && (playedRatio ?? 0) >= 0.5);
+    if (qualifiedListen) {
       db.prepare(`
         UPDATE tracks
         SET play_count = COALESCE(play_count, 0) + 1,
@@ -424,6 +489,7 @@ export function logListening(trackId: string, action: string, userId?: string | 
         WHERE id = $id
       `).run({ $id: trackId });
     }
+    return true;
   })();
 }
 

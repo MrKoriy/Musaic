@@ -20,6 +20,7 @@ import authRoutes from "./routes/auth.js";
 import importRoutes from "./routes/import.js";
 import { getDb, logListening, dropTracksSourceCheck } from "./db/index.js";
 import { runMigrations } from "./db/migrations.js";
+import { clearUserRecommendationCaches } from "./providers/taste-engine.js";
 import { getLocalProvider } from "./providers/local.js";
 import { getSoundCloudProvider } from "./providers/soundcloud.js";
 import { log } from "./logger.js";
@@ -421,17 +422,31 @@ app.get("/api/tracks/by-ids", async (c) => {
 // ─── History logging ──────────────────────────────────────────────────────────
 
 app.post("/api/history", async (c) => {
-  const body = await c.req.json<{ trackId: string; action: string }>();
+  const body = await c.req.json<{
+    trackId: string;
+    action: string;
+    eventId?: string;
+    playedMs?: number;
+    durationMs?: number;
+    playedRatio?: number;
+    sessionId?: string;
+    requestId?: string;
+    surface?: string;
+    isOrganic?: boolean;
+    position?: number;
+    context?: Record<string, unknown>;
+  }>();
   if (!body.trackId || !body.action) {
     return c.json({ error: "trackId and action required" }, 400);
   }
-  const validActions = new Set(["play", "pause", "skip", "like", "dislike", "complete"]);
+  const validActions = new Set(["play", "pause", "skip", "like", "unlike", "dislike", "complete"]);
   if (!validActions.has(body.action)) {
     return c.json({ error: "Invalid action" }, 400);
   }
   const userId = (c as any).get("userId") as string | undefined;
-  logListening(body.trackId, body.action, userId);
-  return c.json({ ok: true });
+  const inserted = logListening(body.trackId, body.action, userId, body);
+  clearUserRecommendationCaches(userId);
+  return c.json({ ok: true, inserted });
 });
 
 // ─── Audio file serving ────────────────────────────────────────────────────────

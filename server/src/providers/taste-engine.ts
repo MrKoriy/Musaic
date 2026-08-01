@@ -9,6 +9,7 @@
  */
 
 import { getDb } from "../db/index.js";
+import { songFamilyKey } from "../utils/track-identity.js";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -31,14 +32,24 @@ interface TimeOfDayProfile {
 
 // ─── Scoring constants ─────────────────────────────────────────────────────────
 
-const ACTION_WEIGHT: Record<string, number> = {
-  like: 3.0,
-  complete: 2.0,
-  play: 1.0,
-  pause: 0.3,
-  skip: -0.5,
-  dislike: -2.0,
-};
+function actionWeight(action: string, playedRatio: number | null): number {
+  switch (action) {
+    case "like": return 3;
+    case "unlike": return -3;
+    case "complete": return 2.2;
+    case "play": return playedRatio == null ? 1 : 0.4 + Math.min(playedRatio, 1) * 1.6;
+    case "skip":
+      // A skip is primarily session feedback. Only a very early skip is a
+      // strong negative; advancing near the end is weakly positive.
+      if (playedRatio == null || playedRatio < 0.1) return -1.8;
+      if (playedRatio < 0.25) return -1.1;
+      if (playedRatio < 0.5) return -0.4;
+      return 0.25;
+    case "dislike": return -4;
+    case "pause": return 0;
+    default: return 0;
+  }
+}
 
 const DECAY_HALF_LIFE_DAYS = 14; // Listens from 14 days ago are worth half as much
 const LOG_BASE = Math.LN2 / (DECAY_HALF_LIFE_DAYS * 86400);
@@ -84,27 +95,58 @@ export function clearCached(key: string): void {
   cache.delete(key);
 }
 
+export function userCacheKey(key: string, userId?: string | null): string {
+  return `${key}:user:${userId ?? "anonymous"}`;
+}
+
+export function clearUserRecommendationCaches(userId?: string | null): void {
+  for (const key of ["home", "taste-profile", "daily-mix", "discover"]) {
+    clearCached(userCacheKey(key, userId));
+  }
+}
+
 // ─── Taste engine ─────────────────────────────────────────────────────────────
 
 /**
  * Build a weighted taste profile from listening history.
  */
-export function buildWeightedProfile(): TasteProfile {
+export function buildWeightedProfile(userId: string | null = null): TasteProfile {
   const db = getDb();
 
   // Fetch listening history with track metadata (last 90 days)
   const cutoff = Math.floor(Date.now() / 1000) - 90 * 86400;
   const history = db.prepare(`
-    SELECT lh.action, lh.played_at,
-           t.id as track_id, t.artist, t.title, t.genre, t.mood
-    FROM listening_history lh
-    JOIN tracks t ON lh.track_id = t.id
-    WHERE lh.played_at > $cutoff
-    ORDER BY lh.played_at DESC
+    SELECT * FROM (
+      SELECT lh.action, lh.played_at, lh.played_ratio,
+             t.id as track_id, t.artist, t.title, t.genre, t.mood
+      FROM listening_history lh
+      JOIN tracks t ON lh.track_id = t.id
+      WHERE lh.played_at > $cutoff
+        AND (lh.user_id = $userId OR (lh.user_id IS NULL AND $userId IS NULL))
+
+      UNION ALL
+
+      SELECT 'like' AS action,
+             MAX(lt.liked_at, unixepoch() - 7 * 86400) AS played_at,
+             NULL AS played_ratio,
+             t.id AS track_id, t.artist, t.title, t.genre, t.mood
+      FROM liked_tracks lt
+      JOIN tracks t ON lt.track_id = t.id
+      WHERE lt.user_id = $userId
+        AND NOT EXISTS (
+          SELECT 1 FROM listening_history lh
+          WHERE lh.track_id = lt.track_id
+            AND lh.action = 'like'
+            AND lh.played_at > $cutoff
+            AND lh.user_id = $userId
+        )
+    )
+    ORDER BY played_at DESC
     LIMIT 10000
-  `).all({ $cutoff: cutoff }) as Array<{
+  `).all({ $cutoff: cutoff, $userId: userId }) as Array<{
     action: string;
     played_at: number;
+    played_ratio: number | null;
     track_id: string;
     artist: string;
     title: string;
@@ -124,14 +166,19 @@ export function buildWeightedProfile(): TasteProfile {
   let totalCompletes = 0;
 
   for (const event of history) {
-    const weight = ACTION_WEIGHT[event.action] ?? 0.5;
-    if (weight <= 0) continue; // skip negative-weight events for scoring (but count them)
+    const weight = actionWeight(event.action, event.played_ratio);
+    if (weight === 0) continue;
 
     const recency = recencyScore(event.played_at);
     const score = weight * recency;
 
-    // Artist score
-    artistScores.set(event.artist, (artistScores.get(event.artist) ?? 0) + score);
+    // Artist & track scores also absorb NEGATIVE signals: a skip (-0.5) or
+    // dislike (-2.0) actively pushes the performer down, so an artist the user
+    // keeps skipping stops ranking as a "favorite".
+    // Removing a like reverses preference for the track but is not evidence
+    // that the user dislikes the whole artist.
+    const artistScore = event.action === "unlike" ? 0 : score;
+    artistScores.set(event.artist, (artistScores.get(event.artist) ?? 0) + artistScore);
 
     // Track score
     const trackKey = event.track_id;
@@ -142,40 +189,52 @@ export function buildWeightedProfile(): TasteProfile {
       trackScores.set(trackKey, { id: event.track_id, artist: event.artist, title: event.title, score });
     }
 
-    // Genre score
-    if (event.genre) {
-      for (const g of event.genre.split(",").map((s) => s.trim())) {
-        if (g) genreScores.set(g, (genreScores.get(g) ?? 0) + score);
+    // Genres, moods and time-of-day context accumulate positive signal only —
+    // one skipped track shouldn't brand a whole genre as disliked.
+    if (weight > 0) {
+      // Genre score
+      if (event.genre) {
+        for (const g of event.genre.split(",").map((s) => s.trim())) {
+          if (g) genreScores.set(g, (genreScores.get(g) ?? 0) + score);
+        }
       }
+
+      // Mood score
+      if (event.mood) {
+        for (const m of event.mood.split(",").map((s) => s.trim())) {
+          if (m) moodScores.set(m, (moodScores.get(m) ?? 0) + score);
+        }
+      }
+
+      // Time of day (using played_at as local time approximation)
+      const hour = new Date(event.played_at * 1000).getHours();
+      const slot =
+        hour >= 6 && hour < 12 ? "morning" :
+        hour >= 12 && hour < 18 ? "afternoon" :
+        hour >= 18 && hour < 22 ? "evening" : "night";
+      const slotMap = timeSlots[slot];
+      slotMap.set(event.artist, (slotMap.get(event.artist) ?? 0) + score);
     }
 
-    // Mood score
-    if (event.mood) {
-      for (const m of event.mood.split(",").map((s) => s.trim())) {
-        if (m) moodScores.set(m, (moodScores.get(m) ?? 0) + score);
-      }
+    const ratio = event.played_ratio ?? 0;
+    const isLegacyPlay = event.action === "play" && event.played_ratio == null;
+    const isRichQualifiedListen = event.played_ratio != null &&
+      ["play", "complete", "skip"].includes(event.action) && ratio >= 0.5;
+    if (isLegacyPlay || isRichQualifiedListen) {
+      totalPlays++;
     }
-
-    // Time of day (using played_at as local time approximation)
-    const hour = new Date(event.played_at * 1000).getHours();
-    const slot =
-      hour >= 6 && hour < 12 ? "morning" :
-      hour >= 12 && hour < 18 ? "afternoon" :
-      hour >= 18 && hour < 22 ? "evening" : "night";
-    const slotMap = timeSlots[slot];
-    slotMap.set(event.artist, (slotMap.get(event.artist) ?? 0) + score);
-
-    if (event.action === "play") totalPlays++;
-    if (event.action === "complete") totalCompletes++;
+    if (event.action === "complete" || ratio >= 0.9) totalCompletes++;
   }
 
-  // Sort by score (descending)
+  // Sort by score (descending); drop anything with a net-negative score.
   const topArtists = [...artistScores.entries()]
+    .filter(([, score]) => score > 0)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 20)
     .map(([artist, score]) => ({ artist, score }));
 
   const topTracks = [...trackScores.values()]
+    .filter((track) => track.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 30);
 
@@ -243,7 +302,8 @@ export function isDiscoverableRow(row: { source?: unknown }): boolean {
  */
 export function buildDailyMix(
   profile: TasteProfile,
-  discoverArtists: string[] = []
+  discoverArtists: string[] = [],
+  userId: string | null = null
 ): Array<Record<string, unknown>> {
   const db = getDb();
 
@@ -254,45 +314,89 @@ export function buildDailyMix(
   const favoriteArtists = [...new Set([...contextArtists, ...topArtistNames])];
   const candidates: Record<string, unknown>[] = [];
 
-  // Favorites: pick less-recently-played tracks
+  const nowSec = Math.floor(Date.now() / 1000);
+  const recentPlayCutoff = nowSec - 7 * 86400;  // don't repeat last week's plays
+  const recentSkipCutoff = nowSec - 3 * 86400;  // don't offer recently skipped songs
+
+  // Favorites: pick less-recently-played tracks, excluding anything the user
+  // skipped in the last few days — a skip is a "not this song" signal.
   for (const artist of favoriteArtists.slice(0, 6)) {
     const rows = db.prepare(`
       SELECT t.* FROM tracks t
       WHERE lower(t.artist) LIKE lower($a)
         AND t.id NOT IN (
           SELECT lh.track_id FROM listening_history lh
-          WHERE lh.played_at > $recent AND lh.action IN ('play', 'complete')
+          WHERE lh.played_at > $recentPlay AND lh.action IN ('play', 'complete')
+            AND (lh.user_id = $userId OR (lh.user_id IS NULL AND $userId IS NULL))
+        )
+        AND t.id NOT IN (
+          SELECT lh.track_id FROM listening_history lh
+          WHERE lh.played_at > $recentSkip AND lh.action = 'skip'
+            AND (lh.user_id = $userId OR (lh.user_id IS NULL AND $userId IS NULL))
         )
       ORDER BY RANDOM()
       LIMIT 3
     `).all({
       $a: `%${artist}%`,
-      $recent: Math.floor(Date.now() / 1000) - 7 * 86400,
+      $recentPlay: recentPlayCutoff,
+      $recentSkip: recentSkipCutoff,
+      $userId: userId,
     }) as Record<string, unknown>[];
 
-    // Fallback: any track from this artist
-    const available = rows.length > 0 ? rows : db.prepare(
-      "SELECT * FROM tracks WHERE lower(artist) LIKE lower($a) ORDER BY RANDOM() LIMIT 2"
-    ).all({ $a: `%${artist}%` }) as Record<string, unknown>[];
+    // Fallback: any track from this artist — a recently PLAYED track is fine
+    // to repeat, but a recently SKIPPED one is a hard "no".
+    const available = rows.length > 0 ? rows : db.prepare(`
+      SELECT t.* FROM tracks t
+      WHERE lower(t.artist) LIKE lower($a)
+        AND t.id NOT IN (
+          SELECT lh.track_id FROM listening_history lh
+          WHERE lh.played_at > $recentSkip AND lh.action = 'skip'
+            AND (lh.user_id = $userId OR (lh.user_id IS NULL AND $userId IS NULL))
+        )
+      ORDER BY RANDOM()
+      LIMIT 2
+    `).all({ $a: `%${artist}%`, $recentSkip: recentSkipCutoff, $userId: userId }) as Record<string, unknown>[];
 
     candidates.push(...available);
   }
 
-  // Discovery: tracks from similar artists not in library top
+  // Discovery: tracks from similar artists not in library top — also avoiding
+  // songs already played or skipped in the last 3 days.
+  const discoverCutoff = nowSec - 3 * 86400;
   for (const artist of discoverArtists.slice(0, 4)) {
-    const rows = db.prepare(
-      "SELECT * FROM tracks WHERE lower(artist) LIKE lower($a) ORDER BY RANDOM() LIMIT 2"
-    ).all({ $a: `%${artist}%` }) as Record<string, unknown>[];
+    const rows = db.prepare(`
+      SELECT t.* FROM tracks t
+      WHERE lower(t.artist) LIKE lower($a)
+        AND t.id NOT IN (
+          SELECT lh.track_id FROM listening_history lh
+          WHERE lh.played_at > $recent AND lh.action IN ('play', 'complete', 'skip')
+            AND (lh.user_id = $userId OR (lh.user_id IS NULL AND $userId IS NULL))
+        )
+      ORDER BY RANDOM()
+      LIMIT 2
+    `).all({
+      $a: `%${artist}%`,
+      $recent: discoverCutoff,
+      $userId: userId,
+    }) as Record<string, unknown>[];
     candidates.push(...rows);
   }
 
-  // Deduplicate and shuffle
+  // Deduplicate by id AND by normalized artist+title — the same song cached
+  // from several sources (local + yandex + youtube) gets different ids, and a
+  // "mix" with the same track twice looks broken.
   const seen = new Set<string>();
+  const seenSongs = new Set<string>();
   const deduped = candidates.filter((t) => {
     if (!isDiscoverableRow(t)) return false;
     const id = t.id as string;
-    if (seen.has(id)) return false;
+    const songKey = songFamilyKey({
+      artist: String(t.artist ?? ""),
+      title: String(t.title ?? ""),
+    });
+    if (seen.has(id) || seenSongs.has(songKey)) return false;
     seen.add(id);
+    seenSongs.add(songKey);
     return true;
   });
 
@@ -325,7 +429,7 @@ const MOOD_KEYWORDS: Record<string, string[]> = {
  *    (personalized and varied per mood via shuffle seed offset).
  * 4. Final fallback: random tracks from DB.
  */
-export function getTracksByMood(mood: string, limit = 20): Record<string, unknown>[] {
+export function getTracksByMood(mood: string, limit = 20, userId: string | null = null): Record<string, unknown>[] {
   const db = getDb();
   const moodLower = mood.toLowerCase().trim();
 
@@ -369,7 +473,7 @@ export function getTracksByMood(mood: string, limit = 20): Record<string, unknow
 
   // 3. Taste-profile fallback: tracks from top listened artists
   try {
-    const profile = buildWeightedProfile();
+    const profile = buildWeightedProfile(userId);
     const topArtists = profile.topArtists.slice(0, 12).map((a) => a.artist);
     // Use a different offset per mood so different moods return different artists
     const offset = Math.abs(moodLower.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0)) % Math.max(1, topArtists.length);
