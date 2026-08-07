@@ -19,7 +19,8 @@ Endpoints (all JSON unless noted):
   GET  /yandex/search?q=&count=            (header: X-Yandex-Token)
   GET  /yandex/station?station=&count=      (header: X-Yandex-Token)
   GET  /yandex/track/<id>                  (header: X-Yandex-Token)
-  GET  /yandex/artist?name=&count=         (header: X-Yandex-Token)
+   GET  /yandex/artist?name=&count=         (header: X-Yandex-Token)
+   GET  /yandex/likes                         (header: X-Yandex-Token)
   GET  /yandex/download/<id>?codec=&bitrate=   -> raw audio bytes (header: X-Yandex-Token)
   GET  /yandex/validate                    (header: X-Yandex-Token) -> {ok, login}
   GET  /yt/search?q=&count=
@@ -31,11 +32,16 @@ Run:  python3 app.py            (reads MUSAIC_SIDECAR_PORT, default 8770)
 """
 
 import json
+import math
 import os
 import re
+import shutil
+import struct
+import subprocess
 import sys
 import traceback
 import unicodedata
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
@@ -247,6 +253,64 @@ def yandex_station(token, station, count):
     }
 
 
+def yandex_likes(token):
+    """Return the user's liked tracks and the best available like timestamps.
+
+    yandex-music has returned both TrackId objects and small wrapper objects
+    across releases. Keep the extraction deliberately defensive so a single
+    unavailable/deleted item cannot abort a complete import.
+    """
+    client = _get_yandex_client(token)
+    liked_items = client.users_likes_tracks() or []
+    ids = []
+    timestamps = {}
+    for item in liked_items:
+        track_id = getattr(item, "id", None)
+        if track_id is None and isinstance(item, dict):
+            track_id = item.get("id") or item.get("track_id")
+        if not track_id:
+            continue
+        raw_id = str(track_id)
+        request_id = str(getattr(item, "track_id", raw_id))
+        if request_id not in ids:
+            ids.append(request_id)
+        timestamp = getattr(item, "timestamp", None)
+        if timestamp is None and isinstance(item, dict):
+            timestamp = item.get("timestamp") or item.get("liked_at")
+        try:
+            if timestamp is not None:
+                # TrackShort currently exposes an ISO timestamp; older clients
+                # exposed Unix seconds/milliseconds.
+                if isinstance(timestamp, str) and not timestamp.strip().isdigit():
+                    value = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                    if value.tzinfo is None:
+                        value = value.replace(tzinfo=timezone.utc)
+                    timestamps[raw_id] = int(value.timestamp())
+                else:
+                    value = float(timestamp)
+                    if value > 10_000_000_000:
+                        value /= 1000
+                    timestamps[raw_id] = int(value)
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+    tracks = []
+    for start in range(0, len(ids), 50):
+        try:
+            for track in client.tracks(ids[start:start + 50]) or []:
+                tracks.append(_yandex_track_to_dict(track))
+        except Exception:
+            # Retry individual ids to preserve the rest of a large import.
+            for track_id in ids[start:start + 50]:
+                try:
+                    one = client.tracks([track_id]) or []
+                    if one:
+                        tracks.append(_yandex_track_to_dict(one[0]))
+                except Exception:
+                    continue
+    return {"tracks": tracks, "likedAt": timestamps, "total": len(ids)}
+
+
 def yandex_download_bytes(token, track_id, codec, bitrate):
     """Return (bytes, content_type). All Yandex egress (incl. proxy) is here."""
     client = _get_yandex_client(token)
@@ -274,6 +338,55 @@ def yandex_validate(token):
     except Exception:
         pass
     return {"ok": True, "login": login, "plus": plus}
+
+
+def audio_embedding(file_path):
+    """Build a small deterministic audio fingerprint for local audio.
+
+    This intentionally uses ffmpeg rather than importing Essentia at server
+    startup. It keeps the optional feature deployable on small VPS machines;
+    projects that already have Essentia can replace this function without
+    changing the HTTP contract. The vector is an energy/zero-crossing
+    fingerprint, not a semantic model, so it is only an exploration signal.
+    """
+    raw_path = os.path.abspath(file_path or "")
+    roots = [os.environ.get("MUSIC_DIR", ""), os.environ.get("AUDIO_EMBEDDING_ROOT", "")]
+    roots = [os.path.abspath(root) for root in roots if root]
+    if not roots or not any(raw_path == root or raw_path.startswith(root + os.sep) for root in roots):
+        raise ValueError("audio path is outside the configured music roots")
+    if not os.path.isfile(raw_path):
+        raise LookupError("audio file not found")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is required for optional audio embeddings")
+    result = subprocess.run(
+        [ffmpeg, "-v", "error", "-i", raw_path, "-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=45, check=False,
+    )
+    if result.returncode != 0 or not result.stdout:
+        raise RuntimeError("could not decode audio")
+    samples = struct.unpack("<%dh" % (len(result.stdout) // 2), result.stdout)
+    # Compare 128 equally spaced windows, each represented by RMS, peak and
+    # zero-crossing density. Log scaling reduces the effect of loud masters.
+    windows = 128
+    step = max(1, len(samples) // windows)
+    vector = []
+    for index in range(windows):
+        chunk = samples[index * step:min(len(samples), (index + 1) * step)]
+        if not chunk:
+            chunk = (0,)
+        energy = math.sqrt(sum(float(sample) * sample for sample in chunk) / len(chunk)) / 32768.0
+        peak = max(abs(sample) for sample in chunk) / 32768.0
+        crossings = sum(1 for left, right in zip(chunk, chunk[1:]) if (left < 0) != (right < 0)) / max(1, len(chunk) - 1)
+        vector.append(math.log1p(energy * 100) / math.log(101))
+        vector.append(min(1.0, peak))
+        vector.append(min(1.0, crossings * 4))
+    # Keep the contract compact and stable at 128 dimensions.
+    if len(vector) >= 128:
+        vector = vector[:128]
+    else:
+        vector.extend([0.0] * (128 - len(vector)))
+    return {"dimensions": 128, "vector": vector}
 
 
 def yandex_playlist(token, identifier):
@@ -633,6 +746,8 @@ class Handler(BaseHTTPRequestHandler):
             # ── Yandex ──
             if path == "/yandex/validate":
                 return self._json(200, yandex_validate(token))
+            if path == "/audio/embedding":
+                return self._json(200, audio_embedding(q1("path", "")))
             if path == "/yandex/playlist":
                 return self._json(200, yandex_playlist(token, q1("id", "")))
             if path == "/yandex/search":
@@ -648,6 +763,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/yandex/station":
                 count = max(1, min(int(q1("count", "50")), 100))
                 return self._json(200, yandex_station(token, q1("station", "user:onyourwave"), count))
+            if path == "/yandex/likes":
+                return self._json(200, yandex_likes(token))
             if path.startswith("/yandex/download/"):
                 tid = unquote(path[len("/yandex/download/"):])
                 # Token may arrive via header OR query param so callers can hand

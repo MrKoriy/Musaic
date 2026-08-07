@@ -10,6 +10,7 @@
 
 import { getDb } from "../db/index.js";
 import { songFamilyKey } from "../utils/track-identity.js";
+import { canonicalizeTag } from "../reco/tags.js";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -100,7 +101,9 @@ export function userCacheKey(key: string, userId?: string | null): string {
 }
 
 export function clearUserRecommendationCaches(userId?: string | null): void {
-  for (const key of ["home", "taste-profile", "daily-mix", "discover"]) {
+  // Daily Mix is a persisted calendar-day snapshot. Playback and preference
+  // telemetry may update the profile used tomorrow, but must not mutate today.
+  for (const key of ["home", "taste-profile", "discover"]) {
     clearCached(userCacheKey(key, userId));
   }
 }
@@ -303,7 +306,8 @@ export function isDiscoverableRow(row: { source?: unknown }): boolean {
 export function buildDailyMix(
   profile: TasteProfile,
   discoverArtists: string[] = [],
-  userId: string | null = null
+  userId: string | null = null,
+  orderingSeed?: string
 ): Array<Record<string, unknown>> {
   const db = getDb();
 
@@ -317,6 +321,7 @@ export function buildDailyMix(
   const nowSec = Math.floor(Date.now() / 1000);
   const recentPlayCutoff = nowSec - 7 * 86400;  // don't repeat last week's plays
   const recentSkipCutoff = nowSec - 3 * 86400;  // don't offer recently skipped songs
+  const recentDislikeCutoff = nowSec - 30 * 86400;
 
   // Favorites: pick less-recently-played tracks, excluding anything the user
   // skipped in the last few days — a skip is a "not this song" signal.
@@ -329,17 +334,32 @@ export function buildDailyMix(
           WHERE lh.played_at > $recentPlay AND lh.action IN ('play', 'complete')
             AND (lh.user_id = $userId OR (lh.user_id IS NULL AND $userId IS NULL))
         )
-        AND t.id NOT IN (
-          SELECT lh.track_id FROM listening_history lh
-          WHERE lh.played_at > $recentSkip AND lh.action = 'skip'
-            AND (lh.user_id = $userId OR (lh.user_id IS NULL AND $userId IS NULL))
-        )
-      ORDER BY RANDOM()
-      LIMIT 3
+         AND t.id NOT IN (
+           SELECT lh.track_id FROM listening_history lh
+           WHERE lh.played_at > $recentSkip AND lh.action = 'skip'
+             AND (lh.user_id = $userId OR (lh.user_id IS NULL AND $userId IS NULL))
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM listening_history disliked
+           WHERE disliked.track_id = t.id
+             AND disliked.action = 'dislike'
+             AND disliked.played_at > $recentDislike
+             AND (disliked.user_id = $userId OR (disliked.user_id IS NULL AND $userId IS NULL))
+             AND NOT EXISTS (
+               SELECT 1 FROM listening_history liked
+               WHERE liked.track_id = disliked.track_id
+                 AND liked.action = 'like'
+                 AND liked.played_at > disliked.played_at
+                 AND (liked.user_id = $userId OR (liked.user_id IS NULL AND $userId IS NULL))
+             )
+         )
+         ORDER BY t.id
+      LIMIT 60
     `).all({
       $a: `%${artist}%`,
       $recentPlay: recentPlayCutoff,
       $recentSkip: recentSkipCutoff,
+      $recentDislike: recentDislikeCutoff,
       $userId: userId,
     }) as Record<string, unknown>[];
 
@@ -353,11 +373,27 @@ export function buildDailyMix(
           WHERE lh.played_at > $recentSkip AND lh.action = 'skip'
             AND (lh.user_id = $userId OR (lh.user_id IS NULL AND $userId IS NULL))
         )
-      ORDER BY RANDOM()
-      LIMIT 2
-    `).all({ $a: `%${artist}%`, $recentSkip: recentSkipCutoff, $userId: userId }) as Record<string, unknown>[];
+        AND NOT EXISTS (
+          SELECT 1 FROM listening_history disliked
+          WHERE disliked.track_id = t.id
+            AND disliked.action = 'dislike'
+            AND disliked.played_at > $recentDislike
+            AND (disliked.user_id = $userId OR (disliked.user_id IS NULL AND $userId IS NULL))
+            AND NOT EXISTS (
+              SELECT 1 FROM listening_history liked
+              WHERE liked.track_id = disliked.track_id
+                AND liked.action = 'like'
+                AND liked.played_at > disliked.played_at
+                AND (liked.user_id = $userId OR (liked.user_id IS NULL AND $userId IS NULL))
+            )
+        )
+        ORDER BY t.id
+      LIMIT 60
+    `).all({ $a: `%${artist}%`, $recentSkip: recentSkipCutoff, $recentDislike: recentDislikeCutoff, $userId: userId }) as Record<string, unknown>[];
 
-    candidates.push(...available);
+    candidates.push(...(orderingSeed
+      ? deterministicOrder(available, `${orderingSeed}:favorite:${artist}`).slice(0, rows.length > 0 ? 3 : 2)
+      : shuffled(available).slice(0, rows.length > 0 ? 3 : 2)));
   }
 
   // Discovery: tracks from similar artists not in library top — also avoiding
@@ -372,14 +408,16 @@ export function buildDailyMix(
           WHERE lh.played_at > $recent AND lh.action IN ('play', 'complete', 'skip')
             AND (lh.user_id = $userId OR (lh.user_id IS NULL AND $userId IS NULL))
         )
-      ORDER BY RANDOM()
-      LIMIT 2
+      ORDER BY t.id
+      LIMIT 60
     `).all({
       $a: `%${artist}%`,
       $recent: discoverCutoff,
       $userId: userId,
     }) as Record<string, unknown>[];
-    candidates.push(...rows);
+    candidates.push(...(orderingSeed
+      ? deterministicOrder(rows, `${orderingSeed}:discover:${artist}`).slice(0, 2)
+      : shuffled(rows).slice(0, 2)));
   }
 
   // Deduplicate by id AND by normalized artist+title — the same song cached
@@ -400,7 +438,7 @@ export function buildDailyMix(
     return true;
   });
 
-  return shuffled(deduped).slice(0, 20);
+  return (orderingSeed ? deterministicOrder(deduped, orderingSeed) : shuffled(deduped)).slice(0, 20);
 }
 
 // Maps mood labels (used in the app UI) to related genre/keyword synonyms for
@@ -432,6 +470,22 @@ const MOOD_KEYWORDS: Record<string, string[]> = {
 export function getTracksByMood(mood: string, limit = 20, userId: string | null = null): Record<string, unknown>[] {
   const db = getDb();
   const moodLower = mood.toLowerCase().trim();
+  const disliked = db.prepare(`
+    SELECT t.artist, t.title, lh.played_at
+    FROM listening_history lh JOIN tracks t ON t.id = lh.track_id
+    WHERE lh.action = 'dislike' AND lh.played_at >= unixepoch() - 30 * 86400
+      AND (lh.user_id = $userId OR (lh.user_id IS NULL AND $userId IS NULL))
+      AND NOT EXISTS (
+        SELECT 1 FROM listening_history liked
+        WHERE liked.track_id = lh.track_id AND liked.action = 'like'
+          AND liked.played_at > lh.played_at
+          AND (liked.user_id = $userId OR (liked.user_id IS NULL AND $userId IS NULL))
+      )
+  `).all({ $userId: userId }) as Array<{ artist: string; title: string }>;
+  const dislikedFamilies = new Set(disliked.map((row) => songFamilyKey(row)));
+  const allowed = (row: Record<string, unknown>) => isDiscoverableRow(row) && !dislikedFamilies.has(songFamilyKey({
+    artist: String(row.artist ?? ""), title: String(row.title ?? ""),
+  }));
 
   // 1. Exact keyword search
   const exact = (db.prepare(`
@@ -443,7 +497,7 @@ export function getTracksByMood(mood: string, limit = 20, userId: string | null 
        OR lower(album) LIKE lower($mood)
     ORDER BY RANDOM()
     LIMIT $limit
-  `).all({ $mood: `%${moodLower}%`, $limit: limit }) as Record<string, unknown>[]).filter(isDiscoverableRow);
+  `).all({ $mood: `%${moodLower}%`, $limit: limit }) as Record<string, unknown>[]).filter(allowed);
 
   if (exact.length >= limit) return exact;
 
@@ -462,7 +516,22 @@ export function getTracksByMood(mood: string, limit = 20, userId: string | null 
       LIMIT $lim
     `).all({ $kw: `%${kw}%`, $lim: limit - combined.length }) as Record<string, unknown>[];
     for (const row of rows) {
-      if (isDiscoverableRow(row) && !seen.has(row.id as string)) {
+      if (allowed(row) && !seen.has(row.id as string)) {
+        seen.add(row.id as string);
+        combined.push(row);
+      }
+    }
+  }
+
+  const canonicalMood = canonicalizeTag(moodLower);
+  if (canonicalMood && combined.length < limit) {
+    const rows = db.prepare(`
+      SELECT DISTINCT t.* FROM tracks t JOIN track_tags tt ON tt.track_id = t.id
+      WHERE lower(tt.tag) = lower($tag)
+      ORDER BY t.play_count DESC, t.updated_at DESC LIMIT $limit
+    `).all({ $tag: canonicalMood, $limit: limit - combined.length }) as Record<string, unknown>[];
+    for (const row of rows) {
+      if (allowed(row) && !seen.has(row.id as string)) {
         seen.add(row.id as string);
         combined.push(row);
       }
@@ -488,7 +557,7 @@ export function getTracksByMood(mood: string, limit = 20, userId: string | null 
         LIMIT $lim
       `).all({ $a: `%${artist}%`, $lim: limit - combined.length }) as Record<string, unknown>[];
       for (const row of rows) {
-        if (!seen.has(row.id as string)) {
+        if (allowed(row) && !seen.has(row.id as string)) {
           seen.add(row.id as string);
           combined.push(row);
         }
@@ -502,9 +571,26 @@ export function getTracksByMood(mood: string, limit = 20, userId: string | null 
   const fallback = db.prepare(`SELECT * FROM tracks ORDER BY RANDOM() LIMIT $limit`)
     .all({ $limit: limit - combined.length }) as Record<string, unknown>[];
   for (const row of fallback) {
-    if (isDiscoverableRow(row) && !seen.has(row.id as string)) combined.push(row);
+    if (allowed(row) && !seen.has(row.id as string)) combined.push(row);
   }
   return shuffled(combined).slice(0, limit);
+}
+
+function stableHash(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function deterministicOrder<T extends Record<string, unknown>>(items: T[], seed: string): T[] {
+  return [...items].sort((left, right) => {
+    const leftKey = `${seed}:${String(left.id ?? "")}`;
+    const rightKey = `${seed}:${String(right.id ?? "")}`;
+    return stableHash(leftKey) - stableHash(rightKey) || leftKey.localeCompare(rightKey);
+  });
 }
 
 function shuffled<T>(arr: T[]): T[] {

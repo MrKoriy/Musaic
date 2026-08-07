@@ -14,6 +14,12 @@ fi
 echo "Deploying $server_dir to $remote_host:/opt/musaic-server"
 echo "Persistent database, environment, secrets, downloads, and virtual environments are excluded."
 
+if [[ -n "${SSHPASS:-}" ]] && command -v sshpass >/dev/null 2>&1; then
+  ssh_command=(sshpass -e ssh)
+else
+  ssh_command=(ssh)
+fi
+
 COPYFILE_DISABLE=1 tar -C "$server_dir" \
   --exclude='./.env' \
   --exclude='./.musaic.secret' \
@@ -26,7 +32,7 @@ COPYFILE_DISABLE=1 tar -C "$server_dir" \
   --exclude='./dist' \
   --exclude='./.DS_Store' \
   --exclude='./._*' \
-  -czf - . | ssh "$remote_host" '
+  -czf - . | "${ssh_command[@]}" "$remote_host" '
 set -Eeuo pipefail
 
 remote_dir=/opt/musaic-server
@@ -35,7 +41,7 @@ tar -xzf - -C "$remote_dir"
 cd "$remote_dir"
 
 /root/.bun/bin/bun install --frozen-lockfile
-/root/.bun/bin/bun x tsc --noEmit
+/root/.bun/bin/bun run typecheck
 sidecar/.venv/bin/python -m pip install -q -r sidecar/requirements.txt
 
 backup_dir="/opt/musaic-backups/predeploy-$(date +%Y%m%d-%H%M%S)"

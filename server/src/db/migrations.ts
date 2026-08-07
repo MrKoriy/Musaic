@@ -200,6 +200,132 @@ const MIGRATIONS: Migration[] = [
         ON recommendation_impressions(track_id, created_at);
     `,
   },
+  {
+    version: 11,
+    description: "Persist versioned per-user Daily Mix snapshots",
+    up: `
+      CREATE TABLE IF NOT EXISTS daily_mix_snapshots (
+        id TEXT PRIMARY KEY,
+        user_key TEXT NOT NULL,
+        user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+        local_date TEXT NOT NULL,
+        algorithm_version TEXT NOT NULL,
+        theme_id TEXT NOT NULL DEFAULT 'default',
+        theme_name TEXT NOT NULL DEFAULT 'Daily Mix',
+        revision INTEGER NOT NULL DEFAULT 1,
+        request_id TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'daily_mix',
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        UNIQUE(user_key, local_date, algorithm_version, theme_id, revision)
+      );
+      CREATE INDEX IF NOT EXISTS idx_daily_mix_snapshot_lookup
+        ON daily_mix_snapshots(user_key, local_date, algorithm_version, theme_id, revision DESC);
+
+      CREATE TABLE IF NOT EXISTS daily_mix_snapshot_items (
+        snapshot_id TEXT NOT NULL REFERENCES daily_mix_snapshots(id) ON DELETE CASCADE,
+        track_id TEXT NOT NULL,
+        canonical_key TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        score REAL,
+        reason TEXT,
+        payload_json TEXT NOT NULL,
+        PRIMARY KEY(snapshot_id, position),
+        UNIQUE(snapshot_id, canonical_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_daily_mix_items_track
+        ON daily_mix_snapshot_items(track_id);
+    `,
+  },
+  {
+    version: 12,
+    description: "Add recommendation graph, tag, model, job, and shadow-ranking tables",
+    up: `
+      CREATE TABLE IF NOT EXISTS related_artists (
+        artist_key TEXT NOT NULL,
+        related_key TEXT NOT NULL,
+        score REAL NOT NULL,
+        source TEXT NOT NULL DEFAULT 'lastfm',
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (artist_key, related_key, source)
+      );
+      CREATE INDEX IF NOT EXISTS idx_related_artists_key
+        ON related_artists(artist_key, score DESC);
+
+      CREATE TABLE IF NOT EXISTS track_tags (
+        track_id TEXT NOT NULL,
+        tag TEXT NOT NULL,
+        weight REAL NOT NULL,
+        source TEXT NOT NULL DEFAULT 'lastfm',
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (track_id, tag, source)
+      );
+      CREATE INDEX IF NOT EXISTS idx_track_tags_tag
+        ON track_tags(tag, weight DESC);
+      CREATE INDEX IF NOT EXISTS idx_track_tags_track
+        ON track_tags(track_id, weight DESC);
+
+      CREATE TABLE IF NOT EXISTS similar_items (
+        track_id TEXT NOT NULL,
+        other_id TEXT NOT NULL,
+        score REAL NOT NULL,
+        source TEXT NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (track_id, other_id, source)
+      );
+      CREATE INDEX IF NOT EXISTS idx_similar_items_track
+        ON similar_items(track_id, score DESC);
+      CREATE INDEX IF NOT EXISTS idx_similar_items_other
+        ON similar_items(other_id, score DESC);
+
+      CREATE TABLE IF NOT EXISTS reco_models (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        version TEXT NOT NULL UNIQUE,
+        trained_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        impressions_used INTEGER NOT NULL DEFAULT 0,
+        auc REAL NOT NULL DEFAULT 0,
+        weights_json TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS job_state (
+        name TEXT PRIMARY KEY,
+        last_run_at INTEGER,
+        last_status TEXT,
+        last_error TEXT
+      );
+
+      ALTER TABLE recommendation_impressions ADD COLUMN hand_score REAL;
+      ALTER TABLE recommendation_impressions ADD COLUMN model_score REAL;
+      ALTER TABLE recommendation_impressions ADD COLUMN model_version TEXT;
+      ALTER TABLE recommendation_impressions ADD COLUMN reco_variant TEXT;
+    `,
+  },
+  {
+    version: 13,
+    description: "Add recommendation settings and optional audio embeddings",
+    up: `
+      CREATE TABLE IF NOT EXISTS reco_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      CREATE TABLE IF NOT EXISTS audio_embeddings (
+        track_id TEXT PRIMARY KEY,
+        vector BLOB NOT NULL,
+        dimensions INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      CREATE INDEX IF NOT EXISTS idx_audio_embeddings_updated
+        ON audio_embeddings(updated_at);
+    `,
+  },
+  {
+    version: 14,
+    description: "Persist recommendation feature vectors for ranker training",
+    up: `
+      ALTER TABLE recommendation_impressions ADD COLUMN features_json TEXT;
+    `,
+  },
 ];
 
 /**

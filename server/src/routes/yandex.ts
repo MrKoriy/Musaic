@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import crypto from "crypto";
 import { getYandexProvider } from "../providers/yandex.js";
+import { clearUserRecommendationCaches } from "../providers/taste-engine.js";
+import { getDb } from "../db/index.js";
 
 const router = new Hono();
 
@@ -170,6 +172,61 @@ router.get("/me", async (c) => {
     return c.json({ authenticated: true, username: login ?? p.getUsername(), plus });
   } catch (err) {
     return c.json({ authenticated: false, username: null, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/**
+ * POST /api/yandex/likes/import
+ * Import the authenticated user's Yandex likes without deleting local likes.
+ */
+router.post("/likes/import", async (c) => {
+  const userId = (c as any).get("userId") as string | undefined;
+  if (!userId) return c.json({ error: "Not authenticated" }, 401);
+  const provider = getYandexProvider();
+  if (!provider.isAuthenticated()) return c.json({ error: "Yandex is not connected" }, 409);
+
+  try {
+    const { tracks, likedAt, total } = await provider.getLikedTracks();
+    const db = getDb();
+    let imported = 0;
+    let alreadyHad = 0;
+    const insertLike = db.prepare(`
+      INSERT OR IGNORE INTO liked_tracks (user_id, track_id, liked_at)
+      VALUES ($userId, $trackId, $likedAt)
+    `);
+    const insertHistoryLike = db.prepare(`
+      INSERT OR IGNORE INTO listening_history
+        (event_id, track_id, action, played_at, user_id, surface, is_organic, context)
+      VALUES ($eventId, $trackId, 'like', $playedAt, $userId, 'yandex_import', 0, $context)
+    `);
+
+    db.transaction(() => {
+      for (const track of tracks) {
+        const timestamp = Math.max(0, Math.floor(likedAt.get(track.id) ?? Date.now() / 1000));
+        const before = db.prepare(
+          "SELECT 1 FROM liked_tracks WHERE user_id = $userId AND track_id = $trackId"
+        ).get({ $userId: userId, $trackId: track.id });
+        insertLike.run({ $userId: userId, $trackId: track.id, $likedAt: timestamp });
+        if (before) {
+          alreadyHad++;
+        } else {
+          imported++;
+        }
+        // The station user stats are based on listening_history. This event is
+        // explicitly marked as an import, so quality/session metrics ignore it.
+        insertHistoryLike.run({
+          $eventId: `yandex-like-import:${userId}:${track.id}`,
+          $trackId: track.id,
+          $playedAt: timestamp,
+          $userId: userId,
+          $context: JSON.stringify({ provider: "yandex", imported: true }),
+        });
+      }
+    })();
+    clearUserRecommendationCaches(userId);
+    return c.json({ imported, alreadyHad, total, cached: tracks.length });
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : String(error) }, 502);
   }
 });
 

@@ -47,6 +47,13 @@ function createSchema(db: Database): void {
       updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
+    CREATE TABLE IF NOT EXISTS yandex_config (
+      id INTEGER PRIMARY KEY CHECK(id = 1),
+      username TEXT,
+      token TEXT,
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
     CREATE TABLE IF NOT EXISTS listening_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       track_id TEXT NOT NULL,
@@ -164,7 +171,7 @@ export function seedTrack(opts: {
   title?: string;
   artist?: string;
   album?: string;
-  source?: "local" | "vk" | "soundcloud";
+  source?: "local" | "vk" | "soundcloud" | "yandex" | "youtube";
   duration?: number;
 } = {}): string {
   const db = getDb();

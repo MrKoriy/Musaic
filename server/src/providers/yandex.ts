@@ -153,6 +153,25 @@ export class YandexMusicProvider implements MusicProvider {
     return mapped;
   }
 
+  async getLikedTracks(): Promise<{ tracks: Track[]; likedAt: Map<string, number>; total: number }> {
+    const response = await sidecarGet<{
+      tracks: SidecarTrack[];
+      likedAt?: Record<string, number>;
+      total?: number;
+    }>("/yandex/likes", this.headers(), 120_000);
+    const tracks = await hydrateFallbackArtwork(
+      (response.tracks ?? []).filter((track) => track.available !== false).map(sidecarTrackToTrack)
+    );
+    cacheYandexTracks(tracks);
+    const likedAt = new Map<string, number>();
+    for (const [id, timestamp] of Object.entries(response.likedAt ?? {})) {
+      if (Number.isFinite(Number(timestamp))) {
+        likedAt.set(id.startsWith("yandex_") ? id : `yandex_${id}`, Number(timestamp));
+      }
+    }
+    return { tracks, likedAt, total: Number(response.total ?? tracks.length) };
+  }
+
   async getTrackMetadata(trackId: string): Promise<TrackMeta> {
     const s = await sidecarGet<SidecarTrack>(`/yandex/track/${encodeURIComponent(rawId(trackId))}`, this.headers());
     const [track] = await hydrateFallbackArtwork([sidecarTrackToTrack(s)]);

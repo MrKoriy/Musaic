@@ -24,6 +24,8 @@ import { clearUserRecommendationCaches } from "./providers/taste-engine.js";
 import { getLocalProvider } from "./providers/local.js";
 import { getSoundCloudProvider } from "./providers/soundcloud.js";
 import { log } from "./logger.js";
+import { registerRecommendationJobs } from "./jobs/index.js";
+import { startScheduler } from "./jobs/scheduler.js";
 
 const SERVER_START = Date.now();
 const SERVER_VERSION = "0.1.0";
@@ -445,7 +447,9 @@ app.post("/api/history", async (c) => {
   }
   const userId = (c as any).get("userId") as string | undefined;
   const inserted = logListening(body.trackId, body.action, userId, body);
-  clearUserRecommendationCaches(userId);
+  // Pause is transport state, not a preference signal. It must not evict the
+  // taste/profile caches (and Daily snapshots are never part of this helper).
+  if (inserted && body.action !== "pause") clearUserRecommendationCaches(userId);
   return c.json({ ok: true, inserted });
 });
 
@@ -528,6 +532,9 @@ try {
   log.error("server", "Migration failed — aborting startup:", err instanceof Error ? err.message : String(err));
   process.exit(1);
 }
+
+registerRecommendationJobs();
+startScheduler();
 
 let httpServer: Server | null = null;
 
