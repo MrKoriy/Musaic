@@ -52,6 +52,7 @@ struct MiniPlayerView: View {
                                 player.skipNext()
                             }
                         }
+                        .fixedSize()
                         .sensoryFeedback(.impact(weight: .light), trigger: audio.isPlaying)
                     }
 
@@ -118,7 +119,15 @@ struct MiniPlayerView: View {
                 .padding(.horizontal, 6)
         } else {
             content()
-                .glassCard(cornerRadius: 28, tint: Color.accentStrong, intensity: 0.08, interactive: true)
+                .glassCard(cornerRadius: 28, tint: Color.accentStrong, intensity: 0.08, interactive: false)
+                // Compose glass + content into one layer so the iOS 26 Liquid Glass
+                // material cannot detach from the card during transitions/animations
+                // (previously the glass card could render floating separately below
+                // the artwork, buttons and progress bar).
+                .compositingGroup()
+                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .shadow(color: .black.opacity(0.24), radius: 28, y: 18)
+                .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
         }
     }
 

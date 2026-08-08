@@ -438,7 +438,7 @@ struct ContentView: View {
                         .padding(.horizontal, 18)
 
                         // Transport controls
-                        HStack(spacing: 12) {
+                        HStack(spacing: 10) {
                             Button {
                                 shuffleTapCounterMac &+= 1
                                 player.toggleShuffle()
@@ -469,7 +469,7 @@ struct ContentView: View {
                                 Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
                                     .font(.system(size: 24, weight: .semibold))
                                     .foregroundStyle(Color.textPrimary)
-                                    .frame(width: 56, height: 56)
+                                    .frame(width: 48, height: 48)
                                     .background(Circle().fill(Color.white.opacity(0.11)))
                                     .contentTransition(.symbolEffect(.replace.downUp))
                             }
