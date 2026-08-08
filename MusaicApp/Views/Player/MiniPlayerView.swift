@@ -10,19 +10,19 @@ struct MiniPlayerView: View {
     var body: some View {
         if let track = player.currentTrack {
             surface {
-                VStack(spacing: embeddedInAccessory ? 5 : 8) {
-                    HStack(spacing: embeddedInAccessory ? 10 : 12) {
+                VStack(spacing: 8) {
+                    HStack(spacing: 12) {
                         ArtworkTile(urlString: track.artwork, icon: "music.note")
-                            .frame(width: embeddedInAccessory ? 36 : 50, height: embeddedInAccessory ? 36 : 50)
+                            .frame(width: 46, height: 46)
 
                         VStack(alignment: .leading, spacing: 4) {
                             Text(track.title)
-                                .font(.system(size: embeddedInAccessory ? 12 : 14, weight: .semibold))
+                                .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(Color.textPrimary)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.74)
                             Text(audio.lastErrorMessage ?? track.artist)
-                                .font(.system(size: embeddedInAccessory ? 10 : 11, weight: .medium))
+                                .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(audio.lastErrorMessage == nil ? Color.textSecondary : Color.accentStrong)
                                 .lineLimit(1)
                         }
@@ -57,10 +57,11 @@ struct MiniPlayerView: View {
 
                     GeometryReader { geo in
                         let safeProgress = max(0, min(1, audio.progress.isFinite ? audio.progress : 0))
+                        let trackWidth = max(0, geo.size.width)
                         ZStack(alignment: .leading) {
                             Capsule()
                                 .fill(Color.white.opacity(0.12))
-                                .frame(height: embeddedInAccessory ? 2.5 : 3)
+                                .frame(height: 3)
 
                             Capsule()
                                 .fill(
@@ -73,14 +74,16 @@ struct MiniPlayerView: View {
                                         endPoint: .trailing
                                     )
                                 )
-                                .frame(width: geo.size.width * safeProgress, height: embeddedInAccessory ? 2.5 : 3)
+                                .frame(width: max(0, min(trackWidth, trackWidth * safeProgress)), height: 3)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .clipped()
                     }
-                    .frame(height: embeddedInAccessory ? 2.5 : 3)
+                    .frame(height: 3)
                 }
-                .frame(maxWidth: .infinity, minHeight: embeddedInAccessory ? 44 : nil, alignment: .center)
+                .frame(maxWidth: .infinity, minHeight: 60, alignment: .center)
             }
-            .padding(embeddedInAccessory ? EdgeInsets(top: 4, leading: 8, bottom: 2, trailing: 8) : EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12))
+            .padding(EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12))
             .onTapGesture { showNowPlaying = true }
             .gesture(
                 DragGesture(minimumDistance: 30)
@@ -142,11 +145,11 @@ struct MiniPlayerView: View {
                 if prominent {
                     Circle()
                         .fill(Color.clear)
-                        .liquidProminentSurface(cornerRadius: embeddedInAccessory ? 13 : 16, accent: Color(hex: "d9b17b"))
+                        .liquidProminentSurface(cornerRadius: 16, accent: Color(hex: "d9b17b"))
                 } else {
                     Circle()
                         .fill(Color.clear)
-                        .glassCard(cornerRadius: embeddedInAccessory ? 13 : 16, tint: .white, intensity: 0.06)
+                        .glassCard(cornerRadius: 16, tint: .white, intensity: 0.06)
                 }
             }
     }

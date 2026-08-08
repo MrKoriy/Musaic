@@ -712,7 +712,7 @@ struct ContentView: View {
         GeometryReader { geo in
             let bottomSafe = geo.safeAreaInsets.bottom
             // Tab bar height (~49pt) + safe area (home indicator ~34pt)
-            let miniPlayerBottomInset = bottomSafe + 54
+            let miniPlayerBottomInset = bottomSafe + 8
 
             ZStack(alignment: .bottom) {
                 AppBackdrop()
@@ -723,6 +723,7 @@ struct ContentView: View {
                     MiniPlayerView(showNowPlaying: $showNowPlaying)
                         .padding(.horizontal, 16)
                         .padding(.bottom, miniPlayerBottomInset)
+                        .safeAreaPadding(.bottom, 0)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                         .zIndex(1)
                 }

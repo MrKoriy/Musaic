@@ -786,7 +786,7 @@ final class AudioPlayer {
                 if let result = try? await ArtworkPipeline.shared.loadImage(from: url, maxPixelSize: 1024) {
                     guard let self else { return }
                     let image = result.image
-                    let artwork = MPMediaItemArtwork(boundsSize: image.platformSize) { _ in image }
+                    let artwork = Self.makeNowPlayingArtwork(image)
                     self.cachedArtwork = artwork
                     self.cachedArtworkURL = artURLString
                     var updatedInfo: [String: Any] = [
@@ -802,6 +802,10 @@ final class AudioPlayer {
                 }
             }
         }
+    }
+
+    private nonisolated static func makeNowPlayingArtwork(_ image: PlatformImage) -> MPMediaItemArtwork {
+        MPMediaItemArtwork(boundsSize: image.platformSize) { _ in image }
     }
 
     private func syncNowPlayingProgressIfNeeded(force: Bool = false) {

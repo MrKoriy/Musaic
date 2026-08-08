@@ -174,12 +174,14 @@ final class LibraryStore {
             )
             pendingUnlikedTrackIds.subtract(pendingRemovals)
             saveLiked()
-            let merged = Set(serverIds)
-            if merged != likedTrackIds {
-                // Add server-only likes locally
-                for id in merged where !likedTrackIds.contains(id) {
-                    likedTrackIds.insert(id)
-                }
+
+            // Server returns liked IDs in date-added order (liked_at DESC).
+            // Rebuild local state from that ordered list, not Set iteration order.
+            let orderedServerIds = serverIds
+            let merged = Set(orderedServerIds)
+            if merged != likedTrackIds || orderedServerIds != likedTrackOrder {
+                likedTrackIds = merged
+                likedTrackOrder = orderedServerIds
                 normalizeLikedState()
                 rebuildDerivedCollections()
                 saveLiked()

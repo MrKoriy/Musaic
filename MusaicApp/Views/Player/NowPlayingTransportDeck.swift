@@ -27,7 +27,7 @@ struct NowPlayingTransportDeckView: View {
                     audio.seek(to: fraction)
                 }
             )
-            .padding(.horizontal, 18)
+            .padding(.horizontal, 16)
             .padding(.vertical, 13)
             .glassCard(cornerRadius: 28, tint: Color.accentStrong, intensity: 0.08, interactive: true)
 
@@ -97,7 +97,7 @@ struct NowPlayingTransportDeckView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .padding(.horizontal, 18)
+            .padding(.horizontal, 16)
             .padding(.vertical, 13)
             .glassCard(cornerRadius: 34, tint: Color.accentStrong, intensity: 0.09, interactive: true)
         }
@@ -165,7 +165,7 @@ struct NowPlayingTransportDeckView: View {
                     .offset(x: audio.isPlaying ? 0 : 2)
                     .contentTransition(.symbolEffect(.replace.downUp))
             }
-            .frame(width: 82, height: 82)
+            .frame(width: 76, height: 76)
             .scaleEffect(audio.isPlaying ? 1.0 : 0.97)
             .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.7), value: audio.isPlaying)
         }
@@ -227,7 +227,7 @@ struct NowPlayingTransportDeckView: View {
                     .contentTransition(.symbolEffect(.replace))
                     .symbolEffect(.bounce, value: bounceTrigger)
             }
-            .frame(width: 46, height: 46)
+            .frame(width: 44, height: 44)
             .shadow(color: .black.opacity(0.16), radius: 10, y: 4)
         }
         .buttonStyle(PressableScale(scale: 0.90))
