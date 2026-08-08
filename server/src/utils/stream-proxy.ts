@@ -67,14 +67,31 @@ function localFileResponse(filePath: string, range: string | undefined): Respons
 
 export function resolveAllowedLocalFile(filePath: string): string | null {
   if (!filePath || !fs.existsSync(filePath)) return null;
-  const realPath = fs.realpathSync(filePath);
-  const roots = [process.env.MUSIC_DIR, process.env.DOWNLOADS_DIR ?? "./downloads"]
-    .filter(Boolean)
+  let realPath: string;
+  let isSymlink = false;
+  try {
+    isSymlink = fs.lstatSync(filePath).isSymbolicLink();
+    realPath = fs.realpathSync(filePath);
+  } catch {
+    return null;
+  }
+
+  const configuredRoots = [
+    process.env.MUSIC_DIR,
+    process.env.DOWNLOADS_DIR ?? "./downloads",
+    ...(process.env.ALLOWED_STREAM_ROOTS ?? "").split(path.delimiter),
+  ].filter((root): root is string => Boolean(root?.trim()));
+  const roots = configuredRoots
     .map((root) => {
-      try { return fs.realpathSync(path.resolve(root!)); } catch { return null; }
+      try { return fs.realpathSync(path.resolve(root)); } catch { return null; }
     })
     .filter((root): root is string => Boolean(root));
-  return roots.some((root) => realPath === root || realPath.startsWith(`${root}${path.sep}`)) ? realPath : null;
+  if (roots.some((root) => realPath === root || realPath.startsWith(`${root}${path.sep}`))) return realPath;
+
+  // ALLOW_SCAN_ANY_DIR is an explicit operator opt-in for libraries indexed
+  // outside MUSIC_DIR. Never extend that opt-in to symlinks.
+  if (process.env.ALLOW_SCAN_ANY_DIR === "1" && !isSymlink) return realPath;
+  return null;
 }
 
 async function fetchProviderStream(source: string, trackId: string, bitrate: number, range?: string): Promise<Response> {

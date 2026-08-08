@@ -684,9 +684,9 @@ final class APIService {
         }
 
         if !normalized.hasPrefix("http://") && !normalized.hasPrefix("https://") {
-            let isLocal = normalized == "localhost" || normalized.hasPrefix("localhost:") ||
-                normalized == "127.0.0.1" || normalized.hasPrefix("127.0.0.1:")
-            normalized = "\(isLocal ? "http" : "https")://\(normalized)"
+            // A scheme-less server setting is the legacy/local HTTP form.
+            // HTTPS remains available when the user enters it explicitly for other hosts.
+            normalized = "http://\(normalized)"
         }
 
         guard var components = URLComponents(string: normalized) else {
@@ -700,14 +700,17 @@ final class APIService {
             components.port = 3001
         }
 
-        // The default server still serves plain HTTP on a public IP. Keep using
-        // HTTP there until TLS is configured, even if a previous launch stored
-        // the https:// URL in UserDefaults.
-        if components.scheme == "https" && (host == "45.146.167.109" || host == "45-146-167-109.nip.io") {
-            components.scheme = "http"
-        }
+        // Keep the known HTTP deployment reachable from iOS: ATS accepts the
+        // nip.io hostname, while direct IP HTTP is rejected on some iOS builds.
+        // Preserve explicit HTTPS for future TLS deployments, except for the
+        // old stored default which was never backed by TLS.
         if host == "45.146.167.109" && components.port == 3001 {
-            components.host = "45-146-167-109.nip.io"
+            if components.scheme == "http" {
+                components.host = "45-146-167-109.nip.io"
+            } else if components.scheme == "https" {
+                components.scheme = "http"
+                components.host = "45-146-167-109.nip.io"
+            }
         }
 
         if components.path == "/" {
