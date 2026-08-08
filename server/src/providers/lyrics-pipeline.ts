@@ -25,6 +25,7 @@ import { getDb } from "../db/index.js";
 import { fetchLrclib } from "./lrclib.js";
 import { fetchPlainLyrics } from "./genius.js";
 import { alignLyricsWithWhisper } from "./lyrics-aligner.js";
+import { runFfmpeg } from "../utils/ffmpeg-queue.js";
 
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AUDIO_MODEL = "google/gemini-3.1-flash-lite-preview";
@@ -286,18 +287,11 @@ async function transcribeWithWhisperCpp(audioPath: string): Promise<string> {
   }
 }
 
-function convertToWav(inputPath: string, outputPath: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "ffmpeg",
-      ["-i", inputPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-y", outputPath],
-      { timeout: 30_000 },
-      (err, _stdout, stderr) => {
-        if (err) reject(new Error(`ffmpeg conversion failed: ${(stderr || err.message).slice(0, 200)}`));
-        else resolve();
-      }
-    );
-  });
+async function convertToWav(inputPath: string, outputPath: string): Promise<void> {
+  await runFfmpeg(
+    ["-i", inputPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-y", outputPath],
+    { timeoutMs: 30_000 },
+  );
 }
 
 function runWhisperCpp(bin: string, model: string, wavPath: string): Promise<string> {

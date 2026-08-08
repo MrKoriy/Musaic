@@ -20,7 +20,8 @@ private func likedAlbumTitle(for track: Track) -> String {
 }
 
 @Observable
-final class LibraryStore: @unchecked Sendable {
+@MainActor
+final class LibraryStore {
     static let shared = LibraryStore()
 
     private let likedIdsKey = "liked_track_ids"
@@ -79,6 +80,26 @@ final class LibraryStore: @unchecked Sendable {
 
     func isLiked(_ trackId: String) -> Bool {
         likedTrackIds.contains(trackId)
+    }
+
+    /// Prevent a previous account's local likes from being uploaded to a new account.
+    func prepareForUser(_ userId: String) {
+        guard let currentUserId = SettingsStore.shared.authUserId, currentUserId == userId else {
+            clearLocalLikes()
+            return
+        }
+    }
+
+    func clearLocalLikes() {
+        likedTrackIds.removeAll()
+        likedTrackOrder.removeAll()
+        likedTracks.removeAll()
+        pendingUnlikedTrackIds.removeAll()
+        syncedUserId = nil
+        syncedFingerprint = nil
+        markHydrationDirty()
+        rebuildDerivedCollections()
+        saveLiked()
     }
 
     func toggleLike(track: Track) {
@@ -314,7 +335,7 @@ final class LibraryStore: @unchecked Sendable {
         }
     }
 
-    private static func computeAlbums(from tracks: [Track]) -> [Album] {
+    private nonisolated static func computeAlbums(from tracks: [Track]) -> [Album] {
         let grouped = Dictionary(grouping: tracks) { track in
             let artist = normalizedLibraryValue(track.artist)
             let album = {
@@ -353,7 +374,7 @@ final class LibraryStore: @unchecked Sendable {
             }
     }
 
-    private static func computeArtists(from tracks: [Track]) -> [Artist] {
+    private nonisolated static func computeArtists(from tracks: [Track]) -> [Artist] {
         let grouped = Dictionary(grouping: tracks) { track in
             normalizedLibraryValue(track.artist).lowercased()
         }

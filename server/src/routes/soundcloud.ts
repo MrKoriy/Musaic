@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { getSoundCloudProvider } from "../providers/soundcloud.js";
+import { streamTrack, StreamProxyError } from "../utils/stream-proxy.js";
 
 const router = new Hono();
 
@@ -43,12 +44,7 @@ router.get("/search", async (c) => {
  */
 router.get("/stream/:trackId", async (c) => {
   const trackId = c.req.param("trackId");
-  try {
-    const url = await getSoundCloudProvider().getStreamUrl(trackId);
-    return c.json({ url });
-  } catch (err: unknown) {
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
-  }
+  return c.json({ url: `/api/stream/soundcloud/${encodeURIComponent(trackId)}` });
 });
 
 /**
@@ -98,10 +94,9 @@ router.get("/waveform/:trackId", async (c) => {
 router.get("/proxy/:trackId", async (c) => {
   const trackId = c.req.param("trackId");
   try {
-    const url = await getSoundCloudProvider().getStreamUrl(trackId);
-    // Redirect to the stream URL — RNTP handles both HLS (.m3u8) and progressive streams natively
-    return c.redirect(url, 302);
+    return await streamTrack({ source: "soundcloud", trackId, range: c.req.header("range") });
   } catch (err: unknown) {
+    if (err instanceof StreamProxyError) return c.json({ error: err.message }, err.status);
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });

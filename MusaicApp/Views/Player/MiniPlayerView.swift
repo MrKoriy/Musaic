@@ -35,13 +35,17 @@ struct MiniPlayerView: View {
                         }
 
                         HStack(spacing: 8) {
-                            controlButton(systemName: audio.isPlaying ? "pause.fill" : "play.fill", prominent: true) {
+                             controlButton(
+                                 systemName: audio.isPlaying ? "pause.fill" : "play.fill",
+                                 prominent: true,
+                                 accessibilityLabel: audio.isPlaying ? String(localized: "Pause") : String(localized: "Play")
+                             ) {
                                 #if os(iOS)
                                 UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
                                 #endif
                                 player.togglePlayPause()
                             }
-                            controlButton(systemName: "forward.fill") {
+                             controlButton(systemName: "forward.fill", accessibilityLabel: String(localized: "Next Track")) {
                                 #if os(iOS)
                                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                 #endif
@@ -115,20 +119,17 @@ struct MiniPlayerView: View {
         }
     }
 
-    private func controlButton(systemName: String, prominent: Bool = false, action: @escaping () -> Void) -> some View {
-        Group {
-            if embeddedInAccessory {
-                Button(action: action) {
-                    miniControlGlyph(systemName: systemName, prominent: prominent)
-                }
-                .buttonStyle(.plain)
-            } else {
-                Button(action: action) {
-                    miniControlGlyph(systemName: systemName, prominent: prominent)
-                }
-                .buttonStyle(.plain)
-            }
+    private func controlButton(
+        systemName: String,
+        prominent: Bool = false,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            miniControlGlyph(systemName: systemName, prominent: prominent)
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(accessibilityLabel))
     }
 
     private func miniControlGlyph(systemName: String, prominent: Bool) -> some View {

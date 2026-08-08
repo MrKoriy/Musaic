@@ -8,9 +8,18 @@
  * proxy, so the phone never talks to Yandex directly.
  */
 
-import type { Track, TrackMeta, MusicProvider } from "../types.js";
+import {
+  resolveProviderSearchOptions,
+  type ProviderArtistOptions,
+  type ProviderMetadataOptions,
+  type ProviderSearchOptions,
+  type ProviderStreamOptions,
+  type Track,
+  type TrackMeta,
+  type MusicProvider,
+} from "../types.js";
 import { getYandexConfig, setYandexConfig, clearYandexConfig, upsertTrack, getDb } from "../db/index.js";
-import { sidecarGet, ensureSidecar, SIDECAR_BASE_URL, type SidecarTrack } from "./sidecar.js";
+import { sidecarFetch, sidecarGet, type SidecarTrack } from "./sidecar.js";
 import { hydrateFallbackArtwork } from "./artwork.js";
 
 function rawId(trackId: string): string {
@@ -118,7 +127,14 @@ export class YandexMusicProvider implements MusicProvider {
     return { login: res.login, plus: res.plus };
   }
 
-  async search(query: string, count = 30, offset = 0): Promise<Track[]> {
+  search(query: string, options?: ProviderSearchOptions): Promise<Track[]>;
+  search(query: string, count?: number, offset?: number): Promise<Track[]>;
+  async search(
+    query: string,
+    optionsOrCount: ProviderSearchOptions | number = {},
+    legacyOffset = 0,
+  ): Promise<Track[]> {
+    const { limit: count, offset } = resolveProviderSearchOptions(optionsOrCount, legacyOffset, 30);
     const page = count > 0 ? Math.floor(offset / count) : 0;
     const { tracks } = await sidecarGet<{ tracks: SidecarTrack[] }>(
       `/yandex/search?q=${encodeURIComponent(query)}&count=${count}&page=${page}`,
@@ -129,9 +145,10 @@ export class YandexMusicProvider implements MusicProvider {
     return mapped;
   }
 
-  async getArtistTracks(artistName: string): Promise<Track[]> {
+  async getArtistTracks(artistName: string, options?: ProviderArtistOptions): Promise<Track[]> {
+    const count = Math.max(1, Math.min(Math.floor(options?.limit ?? 100), 100));
     const { tracks } = await sidecarGet<{ tracks: SidecarTrack[] }>(
-      `/yandex/artist?name=${encodeURIComponent(artistName)}&count=100`,
+      `/yandex/artist?name=${encodeURIComponent(artistName)}&count=${count}`,
       this.headers()
     );
     const mapped = await hydrateFallbackArtwork(tracks.map(sidecarTrackToTrack));
@@ -172,7 +189,7 @@ export class YandexMusicProvider implements MusicProvider {
     return { tracks, likedAt, total: Number(response.total ?? tracks.length) };
   }
 
-  async getTrackMetadata(trackId: string): Promise<TrackMeta> {
+  async getTrackMetadata(trackId: string, _options?: ProviderMetadataOptions): Promise<TrackMeta> {
     const s = await sidecarGet<SidecarTrack>(`/yandex/track/${encodeURIComponent(rawId(trackId))}`, this.headers());
     const [track] = await hydrateFallbackArtwork([sidecarTrackToTrack(s)]);
     return {
@@ -188,18 +205,25 @@ export class YandexMusicProvider implements MusicProvider {
   }
 
   /**
-   * Returns a self-contained localhost URL the server's stream proxy fetches.
-   * The token rides as a query param (localhost only) so the existing
-   * fetch(upstreamUrl) path in routes/local.ts works unchanged. The sidecar
-   * downloads the bytes (via the RU proxy if configured) and returns them.
+   * Legacy callers should use stream() instead. Never put the account token in
+   * a URL: URLs are routinely logged and cached by clients and proxies.
    */
-  async getStreamUrl(trackId: string, opts?: { bitrate?: number; codec?: "mp3" | "aac" }): Promise<string> {
-    await ensureSidecar();
-    const token = this.requireToken();
+  async getStreamUrl(trackId: string, opts?: ProviderStreamOptions): Promise<string> {
     const bitrate = opts?.bitrate ?? 320;
     const codec = opts?.codec ?? "mp3";
-    return `${SIDECAR_BASE_URL}/yandex/download/${encodeURIComponent(rawId(trackId))}` +
-      `?token=${encodeURIComponent(token)}&codec=${codec}&bitrate=${bitrate}`;
+    return `/api/yandex/proxy/${encodeURIComponent(rawId(trackId))}?codec=${codec}&bitrate=${bitrate}`;
+  }
+
+  async stream(trackId: string, opts?: { bitrate?: number; codec?: "mp3" | "aac" }, range?: string): Promise<Response> {
+    const bitrate = opts?.bitrate ?? 320;
+    const codec = opts?.codec ?? "mp3";
+    const headers = this.headers();
+    if (range) headers.Range = range;
+    return sidecarFetch(
+      `/yandex/download/${encodeURIComponent(rawId(trackId))}?codec=${codec}&bitrate=${bitrate}`,
+      headers,
+      120_000,
+    );
   }
 }
 

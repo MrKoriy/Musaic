@@ -121,6 +121,30 @@ struct ScrubBar: View {
             }
             .animation(.spring(response: 0.3, dampingFraction: 0.85), value: isDragging)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(String(localized: "Playback position")))
+        .accessibilityValue(Text("\(fmtTime(displayTime)) of \(fmtTime(max(0, duration)))"))
+        .accessibilityHint(Text(String(localized: "Swipe up or down to adjust")))
+        .accessibilityAdjustableAction { direction in
+            adjustAccessibilityPosition(direction)
+        }
+    }
+
+    private func adjustAccessibilityPosition(_ direction: AccessibilityAdjustmentDirection) {
+        let safeDuration = duration.isFinite ? max(0, duration) : 0
+        guard safeDuration > 0 else { return }
+
+        let step = min(0.05, max(5 / safeDuration, 0.01))
+        var next = displayProgress
+        switch direction {
+        case .increment:
+            next += step
+        case .decrement:
+            next -= step
+        @unknown default:
+            return
+        }
+        onCommit(max(0, min(1, next)))
     }
 
     private func fmtTime(_ seconds: Double) -> String {

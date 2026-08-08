@@ -9,6 +9,7 @@ struct NowPlayingBackdrop: View {
 
     @State private var palette: ArtworkPalette = .fallback
     @State private var loadedKey: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -43,7 +44,7 @@ struct NowPlayingBackdrop: View {
             )
         }
         // Cross-fade the colour change itself, not the orb positions.
-        .animation(.easeInOut(duration: 0.9), value: palette.dominant)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.9), value: palette.dominant)
         .ignoresSafeArea()
         .task(id: track?.id) {
             await loadPalette()
@@ -84,14 +85,15 @@ struct SleepTimerSheet: View {
 
     /// Drives the "remaining" countdown display. Re-reads PlayerStore every second.
     @State private var now = Date()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let presets: [(label: String, minutes: Int?)] = [
-        ("5 minutes", 5),
-        ("10 minutes", 10),
-        ("15 minutes", 15),
-        ("30 minutes", 30),
-        ("45 minutes", 45),
-        ("1 hour", 60)
+        (String(localized: "5 minutes"), 5),
+        (String(localized: "10 minutes"), 10),
+        (String(localized: "15 minutes"), 15),
+        (String(localized: "30 minutes"), 30),
+        (String(localized: "45 minutes"), 45),
+        (String(localized: "1 hour"), 60)
     ]
 
     var body: some View {
@@ -123,7 +125,7 @@ struct SleepTimerSheet: View {
                             } label: {
                                 HStack(spacing: 8) {
                                     Image(systemName: "xmark.circle.fill")
-                                    Text("Turn off timer")
+                                 Text(String(localized: "Turn off timer"))
                                         .font(.system(size: 14, weight: .bold))
                                 }
                                 .foregroundStyle(Color.textPrimary)
@@ -145,7 +147,7 @@ struct SleepTimerSheet: View {
             .navigationBarTitleDisplayModeCompat()
             .toolbar {
                 ToolbarItem(placement: .topBarTrailingCompat) {
-                    Button("Done") { dismiss() }
+                     Button(String(localized: "Done")) { dismiss() }
                         .foregroundStyle(Color.textPrimary)
                 }
             }
@@ -174,14 +176,20 @@ struct SleepTimerSheet: View {
                             endRadius: 60
                         )
                     )
-                Image(systemName: "moon.zzz.fill")
-                    .font(.system(size: 36, weight: .semibold))
-                    .foregroundStyle(Color.textPrimary)
-                    .symbolEffect(.pulse, options: .repeating, value: player.sleepTimerActive)
+                if reduceMotion {
+                    Image(systemName: "moon.zzz.fill")
+                        .font(.system(size: 36, weight: .semibold))
+                        .foregroundStyle(Color.textPrimary)
+                } else {
+                    Image(systemName: "moon.zzz.fill")
+                        .font(.system(size: 36, weight: .semibold))
+                        .foregroundStyle(Color.textPrimary)
+                        .symbolEffect(.pulse, options: .repeating, value: player.sleepTimerActive)
+                }
             }
             .frame(width: 100, height: 100)
 
-            Text("Sleep Timer")
+             Text(String(localized: "Sleep Timer"))
                 .font(.system(size: 24, weight: .bold, design: .rounded))
                 .foregroundStyle(Color.textPrimary)
 
@@ -197,15 +205,15 @@ struct SleepTimerSheet: View {
     private var statusLine: String {
         _ = now // triggers re-render each second
         if player.sleepTimerEndOfTrack {
-            return "Pause at the end of this track."
+             return String(localized: "Pause at the end of this track.")
         }
         let remaining = player.sleepTimerRemaining
         if remaining > 0 {
             let mins = Int(remaining) / 60
             let secs = Int(remaining) % 60
-            return "Playback will fade out in \(mins):\(String(format: "%02d", secs))."
+             return String(localized: "Playback will fade out in \(mins):\(String(format: "%02d", secs)).")
         }
-        return "Pick how long you'd like Musaic to keep playing."
+         return String(localized: "Pick how long you'd like Musaic to keep playing.")
     }
 
     private func presetRow(label: String, minutes: Int?) -> some View {
@@ -250,7 +258,7 @@ struct SleepTimerSheet: View {
                 Image(systemName: "music.note")
                     .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(Color.textPrimary)
-                Text("End of this track")
+                 Text(String(localized: "End of this track"))
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(Color.textPrimary)
                 Spacer()

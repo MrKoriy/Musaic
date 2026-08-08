@@ -86,7 +86,7 @@ describe("recommendation enhancements", () => {
     db.prepare("INSERT INTO users (id, username, password_hash) VALUES ('reco-user', 'reco', 'x')").run();
     const accepted = seedTrack({ id: "rank-accepted", title: "Accepted", artist: "A", source: "local" });
     const rejected = seedTrack({ id: "rank-rejected", title: "Rejected", artist: "B", source: "local" });
-    for (let index = 0; index < 40; index++) {
+    for (let index = 0; index < 50; index++) {
       const isAccepted = index % 2 === 0;
       const requestId = `rank-request-${index}`;
       const trackId = isAccepted ? accepted : rejected;
@@ -104,7 +104,33 @@ describe("recommendation enhancements", () => {
     }
     const model = trainRanker();
     expect(model).not.toBeNull();
-    expect(model?.impressionsUsed).toBe(40);
+    expect(model?.impressionsUsed).toBe(50);
+    expect(model?.auc).toBeGreaterThan(0.6);
+    expect(model?.evaluationMethod).toBe("stratified-5-fold-cv");
     expect((db.prepare("SELECT COUNT(*) AS n FROM reco_models").get() as { n: number }).n).toBe(1);
+  });
+
+  it("does not persist a ranker below the minimum sample count", () => {
+    const db = getDb();
+    const accepted = seedTrack({ id: "rank-small-accepted", title: "Accepted", artist: "A", source: "local" });
+    const rejected = seedTrack({ id: "rank-small-rejected", title: "Rejected", artist: "B", source: "local" });
+    for (let index = 0; index < 49; index++) {
+      const isAccepted = index % 2 === 0;
+      const requestId = `rank-small-request-${index}`;
+      const trackId = isAccepted ? accepted : rejected;
+      const features = Array.from({ length: 15 }, (_, feature) => feature === 0 ? (isAccepted ? 2 : -2) : (isAccepted ? 1 : 0));
+      db.prepare(`
+        INSERT INTO recommendation_impressions
+          (request_id, surface, track_id, position, features_json)
+        VALUES ($requestId, 'my_vibe', $trackId, 0, $features)
+      `).run({ $requestId: requestId, $trackId: trackId, $features: JSON.stringify(features) });
+      db.prepare(`
+        INSERT INTO listening_history (track_id, action, played_ratio, request_id)
+        VALUES ($trackId, $action, $ratio, $requestId)
+      `).run({ $trackId: trackId, $action: isAccepted ? "complete" : "skip", $ratio: isAccepted ? 1 : 0.02, $requestId: requestId });
+    }
+
+    expect(trainRanker()).toBeNull();
+    expect((db.prepare("SELECT COUNT(*) AS n FROM reco_models").get() as { n: number }).n).toBe(0);
   });
 });

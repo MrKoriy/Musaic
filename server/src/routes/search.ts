@@ -11,6 +11,7 @@ import { hydrateCachedCoverUrls } from "../providers/artwork.js";
 import { normaliseArtistSources, searchArtists } from "../providers/artists.js";
 import type { Track } from "../types.js";
 import type { ExternalPlaylist } from "../providers/soundcloud.js";
+import { songFamilyKey } from "../utils/track-identity.js";
 
 const router = new Hono();
 
@@ -114,7 +115,7 @@ router.get("/", async (c) => {
   ];
   const seen = new Map<string, Track>();
   for (const t of allTracks) {
-    const key = `${(t.artist ?? "").toLowerCase().trim()}|${(t.title ?? "").toLowerCase().trim()}`;
+    const key = songFamilyKey(t);
     if (!seen.has(key)) seen.set(key, t);
   }
   // Enrich from DB cache for any tracks missing artwork (fast, no external calls)
@@ -128,8 +129,6 @@ router.get("/", async (c) => {
     album: t.album,
     duration: t.duration,
     cover_url: t.coverUrl,
-    stream_url: t.streamUrl,
-    local_path: t.localPath,
     waveform_url: t.waveformUrl,
   });
 
@@ -169,7 +168,7 @@ router.get("/playlist/:playlistId/tracks", async (c) => {
       const normalise = (t: Track) => ({
         id: t.id, source: t.source, title: t.title, artist: t.artist,
         album: t.album, duration: t.duration, cover_url: t.coverUrl,
-        stream_url: t.streamUrl, waveform_url: t.waveformUrl,
+        waveform_url: t.waveformUrl,
       });
       return c.json({ tracks: tracks.map(normalise) });
     }
@@ -185,7 +184,6 @@ router.get("/playlist/:playlistId/tracks", async (c) => {
       const normalise = (t: Track) => ({
         id: t.id, source: t.source, title: t.title, artist: t.artist,
         album: t.album, duration: t.duration, cover_url: t.coverUrl,
-        stream_url: t.streamUrl,
       });
       return c.json({ tracks: tracks.map(normalise) });
     }

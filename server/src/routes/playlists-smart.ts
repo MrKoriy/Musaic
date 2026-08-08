@@ -15,6 +15,17 @@ import crypto from "crypto";
 
 const router = new Hono();
 
+function requestUserId(c: { get(key: string): unknown }): string | null {
+  return (c.get("userId") as string | undefined) ?? null;
+}
+
+function ownedPlaylist(c: { get(key: string): unknown }, id: string): boolean {
+  const userId = requestUserId(c);
+  if (!userId) return false;
+  const row = getDb().prepare("SELECT user_id FROM playlists WHERE id = $id").get({ $id: id }) as { user_id: string | null } | null;
+  return row?.user_id === userId;
+}
+
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL ?? "minimax/minimax-m2.5:free";
 const OPENROUTER_TIMEOUT_MS = 15_000;
@@ -118,8 +129,9 @@ router.post("/generate", async (c) => {
 
   // Optionally persist as a playlist
   if (body.save && body.name) {
+    const userId = requestUserId(c);
     const id = `smart_${crypto.randomUUID()}`;
-    createPlaylist(id, body.name, `Smart playlist — ${rules.length} rule(s)`);
+    createPlaylist(id, body.name, `Smart playlist — ${rules.length} rule(s)`, userId);
     for (const [index, row] of rows.entries()) {
       const trackId = typeof row.id === "string" ? row.id : null;
       if (!trackId) continue;
@@ -224,8 +236,9 @@ Rules:
 
   const name = `AI: ${body.prompt.trim().slice(0, 50)}`;
   if (body.save) {
+    const userId = requestUserId(c);
     const id = `ai_${crypto.randomUUID()}`;
-    createPlaylist(id, name, body.prompt.trim());
+    createPlaylist(id, name, body.prompt.trim(), userId);
     for (let i = 0; i < matched.length; i++) {
       addTrackToPlaylist(id, matched[i]!.id as string, i);
     }
@@ -288,8 +301,9 @@ router.post("/import", async (c) => {
 
   const name = body.name ?? `Imported — ${new Date().toLocaleDateString()}`;
   if (body.save && matched.length > 0) {
+    const userId = requestUserId(c);
     const id = `imported_${crypto.randomUUID()}`;
-    createPlaylist(id, name, `Imported ${matched.length} of ${lines.length} tracks`);
+    createPlaylist(id, name, `Imported ${matched.length} of ${lines.length} tracks`, userId);
     for (let i = 0; i < matched.length; i++) {
       addTrackToPlaylist(id, matched[i]!.track.id as string, i);
     }
@@ -354,8 +368,10 @@ router.patch("/metadata/:id", async (c) => {
   }
 
   const db = getDb();
-  const existing = db.prepare("SELECT id FROM playlists WHERE id = $id").get({ $id: id });
+  const userId = requestUserId(c);
+  const existing = db.prepare("SELECT id, user_id FROM playlists WHERE id = $id").get({ $id: id }) as { id: string; user_id: string | null } | null;
   if (!existing) return c.json({ error: "Playlist not found" }, 404);
+  if (!userId || existing.user_id !== userId) return c.json({ error: "Forbidden" }, 403);
 
   if (body.name) {
     db.prepare("UPDATE playlists SET name = $n, updated_at = unixepoch() WHERE id = $id")

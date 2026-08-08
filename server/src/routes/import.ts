@@ -320,9 +320,9 @@ router.post("/save", async (c) => {
   const db = getDb();
 
   // Verify tracks exist
-  const existing = trackIds.filter((id) => {
+  const existing = Array.from(new Set(trackIds.filter((id) => {
     return db.prepare("SELECT 1 FROM tracks WHERE id = $id").get({ $id: id });
-  });
+  })));
 
   if (existing.length === 0) {
     return c.json({ error: "No valid tracks found" }, 400);

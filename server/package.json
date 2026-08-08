@@ -7,22 +7,23 @@
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "build": "bun build src/index.ts --target=bun --outfile=dist/server.js",
+    "lint": "eslint --max-warnings 0 \"src/**/*.ts\" \"scripts/**/*.ts\"",
     "typecheck": "./node_modules/.bin/tsc --noEmit --pretty false",
     "train-ranker": "bun scripts/train-ranker.ts",
     "test": "bun test src/__tests__",
+    "test:coverage": "bun test src/__tests__ --coverage --coverage-reporter=text",
     "test:watch": "bun test --watch src/__tests__"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.11",
-    "@types/better-sqlite3": "^7.6.13",
-    "@types/node-fetch": "2",
-    "better-sqlite3": "^12.8.0",
     "hono": "^4.12.8",
-    "music-metadata": "^11.12.3",
-    "node-fetch": "2"
+    "music-metadata": "^11.12.3"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "typescript": "^5"
+    "eslint": "^9.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5",
+    "typescript-eslint": "^8.0.0"
   }
 }

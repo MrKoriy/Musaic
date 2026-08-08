@@ -30,6 +30,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { execFile } from "child_process";
+import { runFfmpeg } from "../utils/ffmpeg-queue.js";
 
 interface WhisperWord {
   text: string;
@@ -99,18 +100,11 @@ export async function alignLyricsWithWhisper(
 
 // ── 1. ffmpeg conversion ─────────────────────────────────────────────────────
 
-function convertToWav(input: string, output: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "ffmpeg",
-      ["-i", input, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-y", output],
-      { timeout: 45_000 },
-      (err, _o, stderr) => {
-        if (err) reject(new Error(`ffmpeg failed: ${(stderr || err.message).slice(0, 200)}`));
-        else resolve();
-      }
-    );
-  });
+async function convertToWav(input: string, output: string): Promise<void> {
+  await runFfmpeg(
+    ["-i", input, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-y", output],
+    { timeoutMs: 45_000 },
+  );
 }
 
 // ── 2. whisper.cpp word-level transcription ──────────────────────────────────

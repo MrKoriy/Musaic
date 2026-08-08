@@ -11,6 +11,12 @@ if (!model) {
   console.log(JSON.stringify({
     version: model.version,
     auc: model.auc,
+    baselineAuc: model.baselineAuc,
+    precisionAt5: model.precisionAt5,
+    precisionAt10: model.precisionAt10,
+    baselinePrecisionAt5: model.baselinePrecisionAt5,
+    baselinePrecisionAt10: model.baselinePrecisionAt10,
+    evaluationMethod: model.evaluationMethod,
     impressionsUsed: model.impressionsUsed,
   }));
 }

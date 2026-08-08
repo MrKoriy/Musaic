@@ -15,6 +15,11 @@
 
 import type { Database } from "bun:sqlite";
 
+const configuredSessionDays = Number(process.env.SESSION_TTL_DAYS ?? 90);
+const SESSION_TTL_SECONDS = Math.floor(
+  (Number.isFinite(configuredSessionDays) && configuredSessionDays > 0 ? configuredSessionDays : 90) * 24 * 60 * 60,
+);
+
 interface Migration {
   version: number;
   description: string;
@@ -324,6 +329,92 @@ const MIGRATIONS: Migration[] = [
     description: "Persist recommendation feature vectors for ranker training",
     up: `
       ALTER TABLE recommendation_impressions ADD COLUMN features_json TEXT;
+    `,
+  },
+  {
+    version: 15,
+    description: "Add expiring sessions and remove legacy user tokens",
+    up: `
+      ALTER TABLE sessions ADD COLUMN expires_at INTEGER;
+      INSERT OR IGNORE INTO sessions (token, user_id, device_name, expires_at)
+        SELECT token, id, 'legacy', unixepoch() + ${SESSION_TTL_SECONDS}
+        FROM users
+        WHERE token IS NOT NULL;
+      UPDATE sessions
+      SET expires_at = COALESCE(expires_at, created_at + ${SESSION_TTL_SECONDS});
+      CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+      UPDATE users SET token = NULL WHERE token IS NOT NULL;
+    `,
+  },
+  {
+    version: 16,
+    description: "Move provider credentials into provider_config",
+    up: `
+      CREATE TABLE IF NOT EXISTS vk_config (
+        id INTEGER PRIMARY KEY CHECK(id IN (1, 2)),
+        username TEXT,
+        password_enc TEXT,
+        token TEXT,
+        token_expiry INTEGER,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      CREATE TABLE IF NOT EXISTS provider_config (
+        provider TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        PRIMARY KEY(provider, key)
+      );
+      INSERT OR IGNORE INTO provider_config (provider, key, value)
+        SELECT 'vk', 'username', username FROM vk_config
+        WHERE id = 1 AND username IS NOT NULL;
+      INSERT OR IGNORE INTO provider_config (provider, key, value)
+        SELECT 'vk', 'token', token FROM vk_config
+        WHERE id = 1 AND token IS NOT NULL;
+      INSERT OR IGNORE INTO provider_config (provider, key, value)
+        SELECT 'vk', 'token_expiry', CAST(token_expiry AS TEXT) FROM vk_config
+        WHERE id = 1 AND token_expiry IS NOT NULL;
+      INSERT OR IGNORE INTO provider_config (provider, key, value)
+        SELECT 'soundcloud', 'client_id', token FROM vk_config
+        WHERE id = 2 AND token IS NOT NULL;
+      INSERT OR IGNORE INTO provider_config (provider, key, value)
+        SELECT 'soundcloud', 'client_id_fetched_at',
+          CAST(token_expiry - (4 * 60 * 60 * 1000) AS TEXT)
+        FROM vk_config
+        WHERE id = 2 AND token IS NOT NULL AND token_expiry IS NOT NULL;
+      DROP TABLE IF EXISTS vk_config;
+    `,
+  },
+  {
+    version: 17,
+    description: "Add job leases and cover file references",
+    up: `
+      ALTER TABLE job_state ADD COLUMN started_at INTEGER;
+      ALTER TABLE job_state ADD COLUMN heartbeat INTEGER;
+      ALTER TABLE job_state ADD COLUMN instance_id TEXT;
+      ALTER TABLE tracks ADD COLUMN cover_path TEXT;
+      ALTER TABLE playlist_cover_data ADD COLUMN file_path TEXT;
+    `,
+  },
+  {
+    version: 18,
+    description: "Persist ranker baseline and precision metrics",
+    up: `
+      ALTER TABLE reco_models ADD COLUMN baseline_auc REAL NOT NULL DEFAULT 0;
+      ALTER TABLE reco_models ADD COLUMN precision_at_5 REAL NOT NULL DEFAULT 0;
+      ALTER TABLE reco_models ADD COLUMN precision_at_10 REAL NOT NULL DEFAULT 0;
+      ALTER TABLE reco_models ADD COLUMN baseline_precision_at_5 REAL NOT NULL DEFAULT 0;
+      ALTER TABLE reco_models ADD COLUMN baseline_precision_at_10 REAL NOT NULL DEFAULT 0;
+      ALTER TABLE reco_models ADD COLUMN evaluation_method TEXT NOT NULL DEFAULT 'legacy';
+    `,
+  },
+  {
+    version: 19,
+    description: "Track archived listening-history events",
+    up: `
+      CREATE TABLE IF NOT EXISTS retention_archive_events (
+        event_id INTEGER PRIMARY KEY,
+        archived_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
     `,
   },
 ];

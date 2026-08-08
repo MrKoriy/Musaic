@@ -23,7 +23,8 @@ enum DownloadState: Equatable {
 }
 
 @Observable
-final class DownloadManager: @unchecked Sendable {
+@MainActor
+final class DownloadManager {
     static let shared = DownloadManager()
 
     private let api = APIService.shared
@@ -108,31 +109,36 @@ final class DownloadManager: @unchecked Sendable {
 
     private func performDownload(_ track: Track) async {
         let trackId = track.id
-        // Use the same encoding as APIService.encodedTrackID — strips / from urlPathAllowed
-        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
-        let encodedId = trackId.addingPercentEncoding(withAllowedCharacters: allowed) ?? trackId
-        let urlString = "\(api.serverURL)/api/downloads/compressed/\(encodedId)?bitrate=\(bitrate)"
+        // Download only through the server proxy. Provider stream URLs can
+        // contain short-lived credentials and must never be persisted client-side.
+        let urlString = api.compressedDownloadURL(forTrackID: trackId)
         guard let url = URL(string: urlString) else {
             await MainActor.run { activeDownloads[trackId] = .failed("Invalid URL") }
             return
         }
 
-        let fileName = sanitizedFileName(trackId: trackId, artist: track.artist, title: track.title)
-
         do {
             let dir = downloadsDirectory()
             try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-            let destPath = localFilePath(for: fileName)
 
-            // Use a delegate-based session for progress tracking
+            // Use a dedicated session so long-running downloads get a longer timeout.
             let config = URLSessionConfiguration.default
             config.timeoutIntervalForResource = 300
             let session = URLSession(configuration: config)
+            var request = api.authenticatedRequest(for: url)
+            request.setValue("audio/*", forHTTPHeaderField: "Accept")
 
-            let (tempURL, response) = try await session.download(from: url)
+            let (tempURL, response) = try await session.download(for: request)
 
             guard let http = response as? HTTPURLResponse else {
                 await MainActor.run { activeDownloads[trackId] = .failed("No response") }
+                return
+            }
+
+            if http.statusCode == 401 {
+                await MainActor.run {
+                    activeDownloads[trackId] = .failed("Authentication required (401). Please sign in again.")
+                }
                 return
             }
 
@@ -141,6 +147,15 @@ final class DownloadManager: @unchecked Sendable {
                 await MainActor.run { activeDownloads[trackId] = .failed("HTTP \(http.statusCode): \(body)") }
                 return
             }
+
+            let fileExtension = audioFileExtension(for: http.mimeType)
+            let fileName = sanitizedFileName(
+                trackId: trackId,
+                artist: track.artist,
+                title: track.title,
+                fileExtension: fileExtension
+            )
+            let destPath = localFilePath(for: fileName)
 
             let fileSize = (try? FileManager.default.attributesOfItem(atPath: tempURL.path)[.size] as? Int64) ?? 0
 
@@ -188,7 +203,7 @@ final class DownloadManager: @unchecked Sendable {
         (downloadsDirectory() as NSString).appendingPathComponent(fileName)
     }
 
-    private func sanitizedFileName(trackId: String, artist: String, title: String) -> String {
+    private func sanitizedFileName(trackId: String, artist: String, title: String, fileExtension: String) -> String {
         let safe = "\(artist) - \(title)"
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
@@ -199,7 +214,20 @@ final class DownloadManager: @unchecked Sendable {
         var hasher = Hasher()
         hasher.combine(trackId)
         let hash = UInt(bitPattern: hasher.finalize()) & 0xFFFF
-        return "\(safe)_\(String(format: "%04x", hash)).m4a"
+        return "\(safe)_\(String(format: "%04x", hash)).\(fileExtension)"
+    }
+
+    private func audioFileExtension(for mimeType: String?) -> String {
+        switch mimeType?.lowercased() {
+        case "audio/mp4", "audio/x-m4a": return "m4a"
+        case "audio/mpeg", "audio/mp3": return "mp3"
+        case "audio/flac", "audio/x-flac": return "flac"
+        case "audio/wav", "audio/x-wav": return "wav"
+        case "audio/ogg": return "ogg"
+        case "audio/opus": return "opus"
+        case "audio/aiff", "audio/x-aiff": return "aiff"
+        default: return "audio"
+        }
     }
 
     private func loadDownloads() {

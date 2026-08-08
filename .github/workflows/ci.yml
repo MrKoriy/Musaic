@@ -5,11 +5,17 @@ on:
     branches: [main]
     paths:
       - "server/**"
+      - "MusaicApp/**"
+      - "deploy-server.sh"
+      - "deploy/**"
       - ".github/workflows/ci.yml"
   pull_request:
     branches: [main]
     paths:
       - "server/**"
+      - "MusaicApp/**"
+      - "deploy-server.sh"
+      - "deploy/**"
       - ".github/workflows/ci.yml"
 
 jobs:
@@ -37,4 +43,69 @@ jobs:
         run: bun run typecheck
 
       - name: Run tests
-        run: bun test src/__tests__ --reporter=verbose
+        run: bun run test:coverage
+
+  lint:
+    name: Server Lint
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: server
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run lint
+
+  app-build-macos:
+    name: macOS App Build
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: MusaicApp
+        run: xcodegen generate
+
+      - name: Build macOS app
+        working-directory: MusaicApp
+        run: >-
+          xcodebuild -project Musaic.xcodeproj -scheme MusaicMac -configuration Debug
+          -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
+
+  app-build-ios:
+    name: iOS App Build
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: MusaicApp
+        run: xcodegen generate
+
+      - name: Build iOS app
+        working-directory: MusaicApp
+        run: >-
+          xcodebuild -project Musaic.xcodeproj -scheme Musaic -configuration Debug
+          -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build

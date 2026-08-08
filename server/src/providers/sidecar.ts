@@ -21,6 +21,20 @@ const SIDECAR_DIR = process.env.SIDECAR_DIR
 const PORT = Number(process.env.MUSAIC_SIDECAR_PORT ?? 8770);
 export const SIDECAR_BASE_URL = (process.env.SIDECAR_URL ?? `http://127.0.0.1:${PORT}`).replace(/\/$/, "");
 const AUTOSTART = process.env.SIDECAR_AUTOSTART !== "0";
+const SECRET_PATH = process.env.MUSAIC_SECRET_PATH
+  ?? path.join(path.dirname(process.env.DB_PATH ?? path.join(process.cwd(), "musaic.db")), ".musaic.secret");
+
+function sharedSecret(): string {
+  const envSecret = process.env.MUSAIC_SECRET_KEY?.trim();
+  if (envSecret) return envSecret;
+  try {
+    const fileSecret = fs.readFileSync(SECRET_PATH, "utf8").trim();
+    if (fileSecret) return fileSecret;
+  } catch {
+    // The database initializer creates the file-backed secret when needed.
+  }
+  throw new Error("MUSAIC_SECRET_KEY or .musaic.secret is required for sidecar access");
+}
 
 let _spawnPromise: Promise<void> | null = null;
 let _spawned = false;
@@ -31,7 +45,10 @@ function sleep(ms: number): Promise<void> {
 
 async function isHealthy(timeoutMs = 1500): Promise<boolean> {
   try {
-    const res = await fetch(`${SIDECAR_BASE_URL}/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(`${SIDECAR_BASE_URL}/health`, {
+      headers: { "X-Musaic-Secret": sharedSecret() },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
     return res.ok;
   } catch {
     return false;
@@ -53,9 +70,23 @@ async function spawnSidecar(): Promise<void> {
   }
   const logPath = path.join(SIDECAR_DIR, "sidecar.log");
   const out = fs.openSync(logPath, "a");
+  const allowedEnv: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    MUSAIC_SIDECAR_PORT: String(PORT),
+    MUSAIC_SIDECAR_HOST: process.env.MUSAIC_SIDECAR_HOST ?? "127.0.0.1",
+    MUSAIC_SIDECAR_SECRET: sharedSecret(),
+    MUSAIC_SECRET_PATH: SECRET_PATH,
+    YANDEX_PROXY: process.env.YANDEX_PROXY,
+    YT_POT_BASE_URL: process.env.YT_POT_BASE_URL,
+    YT_AUTH_FILE: process.env.YT_AUTH_FILE,
+    YT_COOKIES_FILE: process.env.YT_COOKIES_FILE,
+    MUSIC_DIR: process.env.MUSIC_DIR,
+    AUDIO_EMBEDDING_ROOT: process.env.AUDIO_EMBEDDING_ROOT,
+  };
   const child = spawn(py, ["app.py"], {
     cwd: SIDECAR_DIR,
-    env: { ...process.env, MUSAIC_SIDECAR_PORT: String(PORT) },
+    env: allowedEnv,
     stdio: ["ignore", out, out],
     detached: false,
   });
@@ -98,8 +129,9 @@ export async function sidecarGet<T>(
   timeoutMs = 25_000
 ): Promise<T> {
   await ensureSidecar();
+  const requestHeaders = { ...headers, "X-Musaic-Secret": sharedSecret() };
   const res = await fetch(`${SIDECAR_BASE_URL}${pathAndQuery}`, {
-    headers,
+    headers: requestHeaders,
     signal: AbortSignal.timeout(timeoutMs),
   });
   let json: unknown;
@@ -113,6 +145,18 @@ export async function sidecarGet<T>(
     throw new Error(msg);
   }
   return json as T;
+}
+
+export async function sidecarFetch(
+  pathAndQuery: string,
+  headers: Record<string, string> = {},
+  timeoutMs = 120_000,
+): Promise<Response> {
+  await ensureSidecar();
+  return fetch(`${SIDECAR_BASE_URL}${pathAndQuery}`, {
+    headers: { ...headers, "X-Musaic-Secret": sharedSecret() },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
 }
 
 export interface SidecarTrack {

@@ -143,12 +143,16 @@ struct AuthView: View {
                 return
             }
 
-            settings.setAuth(
+            LibraryStore.shared.prepareForUser(user.id)
+            guard settings.setAuth(
                 token: token,
                 userId: user.id,
                 username: user.username,
                 displayName: user.displayName
-            )
+            ) else {
+                error = String(localized: "Unable to securely store the session. Try again.")
+                return
+            }
         } catch {
             self.error = "Connection failed: \(error.localizedDescription)"
         }

@@ -32,6 +32,7 @@ Run:  python3 app.py            (reads MUSAIC_SIDECAR_PORT, default 8770)
 """
 
 import json
+import hmac
 import math
 import os
 import re
@@ -54,6 +55,16 @@ YANDEX_PROXY = os.environ.get("YANDEX_PROXY", "").strip()
 YT_POT_BASE_URL = os.environ.get("YT_POT_BASE_URL", "").strip()
 # Optional ytmusicapi browser-auth headers file for higher reliability / regional results.
 YT_AUTH_FILE = os.environ.get("YT_AUTH_FILE", "").strip()
+MUSAIC_SIDECAR_SECRET = os.environ.get("MUSAIC_SIDECAR_SECRET", "").strip()
+
+if not MUSAIC_SIDECAR_SECRET:
+    secret_path = os.environ.get("MUSAIC_SECRET_PATH", "").strip()
+    if secret_path:
+        try:
+            with open(secret_path, "r", encoding="utf-8") as secret_file:
+                MUSAIC_SIDECAR_SECRET = secret_file.read().strip()
+        except OSError:
+            pass
 
 # ── Lazy, cached library handles ────────────────────────────────────────────
 _yandex_clients = {}   # token -> yandex_music.Client
@@ -718,11 +729,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _bytes(self, status, data, content_type):
+    def _bytes(self, status, data, content_type, content_range=None):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Accept-Ranges", "none")
+        self.send_header("Accept-Ranges", "bytes")
+        if content_range:
+            self.send_header("Content-Range", content_range)
         self.end_headers()
         self.wfile.write(data)
 
@@ -738,6 +751,12 @@ class Handler(BaseHTTPRequestHandler):
         token = self.headers.get("X-Yandex-Token", "").strip()
 
         try:
+            supplied_secret = self.headers.get("X-Musaic-Secret", "").strip()
+            if path == "/status":
+                return self._json(200, {"ok": True})
+            if not MUSAIC_SIDECAR_SECRET or not hmac.compare_digest(supplied_secret, MUSAIC_SIDECAR_SECRET):
+                return self._json(403, {"error": "Forbidden"})
+
             if path == "/health":
                 return self._json(200, {"ok": True, "deps": _import_status(),
                                         "yandexProxy": bool(YANDEX_PROXY),
@@ -767,12 +786,27 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, yandex_likes(token))
             if path.startswith("/yandex/download/"):
                 tid = unquote(path[len("/yandex/download/"):])
-                # Token may arrive via header OR query param so callers can hand
-                # AVPlayer/Bun a self-contained localhost URL (localhost only).
-                dl_token = token or q1("token", "")
+                dl_token = token
                 codec = q1("codec", "mp3")
                 bitrate = int(q1("bitrate", "320"))
                 data, ctype = yandex_download_bytes(dl_token, tid, codec, bitrate)
+                range_header = self.headers.get("Range", "").strip()
+                if range_header:
+                    match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header)
+                    if not match or (not match.group(1) and not match.group(2)):
+                        return self._json(416, {"error": "Invalid range"})
+                    total = len(data)
+                    if match.group(1):
+                        start = int(match.group(1))
+                        end = int(match.group(2)) if match.group(2) else total - 1
+                    else:
+                        suffix = int(match.group(2))
+                        start = max(0, total - suffix)
+                        end = total - 1
+                    if start < 0 or start >= total or end < start:
+                        return self._json(416, {"error": "Range not satisfiable"})
+                    end = min(end, total - 1)
+                    return self._bytes(206, data[start:end + 1], ctype, f"bytes {start}-{end}/{total}")
                 return self._bytes(200, data, ctype)
 
             # ── YouTube ──
@@ -795,15 +829,15 @@ class Handler(BaseHTTPRequestHandler):
         except LookupError as e:
             return self._json(404, {"error": str(e)})
         except Exception as e:
-            traceback.print_exc()
-            return self._json(500, {"error": str(e), "type": type(e).__name__})
+            safe = re.sub(r"token=[^&\s]+", "token=[redacted]", str(e), flags=re.IGNORECASE)
+            return self._json(500, {"error": safe, "type": type(e).__name__})
 
 
 def main():
     deps = _import_status()
     print(f"[sidecar] starting on http://{HOST}:{PORT}  deps={deps}", flush=True)
     if YANDEX_PROXY:
-        print(f"[sidecar] Yandex proxy: {YANDEX_PROXY}", flush=True)
+        print("[sidecar] Yandex proxy configured", flush=True)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     try:
         server.serve_forever()

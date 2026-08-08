@@ -1,8 +1,10 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import crypto from "crypto";
 import { getYandexProvider } from "../providers/yandex.js";
 import { clearUserRecommendationCaches } from "../providers/taste-engine.js";
 import { getDb } from "../db/index.js";
+import { runWithRequestUser } from "../utils/request-scope.js";
 
 const router = new Hono();
 
@@ -15,13 +17,16 @@ const YANDEX_OAUTH_CLIENT_SECRET = process.env.YANDEX_OAUTH_CLIENT_SECRET?.trim(
 // of the app's lifecycle) because the app must leave to a browser to authorize,
 // which would suspend any client-side polling. The app just reads /device/status.
 type DeviceAuthState = "idle" | "pending" | "done" | "expired" | "error";
-let deviceAuth: { state: DeviceAuthState; login: string | null; plus: boolean; error: string | null } = {
-  state: "idle", login: null, plus: false, error: null,
-};
-let devicePollTimer: ReturnType<typeof setInterval> | null = null;
+type DeviceAuthRecord = { state: DeviceAuthState; login: string | null; plus: boolean; error: string | null };
+const deviceAuthByUser = new Map<string, DeviceAuthRecord>();
+const devicePollTimers = new Map<string, ReturnType<typeof setInterval>>();
 
-function stopDevicePoll(): void {
-  if (devicePollTimer) { clearInterval(devicePollTimer); devicePollTimer = null; }
+function stopDevicePoll(userKey: string): void {
+  const timer = devicePollTimers.get(userKey);
+  if (timer) {
+    clearInterval(timer);
+    devicePollTimers.delete(userKey);
+  }
 }
 
 async function exchangeDeviceToken(deviceCode: string): Promise<{ access_token?: string; error?: string }> {
@@ -39,39 +44,42 @@ async function exchangeDeviceToken(deviceCode: string): Promise<{ access_token?:
   return (await res.json()) as { access_token?: string; error?: string };
 }
 
-function beginDevicePolling(deviceCode: string, expiresAt: number, intervalMs: number): void {
-  stopDevicePoll();
-  devicePollTimer = setInterval(async () => {
+function beginDevicePolling(deviceCode: string, expiresAt: number, intervalMs: number, userId: string): void {
+  stopDevicePoll(userId);
+  const timer = setInterval(async () => {
     if (Date.now() > expiresAt) {
-      deviceAuth = { state: "expired", login: null, plus: false, error: null };
-      stopDevicePoll();
+      deviceAuthByUser.set(userId, { state: "expired", login: null, plus: false, error: null });
+      stopDevicePoll(userId);
       return;
     }
     try {
       const tok = await exchangeDeviceToken(deviceCode);
       if (tok.error === "authorization_pending" || tok.error === "slow_down") return; // keep waiting
       if (!tok.access_token) {
-        deviceAuth = { state: "error", login: null, plus: false, error: tok.error ?? "Authorization failed" };
-        stopDevicePoll();
+        deviceAuthByUser.set(userId, { state: "error", login: null, plus: false, error: tok.error ?? "Authorization failed" });
+        stopDevicePoll(userId);
         return;
       }
       // Got a token — store it, then validate against Yandex via the sidecar.
-      stopDevicePoll();
-      const provider = getYandexProvider();
-      provider.setToken(tok.access_token);
-      try {
-        const { login, plus } = await provider.validate();
-        deviceAuth = { state: "done", login, plus, error: null };
-        console.log(`[yandex] connected via device flow${login ? ` as ${login}` : ""} (plus=${plus})`);
-      } catch (err) {
-        provider.logout();
-        deviceAuth = { state: "error", login: null, plus: false, error: err instanceof Error ? err.message : String(err) };
-      }
+      stopDevicePoll(userId);
+      await runWithRequestUser(userId, async () => {
+        const provider = getYandexProvider();
+        provider.setToken(tok.access_token!);
+        try {
+          const { login, plus } = await provider.validate();
+          deviceAuthByUser.set(userId, { state: "done", login, plus, error: null });
+          console.log(`[yandex] connected via device flow${login ? ` as ${login}` : ""} (plus=${plus})`);
+        } catch (err) {
+          provider.logout();
+          deviceAuthByUser.set(userId, { state: "error", login: null, plus: false, error: err instanceof Error ? err.message : String(err) });
+        }
+      });
     } catch {
       // Transient network error talking to Yandex — keep polling.
     }
   }, intervalMs);
-  devicePollTimer.unref?.();
+  devicePollTimers.set(userId, timer);
+  timer.unref?.();
 }
 
 /**
@@ -106,6 +114,11 @@ router.post("/token", async (c) => {
  * Returns a short user_code the user enters at verification_url (ya.ru/device).
  */
 router.post("/device/start", async (c) => {
+  if (!YANDEX_OAUTH_CLIENT_ID || !YANDEX_OAUTH_CLIENT_SECRET) {
+    return c.json({ error: "Yandex device flow is not configured on this server" }, 503);
+  }
+  const userId = ((c as any).get("userId") as string | undefined) ?? "";
+  if (!userId) return c.json({ error: "Not authenticated" }, 401);
   try {
     const body = new URLSearchParams({
       client_id: YANDEX_OAUTH_CLIENT_ID,
@@ -123,13 +136,13 @@ router.post("/device/start", async (c) => {
       interval?: number; expires_in?: number; error?: string;
     };
     if (!res.ok || !data.device_code) {
-      deviceAuth = { state: "error", login: null, plus: false, error: data.error ?? "device code error" };
+      deviceAuthByUser.set(userId, { state: "error", login: null, plus: false, error: data.error ?? "device code error" });
       return c.json({ error: data.error ?? `Yandex device code error (HTTP ${res.status})` }, 502);
     }
-    deviceAuth = { state: "pending", login: null, plus: false, error: null };
+    deviceAuthByUser.set(userId, { state: "pending", login: null, plus: false, error: null });
     const expiresAt = Date.now() + (data.expires_in ?? 300) * 1000;
     const intervalMs = Math.max(3, data.interval ?? 5) * 1000;
-    beginDevicePolling(data.device_code, expiresAt, intervalMs);
+    beginDevicePolling(data.device_code, expiresAt, intervalMs, userId);
     return c.json({
       userCode: data.user_code,
       verificationUrl: data.verification_url ?? "https://ya.ru/device",
@@ -137,7 +150,7 @@ router.post("/device/start", async (c) => {
       expiresIn: data.expires_in ?? 300,
     });
   } catch (err: unknown) {
-    deviceAuth = { state: "error", login: null, plus: false, error: err instanceof Error ? err.message : String(err) };
+    deviceAuthByUser.set(userId, { state: "error", login: null, plus: false, error: err instanceof Error ? err.message : String(err) });
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });
@@ -148,6 +161,8 @@ router.post("/device/start", async (c) => {
  * user authorizes in a browser.
  */
 router.get("/device/status", (c) => {
+  const userId = ((c as any).get("userId") as string | undefined) ?? "";
+  const deviceAuth = deviceAuthByUser.get(userId) ?? { state: "idle", login: null, plus: false, error: null };
   return c.json({
     authenticated: getYandexProvider().isAuthenticated(),
     state: deviceAuth.state,
@@ -250,16 +265,42 @@ router.get("/search", async (c) => {
   }
 });
 
-/** GET /api/yandex/stream/:trackId */
-router.get("/stream/:trackId", async (c) => {
-  const trackId = c.req.param("trackId");
+async function proxyYandexTrack(c: Context): Promise<Response> {
+  const trackId = c.req.param("trackId") ?? "";
+  if (!trackId) return c.json({ error: "trackId required" }, 400);
   try {
-    const url = await getYandexProvider().getStreamUrl(trackId);
-    return c.json({ url });
+    const range = c.req.header("range");
+    const response = await getYandexProvider().stream(
+      trackId,
+      {
+        codec: c.req.query("codec") === "aac" ? "aac" : "mp3",
+        bitrate: Math.min(Math.max(Number(c.req.query("bitrate") ?? 320), 32), 320),
+      },
+      range,
+    );
+    if (!response.ok || !response.body) {
+      const status = response.status >= 400 && response.status <= 599
+        ? response.status as 400 | 401 | 403 | 404 | 429 | 500 | 502 | 503 | 504
+        : 502;
+      return c.json({ error: `Yandex stream failed: ${response.status}` }, status);
+    }
+    const headers = new Headers();
+    for (const name of ["content-type", "content-length", "content-range", "accept-ranges", "cache-control"]) {
+      const value = response.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+    headers.set("Cache-Control", "private, no-store");
+    return new Response(response.body, { status: response.status, headers });
   } catch (err: unknown) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
-});
+}
+
+/** GET /api/yandex/proxy/:trackId */
+router.get("/proxy/:trackId", proxyYandexTrack);
+
+/** Kept as an internal-compatible alias; it never returns a raw URL. */
+router.get("/stream/:trackId", proxyYandexTrack);
 
 /** GET /api/yandex/track/:trackId */
 router.get("/track/:trackId", async (c) => {

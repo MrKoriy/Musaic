@@ -25,11 +25,61 @@ export interface TrackMeta {
   bitrate?: number;
 }
 
+export interface ProviderSearchOptions {
+  limit?: number;
+  offset?: number;
+}
+
+export interface ProviderStreamOptions {
+  bitrate?: number;
+  codec?: "mp3" | "aac";
+}
+
+export interface ProviderMetadataOptions {
+  quality?: "standard" | "high";
+}
+
+export interface ProviderArtistOptions {
+  limit?: number;
+}
+
 export interface MusicProvider {
-  search(query: string): Promise<Track[]>;
-  getStreamUrl(trackId: string): Promise<string>;
-  getTrackMetadata(trackId: string): Promise<TrackMeta>;
-  getArtistTracks(artistId: string): Promise<Track[]>;
+  search(query: string, options?: ProviderSearchOptions): Promise<Track[]>;
+  getStreamUrl(trackId: string, options?: ProviderStreamOptions): Promise<string>;
+  getTrackMetadata(trackId: string, options?: ProviderMetadataOptions): Promise<TrackMeta>;
+  getArtistTracks(artistId: string, options?: ProviderArtistOptions): Promise<Track[]>;
+}
+
+/**
+ * Normalize the options accepted by provider implementations. The numeric
+ * form is retained for existing server callers and older integrations.
+ */
+export function resolveProviderSearchOptions(
+  optionsOrLimit: ProviderSearchOptions | number | undefined,
+  legacyOffset = 0,
+  defaultLimit = 50,
+): Required<ProviderSearchOptions> {
+  if (typeof optionsOrLimit === "number") {
+    return {
+      limit: optionsOrLimit,
+      offset: legacyOffset,
+    };
+  }
+  return {
+    limit: optionsOrLimit?.limit ?? defaultLimit,
+    offset: optionsOrLimit?.offset ?? 0,
+  };
+}
+
+export function resolveProviderArtistOptions(
+  optionsOrLimit: ProviderArtistOptions | number | undefined,
+  defaultLimit = 150,
+): Required<ProviderArtistOptions> {
+  return {
+    limit: typeof optionsOrLimit === "number"
+      ? optionsOrLimit
+      : optionsOrLimit?.limit ?? defaultLimit,
+  };
 }
 
 export interface VKConfig {

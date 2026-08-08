@@ -11,6 +11,17 @@ function normalizedText(value: string | null | undefined): string {
     .trim();
 }
 
+/** Text normalization shared by provider-side artist/title comparisons. */
+export function normalizeComparableText(value: string | null | undefined): string {
+  return (value ?? "")
+    .normalize("NFKD")
+    .replace(/\p{M}+/gu, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 const FEATURE_MARKER = /\b(?:feat(?:uring)?|ft|with)\.?\b/iu;
 const VARIANT_MARKER_COMPACT = /\b(?:(?:tiktok\s+)?remix(?:ed)?|rework|bootleg|mashup|flip|nightcore|(?:tiktok\s+)?sped\s*up|(?:tiktok\s+)?speed\s*up|(?:(?:ultra|super|mega|very|extreme)\s+)?slowed(?:\s*(?:down|\+?\s*reverb))?|reverb(?:ed)?|bass\s*boosted|pitched?|8d(?:\s*audio)?|karaoke|instrumental|acoustic|live|radio\s*edit|extended|club\s*mix|original\s*mix|vip\s*mix|dj\s*mix|remaster(?:ed)?|demo|mono|stereo|cover|alternate|alternative|version|mix|edit)\b/iu;
 const STRONG_VARIANT_MARKER = /\b(?:(?:tiktok\s+)?remix(?:ed)?|rework|bootleg|mashup|flip|nightcore|(?:tiktok\s+)?sped\s*up|(?:tiktok\s+)?speed\s*up|(?:(?:ultra|super|mega|very|extreme)\s+)?slowed(?:\s*(?:down|\+?\s*reverb))?|reverb(?:ed)?|bass\s*boosted|pitched?|8d(?:\s*audio)?|radio\s*edit|extended\s*mix|club\s*mix|original\s*mix|vip\s*mix|dj\s*mix|remaster(?:ed)?|alternate\s*version|alternative\s*version)\b/iu;

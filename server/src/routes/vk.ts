@@ -3,6 +3,7 @@ import { getVKProvider } from "../providers/vk.js";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
+import { streamTrack, StreamProxyError } from "../utils/stream-proxy.js";
 
 const router = new Hono();
 
@@ -237,12 +238,7 @@ router.get("/search", async (c) => {
  */
 router.get("/stream/:trackId", async (c) => {
   const trackId = c.req.param("trackId");
-  try {
-    const url = await getVKProvider().getStreamUrl(trackId);
-    return c.json({ url });
-  } catch (err: unknown) {
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
-  }
+  return c.json({ url: `/api/stream/vk/${encodeURIComponent(trackId)}` });
 });
 
 /**
@@ -294,8 +290,8 @@ router.post("/download", async (c) => {
   const body = await c.req.json<{ trackId?: string }>();
   if (!body.trackId) return c.json({ error: "trackId required" }, 400);
   try {
-    const localPath = await getVKProvider().downloadTrack(body.trackId, DOWNLOADS_DIR);
-    return c.json({ ok: true, localPath });
+    await getVKProvider().downloadTrack(body.trackId, DOWNLOADS_DIR);
+    return c.json({ ok: true, trackId: body.trackId });
   } catch (err: unknown) {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
@@ -321,9 +317,9 @@ router.get("/recommendations", async (c) => {
 router.get("/proxy/:trackId", async (c) => {
   const trackId = c.req.param("trackId");
   try {
-    const url = await getVKProvider().getStreamUrl(trackId);
-    return c.redirect(url, 302);
+    return await streamTrack({ source: "vk", trackId, range: c.req.header("range") });
   } catch (err: unknown) {
+    if (err instanceof StreamProxyError) return c.json({ error: err.message }, err.status);
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });

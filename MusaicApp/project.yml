@@ -21,7 +21,10 @@ targets:
       - Stores
       - Views
       - MusaicApp.swift
-      - Resources/Assets.xcassets
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
+      - path: Resources/Localizable.xcstrings
+        buildPhase: resources
     info:
       path: Resources/Info.plist
       properties:
@@ -30,15 +33,31 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        "UISupportedInterfaceOrientations~ipad":
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         UIStatusBarStyle: UIStatusBarStyleLightContent
         LSApplicationCategoryType: public.app-category.music
         NSAppTransportSecurity:
+          # Plain-HTTP server on a public IP (no domain for a trusted cert yet).
+          # Re-enable strict ATS once TLS is configured on the server.
           NSAllowsArbitraryLoads: true
+          NSAllowsArbitraryLoadsForMedia: true
+          NSAllowsLocalNetworking: true
+          NSExceptionDomains:
+            45-146-167-109.nip.io:
+              NSExceptionAllowsInsecureHTTPLoads: true
+              NSIncludesSubdomains: true
         UIBackgroundModes:
           - audio
     settings:
       base:
-        SWIFT_STRICT_CONCURRENCY: minimal
+        SWIFT_STRICT_CONCURRENCY: complete
         DEVELOPMENT_TEAM: 72BG7PXY8J
         CODE_SIGN_IDENTITY: "Apple Development"
         CODE_SIGN_STYLE: Automatic
@@ -53,17 +72,27 @@ targets:
       - Stores
       - Views
       - MusaicApp.swift
-    resources:
       - path: Resources/Assets.xcassets
+        buildPhase: resources
+      - path: Resources/Localizable.xcstrings
+        buildPhase: resources
     info:
       path: Resources/Info-macOS.plist
       properties:
         LSApplicationCategoryType: public.app-category.music
         NSAppTransportSecurity:
+          # Plain-HTTP server on a public IP (no domain for a trusted cert yet).
+          # Re-enable strict ATS once TLS is configured on the server.
           NSAllowsArbitraryLoads: true
+          NSAllowsArbitraryLoadsForMedia: true
+          NSAllowsLocalNetworking: true
+          NSExceptionDomains:
+            45-146-167-109.nip.io:
+              NSExceptionAllowsInsecureHTTPLoads: true
+              NSIncludesSubdomains: true
     settings:
       base:
-        SWIFT_STRICT_CONCURRENCY: minimal
+        SWIFT_STRICT_CONCURRENCY: complete
         DEVELOPMENT_TEAM: 72BG7PXY8J
         CODE_SIGN_IDENTITY: "Apple Development"
         CODE_SIGN_STYLE: Automatic

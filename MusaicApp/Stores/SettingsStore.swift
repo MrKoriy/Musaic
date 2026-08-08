@@ -3,13 +3,42 @@ import SwiftUI
 
 // MARK: - Settings Store
 
+enum AppTheme: String, CaseIterable, Identifiable {
+    case auto
+    case dark
+    case light
+
+    var id: String { rawValue }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .auto: return nil
+        case .dark: return .dark
+        case .light: return .light
+        }
+    }
+
+    var localizedName: String {
+        switch self {
+        case .auto: return String(localized: "Auto")
+        case .dark: return String(localized: "Dark")
+        case .light: return String(localized: "Light")
+        }
+    }
+}
+
 @Observable
-final class SettingsStore: @unchecked Sendable {
+@MainActor
+final class SettingsStore {
     static let shared = SettingsStore()
 
     var onboardingComplete: Bool {
         get { UserDefaults.standard.bool(forKey: "onboarding_complete") }
         set { UserDefaults.standard.set(newValue, forKey: "onboarding_complete") }
+    }
+    var theme: AppTheme {
+        get { AppTheme(rawValue: UserDefaults.standard.string(forKey: "theme") ?? "") ?? .auto }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "theme") }
     }
     var sourceVK: Bool {
         get { UserDefaults.standard.bool(forKey: "source_vk") }
@@ -80,8 +109,18 @@ final class SettingsStore: @unchecked Sendable {
 
     // Auth
     var authToken: String? {
-        get { UserDefaults.standard.string(forKey: "auth_token") }
-        set { UserDefaults.standard.set(newValue, forKey: "auth_token") }
+        get { Self.loadAuthToken() }
+        set {
+            if let newValue {
+                // Keep the legacy value if Keychain is unavailable so a later
+                // launch can retry the migration instead of losing the token.
+                guard KeychainService.shared.setString(newValue, forKey: Self.authTokenKey) else { return }
+                UserDefaults.standard.removeObject(forKey: Self.authTokenKey)
+            } else {
+                _ = KeychainService.shared.delete(forKey: Self.authTokenKey)
+                UserDefaults.standard.removeObject(forKey: Self.authTokenKey)
+            }
+        }
     }
     var authUserId: String? {
         get { UserDefaults.standard.string(forKey: "auth_user_id") }
@@ -98,7 +137,25 @@ final class SettingsStore: @unchecked Sendable {
     var isLoggedIn: Bool
 
     private init() {
-        isLoggedIn = UserDefaults.standard.string(forKey: "auth_token") != nil
+        isLoggedIn = Self.loadAuthToken() != nil
+    }
+
+    private static let authTokenKey = "auth_token"
+
+    private static func loadAuthToken() -> String? {
+        if let token = KeychainService.shared.string(forKey: authTokenKey) {
+            return token
+        }
+
+        // One-time migration for installations that stored the session in defaults.
+        guard let legacyToken = UserDefaults.standard.string(forKey: authTokenKey) else { return nil }
+        if KeychainService.shared.setString(legacyToken, forKey: authTokenKey) {
+            UserDefaults.standard.removeObject(forKey: authTokenKey)
+            return legacyToken
+        }
+        // Do not enter the authenticated UI when secure storage is unavailable.
+        // Keep the legacy value only so a later launch can retry migration.
+        return nil
     }
 
     func setVkAuth(authenticated: Bool, username: String?) {
@@ -121,15 +178,22 @@ final class SettingsStore: @unchecked Sendable {
         yandexUsername = ""
     }
 
-    func setAuth(token: String, userId: String, username: String, displayName: String) {
-        authToken = token
+    @discardableResult
+    func setAuth(token: String, userId: String, username: String, displayName: String) -> Bool {
+        guard KeychainService.shared.setString(token, forKey: Self.authTokenKey) else {
+            isLoggedIn = false
+            return false
+        }
+        UserDefaults.standard.removeObject(forKey: Self.authTokenKey)
         authUserId = userId
         authUsername = username
         authDisplayName = displayName
         isLoggedIn = true
+        return true
     }
 
     func logout() {
+        LibraryStore.shared.clearLocalLikes()
         authToken = nil
         authUserId = nil
         authUsername = ""

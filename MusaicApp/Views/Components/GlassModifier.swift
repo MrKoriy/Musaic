@@ -303,25 +303,10 @@ struct AppBackdrop: View {
     }
 }
 
-struct LiquidSectionHeader: View {
-    let title: String
-    let subtitle: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.system(size: 24, weight: .bold, design: .rounded))
-                .foregroundStyle(Color.textPrimary)
-            Text(subtitle)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Color.textSecondary)
-        }
-    }
-}
-
 struct LiquidIconButton: View {
     let systemName: String
     var size: CGFloat = 44
+    var accessibilityLabel: String? = nil
     var action: () -> Void
 
     var body: some View {
@@ -334,6 +319,7 @@ struct LiquidIconButton: View {
             }
             .buttonBorderShape(.circle)
             .buttonStyle(.glass(.regular.interactive()))
+            .accessibilityLabel(Text(accessibilityLabel ?? systemName))
         } else {
             Button(action: action) {
                 Image(systemName: systemName)
@@ -343,6 +329,7 @@ struct LiquidIconButton: View {
                     .glassCard(cornerRadius: size / 2, intensity: 0.12)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(Text(accessibilityLabel ?? systemName))
         }
     }
 }

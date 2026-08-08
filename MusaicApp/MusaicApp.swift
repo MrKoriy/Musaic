@@ -8,13 +8,13 @@ struct MusaicApp: App {
         WindowGroup {
             if settings.isLoggedIn {
                 ContentView()
-                    .preferredColorScheme(.dark)
+                    .preferredColorScheme(settings.theme.colorScheme)
                     #if os(macOS)
                     .frame(minWidth: 900, minHeight: 600)
                     #endif
             } else {
                 AuthView()
-                    .preferredColorScheme(.dark)
+                    .preferredColorScheme(settings.theme.colorScheme)
             }
         }
         #if os(macOS)
@@ -33,45 +33,45 @@ private struct MusaicCommands: Commands {
     private let library = LibraryStore.shared
 
     var body: some Commands {
-        CommandMenu("Playback") {
-            Button("Play / Pause") { player.togglePlayPause() }
+        CommandMenu(String(localized: "Playback")) {
+            Button(String(localized: "Play / Pause")) { player.togglePlayPause() }
                 .keyboardShortcut(.space, modifiers: [.command])
 
-            Button("Next Track") { player.skipNext() }
+            Button(String(localized: "Next Track")) { player.skipNext() }
                 .keyboardShortcut(.rightArrow, modifiers: [.command])
 
-            Button("Previous Track") { player.skipPrevious() }
+            Button(String(localized: "Previous Track")) { player.skipPrevious() }
                 .keyboardShortcut(.leftArrow, modifiers: [.command])
 
             Divider()
 
-            Button("Toggle Like") {
+            Button(String(localized: "Toggle Like")) {
                 if let track = player.currentTrack { library.toggleLike(track: track) }
             }
             .keyboardShortcut("l", modifiers: [.command])
             .disabled(player.currentTrack == nil)
 
-            Button("Toggle Shuffle") { player.toggleShuffle() }
+            Button(String(localized: "Toggle Shuffle")) { player.toggleShuffle() }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
 
-            Button("Toggle Repeat") { player.toggleRepeat() }
+            Button(String(localized: "Toggle Repeat")) { player.toggleRepeat() }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
 
             Divider()
 
-            Menu("Sleep Timer") {
+            Menu(String(localized: "Sleep Timer")) {
                 if player.sleepTimerActive {
-                    Button("Turn Off Timer") { player.clearSleepTimer() }
+                    Button(String(localized: "Turn Off Timer")) { player.clearSleepTimer() }
                     Divider()
                 }
-                Button("5 minutes") { player.setSleepTimer(minutes: 5) }
-                Button("10 minutes") { player.setSleepTimer(minutes: 10) }
-                Button("15 minutes") { player.setSleepTimer(minutes: 15) }
-                Button("30 minutes") { player.setSleepTimer(minutes: 30) }
-                Button("45 minutes") { player.setSleepTimer(minutes: 45) }
-                Button("1 hour") { player.setSleepTimer(minutes: 60) }
+                Button(String(localized: "5 minutes")) { player.setSleepTimer(minutes: 5) }
+                Button(String(localized: "10 minutes")) { player.setSleepTimer(minutes: 10) }
+                Button(String(localized: "15 minutes")) { player.setSleepTimer(minutes: 15) }
+                Button(String(localized: "30 minutes")) { player.setSleepTimer(minutes: 30) }
+                Button(String(localized: "45 minutes")) { player.setSleepTimer(minutes: 45) }
+                Button(String(localized: "1 hour")) { player.setSleepTimer(minutes: 60) }
                 Divider()
-                Button("End of current track") { player.setSleepTimerEndOfTrack() }
+                Button(String(localized: "End of current track")) { player.setSleepTimerEndOfTrack() }
                     .disabled(player.currentTrack == nil)
             }
         }
@@ -87,10 +87,10 @@ private enum RootTab: Int, CaseIterable {
 
     var title: String {
         switch self {
-        case .home: return "Home"
-        case .search: return "Search"
-        case .library: return "Library"
-        case .profile: return "Settings"
+        case .home: return String(localized: "Home")
+        case .search: return String(localized: "Search")
+        case .library: return String(localized: "Library")
+        case .profile: return String(localized: "Settings")
         }
     }
 
@@ -125,6 +125,8 @@ struct ContentView: View {
     @State private var showNowPlaying = false
 
     private let player = PlayerStore.shared
+    private let settings = SettingsStore.shared
+    private let libraryStore = LibraryStore.shared
 
     #if os(macOS)
     @State private var showLyricsMac = false
@@ -138,11 +140,15 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            #if os(macOS)
-            macOSLayout
-            #else
-            iOSLayout
-            #endif
+            if shouldShowSourceOnboarding {
+                sourceOnboarding
+            } else {
+                #if os(macOS)
+                macOSLayout
+                #else
+                iOSLayout
+                #endif
+            }
         }
         .task {
             await LibraryStore.shared.ensureSynced(force: true)
@@ -155,10 +161,44 @@ struct ContentView: View {
         }
     }
 
+    private var shouldShowSourceOnboarding: Bool {
+        let libraryIsEmpty = libraryStore.likedTrackIds.isEmpty && libraryStore.likedTracks.isEmpty
+        return libraryIsEmpty && !settings.onboardingComplete
+    }
+
+    private var sourceOnboarding: some View {
+        OnboardingView(
+            sourceYandex: Binding(
+                get: { settings.sourceYandex },
+                set: { settings.sourceYandex = $0 }
+            ),
+            sourceYoutube: Binding(
+                get: { settings.sourceYoutube },
+                set: { settings.sourceYoutube = $0 }
+            ),
+            sourceSoundcloud: Binding(
+                get: { settings.sourceSoundcloud },
+                set: { settings.sourceSoundcloud = $0 }
+            ),
+            sourceVK: Binding(
+                get: { settings.sourceVK },
+                set: { settings.sourceVK = $0 }
+            ),
+            yandexConnected: settings.yandexAuthenticated,
+            vkConnected: settings.vkAuthenticated,
+            onComplete: {
+                settings.onboardingComplete = true
+            },
+            onOpenSettings: {
+                settings.onboardingComplete = true
+                selectedTab = .profile
+            }
+        )
+    }
+
     #if os(macOS)
     private let library = LibraryStore.shared
     private let audio = AudioPlayer.shared
-    private let settings = SettingsStore.shared
 
     private var macOSLayout: some View {
         ZStack {
@@ -254,16 +294,16 @@ struct ContentView: View {
 
             // Session metrics
             VStack(alignment: .leading, spacing: 10) {
-                Text("Session")
+                Text(String(localized: "Session"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Color.textMuted)
                     .padding(.leading, 4)
 
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                    macMetricTile(value: "\(player.queue.count)", label: "Queue", icon: "music.note.list")
-                    macMetricTile(value: "\(library.likedTrackIds.count)", label: "Liked", icon: "heart.fill")
-                    macMetricTile(value: "3", label: "Sources", icon: "dot.radiowaves.left.and.right")
-                    macMetricTile(value: "\(DownloadManager.shared.downloadCount)", label: "Offline", icon: "arrow.down.circle.fill")
+                    macMetricTile(value: "\(player.queue.count)", label: String(localized: "Queue"), icon: "music.note.list")
+                    macMetricTile(value: "\(library.likedTrackIds.count)", label: String(localized: "Liked"), icon: "heart.fill")
+                    macMetricTile(value: "3", label: String(localized: "Sources"), icon: "dot.radiowaves.left.and.right")
+                    macMetricTile(value: "\(DownloadManager.shared.downloadCount)", label: String(localized: "Offline"), icon: "arrow.down.circle.fill")
                 }
             }
             .padding(.horizontal, 14)
@@ -275,7 +315,7 @@ struct ContentView: View {
                     HStack(spacing: 8) {
                         Image(systemName: "arrow.up.right.circle.fill")
                             .font(.system(size: 14, weight: .semibold))
-                        Text("Open full player")
+                        Text(String(localized: "Open full player"))
                             .font(.system(size: 13, weight: .semibold))
                         Spacer()
                     }
@@ -300,7 +340,7 @@ struct ContentView: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color.textPrimary)
 
-                Text("Local • VK • SoundCloud")
+                Text(String(localized: "Local • VK • SoundCloud"))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color.textSecondary)
 
@@ -380,7 +420,8 @@ struct ContentView: View {
                                         .symbolEffect(.bounce.up.byLayer, value: liked)
                                 }
                                 .buttonStyle(PressableScale(scale: 0.90))
-                                .help(liked ? "Unlike" : "Like")
+                                 .help(liked ? String(localized: "Unlike") : String(localized: "Like"))
+                                 .accessibilityLabel(Text(liked ? String(localized: "Unlike") : String(localized: "Like")))
                             }
                             .padding(.top, 4)
                         }
@@ -410,7 +451,8 @@ struct ContentView: View {
                                 )
                             }
                             .buttonStyle(PressableScale(scale: 0.88))
-                            .help("Toggle shuffle")
+                             .help(String(localized: "Toggle Shuffle"))
+                             .accessibilityLabel(Text(String(localized: "Toggle Shuffle")))
 
                             Button {
                                 skipPrevCounterMac &+= 1
@@ -420,7 +462,8 @@ struct ContentView: View {
                             }
                             .buttonStyle(PressableScale(scale: 0.88))
                             .keyboardShortcut(.leftArrow, modifiers: [])
-                            .help("Previous track (←)")
+                             .help(String(localized: "Previous Track"))
+                             .accessibilityLabel(Text(String(localized: "Previous Track")))
 
                             Button { player.togglePlayPause() } label: {
                                 Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
@@ -432,7 +475,8 @@ struct ContentView: View {
                             }
                             .buttonStyle(PressableScale(scale: 0.92))
                             .keyboardShortcut(.space, modifiers: [])
-                            .help(audio.isPlaying ? "Pause (Space)" : "Play (Space)")
+                             .help(audio.isPlaying ? String(localized: "Pause") : String(localized: "Play"))
+                             .accessibilityLabel(Text(audio.isPlaying ? String(localized: "Pause") : String(localized: "Play")))
 
                             Button {
                                 skipNextCounterMac &+= 1
@@ -442,7 +486,8 @@ struct ContentView: View {
                             }
                             .buttonStyle(PressableScale(scale: 0.88))
                             .keyboardShortcut(.rightArrow, modifiers: [])
-                            .help("Next track (→)")
+                             .help(String(localized: "Next Track"))
+                             .accessibilityLabel(Text(String(localized: "Next Track")))
 
                             Button {
                                 repeatTapCounterMac &+= 1
@@ -456,7 +501,8 @@ struct ContentView: View {
                                 )
                             }
                             .buttonStyle(PressableScale(scale: 0.88))
-                            .help("Toggle repeat")
+                             .help(String(localized: "Toggle Repeat"))
+                             .accessibilityLabel(Text(String(localized: "Toggle Repeat")))
                         }
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.top, 4)
@@ -464,11 +510,11 @@ struct ContentView: View {
                         // Queue section
                         VStack(alignment: .leading, spacing: 10) {
                             HStack {
-                                Text("Queue")
+                                 Text(String(localized: "Queue"))
                                     .font(.system(size: 16, weight: .bold, design: .rounded))
                                     .foregroundStyle(Color.textPrimary)
                                 Spacer()
-                                Text("\(player.queue.count) up next")
+                                 Text(String(localized: "\(player.queue.count) up next"))
                                     .font(.system(size: 12, weight: .medium))
                                     .foregroundStyle(Color.textSecondary)
                             }
@@ -535,7 +581,7 @@ struct ContentView: View {
 
     private var macNowPlayingHeader: some View {
         HStack(spacing: 8) {
-            Text("Now Playing")
+             Text(String(localized: "Now Playing"))
                 .font(.system(size: 18, weight: .bold, design: .rounded))
                 .foregroundStyle(Color.textPrimary)
             Spacer()
@@ -554,7 +600,8 @@ struct ContentView: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .help("Sleep timer")
+             .help(String(localized: "Sleep timer"))
+             .accessibilityLabel(Text(String(localized: "Sleep timer")))
 
             Button { showLyricsMac = true } label: {
                 Image(systemName: "quote.bubble")
@@ -565,9 +612,10 @@ struct ContentView: View {
             }
             .buttonStyle(PressableScale(scale: 0.90))
             .disabled(player.currentTrack == nil)
-            .help("Show lyrics")
+             .help(String(localized: "Show lyrics"))
+             .accessibilityLabel(Text(String(localized: "Show lyrics")))
 
-            Button("Expand") { showNowPlaying = true }
+             Button(String(localized: "Expand")) { showNowPlaying = true }
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Color.textPrimary)
                 .padding(.horizontal, 12)
@@ -577,7 +625,7 @@ struct ContentView: View {
                         .fill(Color.white.opacity(0.10))
                 )
                 .buttonStyle(.plain)
-                .help("Open full player (⌘E)")
+                 .help(String(localized: "Open full player"))
         }
         .padding(.horizontal, 18)
         .padding(.top, 18)
@@ -587,21 +635,21 @@ struct ContentView: View {
     @ViewBuilder
     private var macSleepMenuContent: some View {
         if player.sleepTimerActive {
-            Button("Turn off timer", systemImage: "xmark.circle.fill") {
+             Button(String(localized: "Turn off timer"), systemImage: "xmark.circle.fill") {
                 player.clearSleepTimer()
             }
             Divider()
         }
-        Section("Pause after") {
-            Button("5 minutes") { player.setSleepTimer(minutes: 5) }
-            Button("10 minutes") { player.setSleepTimer(minutes: 10) }
-            Button("15 minutes") { player.setSleepTimer(minutes: 15) }
-            Button("30 minutes") { player.setSleepTimer(minutes: 30) }
-            Button("45 minutes") { player.setSleepTimer(minutes: 45) }
-            Button("1 hour") { player.setSleepTimer(minutes: 60) }
+         Section(String(localized: "Pause after")) {
+             Button(String(localized: "5 minutes")) { player.setSleepTimer(minutes: 5) }
+             Button(String(localized: "10 minutes")) { player.setSleepTimer(minutes: 10) }
+             Button(String(localized: "15 minutes")) { player.setSleepTimer(minutes: 15) }
+             Button(String(localized: "30 minutes")) { player.setSleepTimer(minutes: 30) }
+             Button(String(localized: "45 minutes")) { player.setSleepTimer(minutes: 45) }
+             Button(String(localized: "1 hour")) { player.setSleepTimer(minutes: 60) }
         }
         Divider()
-        Button("End of current track") { player.setSleepTimerEndOfTrack() }
+         Button(String(localized: "End of current track")) { player.setSleepTimerEndOfTrack() }
             .disabled(player.currentTrack == nil)
     }
 
@@ -671,7 +719,7 @@ struct ContentView: View {
 
                 rootTabs
 
-                if player.currentTrack != nil, !usesSystemBottomAccessory {
+                if player.currentTrack != nil {
                     MiniPlayerView(showNowPlaying: $showNowPlaying)
                         .padding(.horizontal, 16)
                         .padding(.bottom, miniPlayerBottomInset)
@@ -710,30 +758,8 @@ struct ContentView: View {
 
     @ViewBuilder
     private var rootTabs: some View {
-        // CRITICAL: keep the view structure stable across `player.currentTrack`
-        // transitions. If we toggle between `sharedTabs` and
-        // `sharedTabs.tabViewBottomAccessory { ... }` SwiftUI treats them as
-        // different identities and rebuilds the entire TabView — wiping out
-        // every NavigationStack and dropping the user back to the tab root the
-        // moment the first track starts playing.
-        if #available(iOS 26.0, *) {
-            sharedTabs
-                .tabViewBottomAccessory {
-                    if player.currentTrack != nil {
-                        MiniPlayerView(showNowPlaying: $showNowPlaying, embeddedInAccessory: true)
-                    }
-                }
-        } else {
-            sharedTabs
-        }
-    }
-
-    private var usesSystemBottomAccessory: Bool {
-        if #available(iOS 26.0, *) {
-            return true
-        } else {
-            return false
-        }
+        // Keep the TabView identity stable while the mini-player appears.
+        sharedTabs
     }
     #endif
 

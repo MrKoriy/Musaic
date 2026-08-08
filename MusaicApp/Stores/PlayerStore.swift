@@ -3,7 +3,8 @@ import Foundation
 // MARK: - Player Store
 
 @Observable
-final class PlayerStore: @unchecked Sendable {
+@MainActor
+final class PlayerStore {
     static let shared = PlayerStore()
 
     private struct ActiveListeningContext {
@@ -51,6 +52,7 @@ final class PlayerStore: @unchecked Sendable {
     private var queueSurface = "organic"
 
     var isPlaying: Bool { audio.isPlaying }
+    var playbackState: PlaybackState { audio.playbackState }
     var progress: Double { audio.progress }
     var currentTime: TimeInterval { audio.currentTime }
     var duration: TimeInterval { audio.duration }
@@ -81,12 +83,8 @@ final class PlayerStore: @unchecked Sendable {
     }
 
     private init() {
-        audio.onRemoteNext = { [weak self] in
-            DispatchQueue.main.async { self?.skipNext() }
-        }
-        audio.onRemotePrevious = { [weak self] in
-            DispatchQueue.main.async { self?.skipPrevious() }
-        }
+        audio.onRemoteNext = { [weak self] in self?.skipNext() }
+        audio.onRemotePrevious = { [weak self] in self?.skipPrevious() }
         audio.onPlaybackProgress = { [weak self] position in
             self?.recordPlaybackProgress(position)
         }
@@ -494,7 +492,7 @@ final class PlayerStore: @unchecked Sendable {
 
     @discardableResult
     private func rememberStationTrack(_ track: Track, canonicalFamilyId: String? = nil) -> Bool {
-        let canonical = canonicalFamilyId?.isEmpty == false ? canonicalFamilyId! : canonicalKey(for: track)
+        let canonical = canonicalFamilyId.flatMap { $0.isEmpty ? nil : $0 } ?? canonicalKey(for: track)
         guard !stationSeenTrackIDs.contains(track.id), !stationSeenCanonicalKeys.contains(canonical) else { return false }
         stationSeenTrackIDs.insert(track.id)
         stationSeenCanonicalKeys.insert(canonical)

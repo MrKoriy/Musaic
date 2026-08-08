@@ -2,6 +2,8 @@ import { Database } from "bun:sqlite";
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
+import { readCoverFile } from "../utils/cover-storage.js";
+import { currentRequestUserId } from "../utils/request-scope.js";
 
 const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), "musaic.db");
 const CONFIG_SECRET_PATH = process.env.MUSAIC_SECRET_PATH || path.join(path.dirname(DB_PATH), ".musaic.secret");
@@ -79,6 +81,7 @@ export function initSchema(db: Database): void {
       album TEXT,
       duration INTEGER NOT NULL DEFAULT 0,
       cover_url TEXT,
+      cover_path TEXT,
       local_path TEXT,
       waveform_url TEXT,
       mood TEXT,
@@ -96,13 +99,11 @@ export function initSchema(db: Database): void {
       fetched_at INTEGER NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS vk_config (
-      id INTEGER PRIMARY KEY CHECK(id IN (1, 2)),
-      username TEXT,
-      password_enc TEXT,
-      token TEXT,
-      token_expiry INTEGER,
-      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    CREATE TABLE IF NOT EXISTS provider_config (
+      provider TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      PRIMARY KEY(provider, key)
     );
 
     CREATE TABLE IF NOT EXISTS yandex_config (
@@ -140,6 +141,7 @@ export function initSchema(db: Database): void {
       playlist_id TEXT PRIMARY KEY REFERENCES playlists(id) ON DELETE CASCADE,
       data BLOB NOT NULL,
       mime_type TEXT NOT NULL DEFAULT 'image/jpeg',
+      file_path TEXT,
       updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
@@ -193,7 +195,7 @@ export function initSchema(db: Database): void {
 }
 
 const TRACKS_COLUMNS =
-  "id, source, title, artist, album, duration, cover_url, local_path, waveform_url, " +
+  "id, source, title, artist, album, duration, cover_url, cover_path, local_path, waveform_url, " +
   "mood, genre, play_count, last_played_at, metadata, created_at, updated_at";
 
 /**
@@ -228,6 +230,7 @@ export function dropTracksSourceCheck(db: Database): void {
         album TEXT,
         duration INTEGER NOT NULL DEFAULT 0,
         cover_url TEXT,
+        cover_path TEXT,
         local_path TEXT,
         waveform_url TEXT,
         mood TEXT,
@@ -267,6 +270,7 @@ export function upsertTrack(track: {
   album?: string;
   duration: number;
   cover_url?: string;
+  cover_path?: string;
   local_path?: string;
   waveform_url?: string;
   mood?: string;
@@ -275,14 +279,15 @@ export function upsertTrack(track: {
 }): void {
   const db = getDb();
   db.prepare(`
-    INSERT INTO tracks (id, source, title, artist, album, duration, cover_url, local_path, waveform_url, mood, genre, metadata, updated_at)
-    VALUES ($id, $source, $title, $artist, $album, $duration, $cover_url, $local_path, $waveform_url, $mood, $genre, $metadata, unixepoch())
+    INSERT INTO tracks (id, source, title, artist, album, duration, cover_url, cover_path, local_path, waveform_url, mood, genre, metadata, updated_at)
+    VALUES ($id, $source, $title, $artist, $album, $duration, $cover_url, $cover_path, $local_path, $waveform_url, $mood, $genre, $metadata, unixepoch())
     ON CONFLICT(id) DO UPDATE SET
       title = excluded.title,
       artist = excluded.artist,
       album = excluded.album,
       duration = excluded.duration,
       cover_url = excluded.cover_url,
+      cover_path = COALESCE(excluded.cover_path, tracks.cover_path),
       local_path = excluded.local_path,
       waveform_url = excluded.waveform_url,
       mood = COALESCE(excluded.mood, tracks.mood),
@@ -296,6 +301,7 @@ export function upsertTrack(track: {
     $artist: track.artist,
     $album: track.album ?? null,
     $cover_url: track.cover_url ?? null,
+    $cover_path: track.cover_path ?? null,
     $local_path: track.local_path ?? null,
     $waveform_url: track.waveform_url ?? null,
     $mood: track.mood ?? null,
@@ -336,46 +342,114 @@ export function setCachedVkUrl(trackId: string, url: string): void {
   `).run({ $id: trackId, $url: url, $ts: Date.now() });
 }
 
-// VK config (id=1 for VK, id=2 for SoundCloud client_id)
-export function getVkConfig(): { token: string | null; tokenExpiry: number | null; username: string | null } {
+// Provider configuration. The generic accessors are intentionally small so
+// providers depend on a logical provider/key pair rather than a legacy table.
+export function getProviderConfig(provider: string, key: string): string | null {
   const db = getDb();
-  const row = db.prepare("SELECT token, token_expiry, username FROM vk_config WHERE id = 1")
-    .get() as { token: string | null; token_expiry: number | null; username: string | null } | null;
-  if (!row) return { token: null, tokenExpiry: null, username: null };
+  const userId = provider === "vk" || provider === "yandex" ? currentRequestUserId() : null;
+  const scopedProvider = userId ? `${provider}:${userId}` : provider;
+  const row = db.prepare("SELECT value FROM provider_config WHERE provider = $provider AND key = $key")
+    .get({ $provider: scopedProvider, $key: key }) as { value: string } | null;
+  if (row) return row.value;
+  if (!userId) return null;
+  const userCount = (db.prepare("SELECT COUNT(*) AS count FROM users").get() as { count: number }).count;
+  if (userCount > 1) return null;
+  const globalRow = db.prepare("SELECT value FROM provider_config WHERE provider = $provider AND key = $key")
+    .get({ $provider: provider, $key: key }) as { value: string } | null;
+  return globalRow?.value ?? null;
+}
+
+export function setProviderConfig(provider: string, key: string, value: string): void {
+  const scopedProvider = (provider === "vk" || provider === "yandex") && currentRequestUserId()
+    ? `${provider}:${currentRequestUserId()}`
+    : provider;
+  getDb().prepare(`
+    INSERT INTO provider_config (provider, key, value)
+    VALUES ($provider, $key, $value)
+    ON CONFLICT(provider, key) DO UPDATE SET value = excluded.value
+  `).run({ $provider: scopedProvider, $key: key, $value: value });
+}
+
+export function deleteProviderConfig(provider: string, key?: string): void {
+  const scopedProvider = (provider === "vk" || provider === "yandex") && currentRequestUserId()
+    ? `${provider}:${currentRequestUserId()}`
+    : provider;
+  if (key === undefined) {
+    getDb().prepare("DELETE FROM provider_config WHERE provider = $provider").run({ $provider: scopedProvider });
+    return;
+  }
+  getDb().prepare("DELETE FROM provider_config WHERE provider = $provider AND key = $key")
+    .run({ $provider: scopedProvider, $key: key });
+}
+
+/** Compatibility wrapper for existing VK callers. */
+export function getVkConfig(): { token: string | null; tokenExpiry: number | null; username: string | null } {
+  const rawExpiry = getProviderConfig("vk", "token_expiry");
+  const parsedExpiry = rawExpiry == null ? null : Number(rawExpiry);
   return {
-    token: decryptStoredValue(row.token),
-    tokenExpiry: row.token_expiry,
-    username: row.username,
+    token: decryptStoredValue(getProviderConfig("vk", "token")),
+    tokenExpiry: parsedExpiry != null && Number.isFinite(parsedExpiry) ? parsedExpiry : null,
+    username: getProviderConfig("vk", "username"),
   };
 }
 
+/** Compatibility wrapper for existing VK callers. */
 export function setVkConfig(config: { username?: string; token?: string; tokenExpiry?: number }): void {
   const db = getDb();
-  const encryptedToken = config.token ? encryptStoredValue(config.token) : null;
-  db.prepare(`
-    INSERT INTO vk_config (id, username, token, token_expiry, updated_at)
-    VALUES (1, $username, $token, $token_expiry, unixepoch())
-    ON CONFLICT(id) DO UPDATE SET
-      username = COALESCE($username, username),
-      token = COALESCE($token, token),
-      token_expiry = COALESCE($token_expiry, token_expiry),
-      updated_at = unixepoch()
-  `).run({
-    $username: config.username ?? null,
-    $token: encryptedToken,
-    $token_expiry: config.tokenExpiry ?? null,
-  });
+  db.transaction(() => {
+    if (config.username !== undefined) setProviderConfig("vk", "username", config.username);
+    if (config.token) setProviderConfig("vk", "token", encryptStoredValue(config.token));
+    if (config.tokenExpiry !== undefined) setProviderConfig("vk", "token_expiry", String(config.tokenExpiry));
+  })();
 }
 
+/** Compatibility wrapper for existing VK callers. */
 export function clearVkConfig(): void {
+  deleteProviderConfig("vk");
+  if (currentRequestUserId()) {
+    const count = (getDb().prepare("SELECT COUNT(*) AS count FROM users").get() as { count: number }).count;
+    if (count <= 1) getDb().prepare("DELETE FROM provider_config WHERE provider = 'vk'").run();
+  }
+}
+
+export function getSoundCloudConfig(): { clientId: string | null; clientIdFetchedAt: number | null } {
+  const rawFetchedAt = getProviderConfig("soundcloud", "client_id_fetched_at");
+  const fetchedAt = rawFetchedAt == null ? null : Number(rawFetchedAt);
+  return {
+    clientId: getProviderConfig("soundcloud", "client_id"),
+    clientIdFetchedAt: fetchedAt != null && Number.isFinite(fetchedAt) ? fetchedAt : null,
+  };
+}
+
+export function setSoundCloudConfig(config: { clientId: string; fetchedAt?: number }): void {
   const db = getDb();
-  db.prepare("DELETE FROM vk_config WHERE id = 1").run();
+  db.transaction(() => {
+    setProviderConfig("soundcloud", "client_id", config.clientId);
+    if (config.fetchedAt !== undefined) {
+      setProviderConfig("soundcloud", "client_id_fetched_at", String(config.fetchedAt));
+    }
+  })();
+}
+
+export function clearSoundCloudConfig(): void {
+  deleteProviderConfig("soundcloud");
 }
 
 // Yandex Music config (single row, id=1). Token is the account OAuth token,
 // stored encrypted at rest exactly like the VK token.
 export function getYandexConfig(): { token: string | null; username: string | null } {
   const db = getDb();
+  const userId = currentRequestUserId();
+  if (userId) {
+    const scoped = db.prepare("SELECT key, value FROM provider_config WHERE provider = $provider AND key IN ('token', 'username')")
+      .all({ $provider: `yandex:${userId}` }) as Array<{ key: string; value: string }>;
+    if (scoped.length > 0) {
+      const values = new Map(scoped.map((row) => [row.key, row.value]));
+      return { token: decryptStoredValue(values.get("token") ?? null), username: values.get("username") ?? null };
+    }
+    const userCount = (db.prepare("SELECT COUNT(*) AS count FROM users").get() as { count: number }).count;
+    if (userCount > 1) return { token: null, username: null };
+  }
   const row = db.prepare("SELECT token, username FROM yandex_config WHERE id = 1")
     .get() as { token: string | null; username: string | null } | null;
   if (!row) return { token: null, username: null };
@@ -385,6 +459,12 @@ export function getYandexConfig(): { token: string | null; username: string | nu
 export function setYandexConfig(config: { username?: string; token?: string }): void {
   const db = getDb();
   const encryptedToken = config.token ? encryptStoredValue(config.token) : null;
+  const userId = currentRequestUserId();
+  if (userId) {
+    if (config.token) setProviderConfig("yandex", "token", encryptedToken!);
+    if (config.username !== undefined) setProviderConfig("yandex", "username", config.username);
+    return;
+  }
   db.prepare(`
     INSERT INTO yandex_config (id, username, token, updated_at)
     VALUES (1, $username, $token, unixepoch())
@@ -396,6 +476,12 @@ export function setYandexConfig(config: { username?: string; token?: string }): 
 }
 
 export function clearYandexConfig(): void {
+  if (currentRequestUserId()) {
+    deleteProviderConfig("yandex");
+    const count = (getDb().prepare("SELECT COUNT(*) AS count FROM users").get() as { count: number }).count;
+    if (count <= 1) getDb().prepare("DELETE FROM yandex_config WHERE id = 1").run();
+    return;
+  }
   const db = getDb();
   db.prepare("DELETE FROM yandex_config WHERE id = 1").run();
 }
@@ -449,7 +535,7 @@ export function logListening(
       (playedMs != null && durationMs != null && durationMs > 0
         ? playedMs / durationMs
         : action === "complete" ? 1 : null);
-    const playedRatio = computedRatio == null ? null : Math.min(2, computedRatio);
+    const playedRatio = computedRatio == null ? null : Math.min(1, computedRatio);
 
     db.prepare(`
       INSERT INTO listening_history (
@@ -508,12 +594,28 @@ export function setCoverData(trackId: string, data: Buffer, mimeType: string): v
     VALUES ($id, $data, $mime)
     ON CONFLICT(track_id) DO UPDATE SET data = excluded.data, mime_type = excluded.mime_type
   `).run({ $id: trackId, $data: data, $mime: mimeType });
+  db.prepare("UPDATE tracks SET cover_path = NULL, updated_at = unixepoch() WHERE id = $id").run({ $id: trackId });
 }
 
 export function getCoverData(trackId: string): { data: Buffer; mimeType: string } | null {
   const db = getDb();
-  return db.prepare("SELECT data, mime_type FROM cover_data WHERE track_id = $id")
-    .get({ $id: trackId }) as { data: Buffer; mimeType: string } | null;
+  const row = db.prepare(`
+    SELECT cd.data, cd.mime_type, t.cover_path
+    FROM tracks t LEFT JOIN cover_data cd ON cd.track_id = t.id
+    WHERE t.id = $id
+  `).get({ $id: trackId }) as {
+    data: Buffer | null;
+    mime_type: string | null;
+    cover_path: string | null;
+  } | null;
+  const stored = readCoverFile(row?.cover_path);
+  if (stored) return { data: stored.data, mimeType: stored.mimeType };
+  return row?.data && row.mime_type ? { data: row.data, mimeType: row.mime_type } : null;
+}
+
+export function setTrackCoverPath(trackId: string, relativePath: string): void {
+  getDb().prepare("UPDATE tracks SET cover_path = $path, updated_at = unixepoch() WHERE id = $id")
+    .run({ $path: relativePath, $id: trackId });
 }
 
 // Playlists
@@ -609,6 +711,7 @@ export function setPlaylistCoverData(playlistId: string, data: Buffer, mimeType:
     ON CONFLICT(playlist_id) DO UPDATE SET
       data = excluded.data,
       mime_type = excluded.mime_type,
+      file_path = NULL,
       updated_at = unixepoch()
   `).run({ $id: playlistId, $data: data, $mime: mimeType });
   db.prepare("UPDATE playlists SET updated_at = unixepoch() WHERE id = $id").run({ $id: playlistId });
@@ -616,8 +719,22 @@ export function setPlaylistCoverData(playlistId: string, data: Buffer, mimeType:
 
 export function getPlaylistCoverData(playlistId: string): { data: Buffer; mimeType: string } | null {
   const db = getDb();
-  return db.prepare("SELECT data, mime_type FROM playlist_cover_data WHERE playlist_id = $id")
-    .get({ $id: playlistId }) as { data: Buffer; mimeType: string } | null;
+  const row = db.prepare("SELECT data, mime_type, file_path FROM playlist_cover_data WHERE playlist_id = $id")
+    .get({ $id: playlistId }) as {
+      data: Buffer;
+      mime_type: string;
+      file_path: string | null;
+    } | null;
+  const stored = readCoverFile(row?.file_path);
+  if (stored) return { data: stored.data, mimeType: stored.mimeType };
+  return row ? { data: row.data, mimeType: row.mime_type } : null;
+}
+
+export function setPlaylistCoverPath(playlistId: string, relativePath: string): void {
+  getDb().prepare(`
+    UPDATE playlist_cover_data SET file_path = $path, updated_at = unixepoch()
+    WHERE playlist_id = $id
+  `).run({ $path: relativePath, $id: playlistId });
 }
 
 export function clearPlaylistCoverData(playlistId: string): void {

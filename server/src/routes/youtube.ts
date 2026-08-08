@@ -25,12 +25,7 @@ router.get("/search", async (c) => {
 /** GET /api/youtube/stream/:trackId */
 router.get("/stream/:trackId", async (c) => {
   const trackId = c.req.param("trackId");
-  try {
-    const url = await getYouTubeProvider().getStreamUrl(trackId);
-    return c.json({ url });
-  } catch (err: unknown) {
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
-  }
+  return c.json({ url: `/api/stream/youtube/${encodeURIComponent(trackId)}` });
 });
 
 /** GET /api/youtube/track/:trackId */

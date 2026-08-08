@@ -7,7 +7,16 @@
  */
 
 import { getCachedVkUrl, setCachedVkUrl, setVkConfig, getVkConfig, clearVkConfig, upsertTrack, getDb } from "../db/index.js";
-import type { Track, TrackMeta, MusicProvider } from "../types.js";
+import {
+  resolveProviderSearchOptions,
+  type ProviderArtistOptions,
+  type ProviderMetadataOptions,
+  type ProviderSearchOptions,
+  type ProviderStreamOptions,
+  type Track,
+  type TrackMeta,
+  type MusicProvider,
+} from "../types.js";
 import path from "path";
 import fs from "fs";
 import { Readable } from "stream";
@@ -412,7 +421,14 @@ export class VKMusicProvider implements MusicProvider {
     });
   }
 
-  async search(query: string, count = 50, offset = 0): Promise<Track[]> {
+  search(query: string, options?: ProviderSearchOptions): Promise<Track[]>;
+  search(query: string, count?: number, offset?: number): Promise<Track[]>;
+  async search(
+    query: string,
+    optionsOrCount: ProviderSearchOptions | number = {},
+    legacyOffset = 0,
+  ): Promise<Track[]> {
+    const { limit: count, offset } = resolveProviderSearchOptions(optionsOrCount, legacyOffset, 50);
     const safeCount = Math.max(1, Math.min(count, 300));
     const safeOffset = Math.max(0, offset);
     const resp = await this.apiCall<{ count: number; items: VKAudioItem[] }>(
@@ -425,7 +441,7 @@ export class VKMusicProvider implements MusicProvider {
     return tracks;
   }
 
-  async getStreamUrl(trackId: string): Promise<string> {
+  async getStreamUrl(trackId: string, _options?: ProviderStreamOptions): Promise<string> {
     // Check cache first
     const cached = getCachedVkUrl(trackId);
     if (cached) return cached;
@@ -451,7 +467,7 @@ export class VKMusicProvider implements MusicProvider {
     return item.url;
   }
 
-  async getTrackMetadata(trackId: string): Promise<TrackMeta> {
+  async getTrackMetadata(trackId: string, _options?: ProviderMetadataOptions): Promise<TrackMeta> {
     const parts = trackId.replace(/^vk_/, "").split("_");
     const audioRef = `${parts[0]}_${parts[1]}`;
     const items = await this.apiCall<VKAudioItem[]>("audio.getById", {
@@ -474,10 +490,11 @@ export class VKMusicProvider implements MusicProvider {
     };
   }
 
-  async getArtistTracks(artistId: string): Promise<Track[]> {
+  async getArtistTracks(artistId: string, options?: ProviderArtistOptions): Promise<Track[]> {
+    const count = Math.max(1, Math.min(Math.floor(options?.limit ?? 100), 100));
     const resp = await this.apiCall<{ count: number; items: VKAudioItem[] }>(
       "audio.search",
-      { q: artistId, count: 100, sort: 0, performer_only: 1 }
+      { q: artistId, count, sort: 0, performer_only: 1 }
     );
     const items = await this.hydrateArtworkIfNeeded(resp.items);
     const tracks = await hydrateFallbackArtwork(items.map(vkItemToTrack));

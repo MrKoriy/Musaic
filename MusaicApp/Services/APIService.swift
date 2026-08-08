@@ -3,16 +3,17 @@ import Foundation
 // MARK: - API Service
 
 @Observable
-final class APIService: @unchecked Sendable {
+@MainActor
+final class APIService {
     static let shared = APIService()
 
-    private let defaultServer = "http://45.146.167.109:3001"
+    private let defaultServer = "http://45-146-167-109.nip.io:3001"
     private(set) var serverURL: String
     private let session: URLSession
     private let pingSession: URLSession
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
-    // Request deduplication removed — caused silent failures when first request errored
+    private let inFlightGETRequests = InFlightGETRequests()
 
     init() {
         let configuration = URLSessionConfiguration.default
@@ -54,11 +55,20 @@ final class APIService: @unchecked Sendable {
         serverURL = defaultServer
     }
 
+    var usesInsecurePublicHTTP: Bool {
+        guard let url = URL(string: serverURL), url.scheme == "http", let host = url.host else { return false }
+        return host != "localhost" && host != "127.0.0.1" && host != "::1"
+    }
+
     // MARK: - HTTP Methods
 
-    private func authedRequest(_ url: URL, method: String = "GET") -> URLRequest {
+    func authenticatedRequest(for url: URL, method: String = "GET") -> URLRequest {
         var request = URLRequest(url: url)
         request.httpMethod = method
+        if url.path.hasPrefix("/api/stream/") || url.path.hasPrefix("/api/downloads/") ||
+            url.path.hasPrefix("/api/yandex/") || url.path.hasPrefix("/api/vk/") {
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+        }
         if let token = SettingsStore.shared.authToken {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -67,53 +77,112 @@ final class APIService: @unchecked Sendable {
 
     private func makeURL(_ path: String) throws -> URL {
         guard let url = URL(string: "\(serverURL)\(path)") else {
-            throw APIError.requestFailed(path)
+            throw APIError.invalidURL(endpoint: path)
         }
         return url
     }
 
     func get<T: Decodable>(_ path: String) async throws -> T {
-        let url = try makeURL(path)
-        let request = authedRequest(url)
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw APIError.requestFailed(path)
+        let requestKey = getRequestKey(for: path)
+        let data = try await inFlightGETRequests.value(for: requestKey) { [self] in
+            let url = try self.makeURL(path)
+            let request = self.authenticatedRequest(for: url)
+            return try await self.requestData(path, request: request)
         }
         return try decoder.decode(T.self, from: data)
     }
 
+    private func getRequestKey(for path: String) -> String {
+        // Avoid joining requests across server or account changes without
+        // retaining the bearer token itself in the deduplication table.
+        var hasher = Hasher()
+        hasher.combine(serverURL)
+        hasher.combine(SettingsStore.shared.authToken ?? "")
+        hasher.combine(path)
+        return String(hasher.finalize())
+    }
+
     private func post<T: Decodable>(_ path: String, body: Encodable) async throws -> T {
         let url = try makeURL(path)
-        var request = authedRequest(url, method: "POST")
+        var request = authenticatedRequest(for: url, method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw APIError.requestFailed(path)
-        }
+        let data = try await requestData(path, request: request)
         return try decoder.decode(T.self, from: data)
     }
 
     private func delete<T: Decodable>(_ path: String) async throws -> T {
         let url = try makeURL(path)
-        let request = authedRequest(url, method: "DELETE")
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw APIError.requestFailed(path)
-        }
+        let request = authenticatedRequest(for: url, method: "DELETE")
+        let data = try await requestData(path, request: request)
         return try decoder.decode(T.self, from: data)
     }
 
     private func patch<T: Decodable>(_ path: String, body: Encodable) async throws -> T {
         let url = try makeURL(path)
-        var request = authedRequest(url, method: "PATCH")
+        var request = authenticatedRequest(for: url, method: "PATCH")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw APIError.requestFailed(path)
-        }
+        let data = try await requestData(path, request: request)
         return try decoder.decode(T.self, from: data)
+    }
+
+    private func requestData(_ path: String, request: URLRequest) async throws -> Data {
+        let (data, response) = try await send(request, endpoint: path)
+        guard (200..<300).contains(response.statusCode) else {
+            if response.statusCode == 401 {
+                SettingsStore.shared.logout()
+            }
+            throw httpError(for: response, data: data, endpoint: path)
+        }
+        return data
+    }
+
+    private func send(_ request: URLRequest, endpoint: String) async throws -> (data: Data, response: HTTPURLResponse) {
+        var didRetry = false
+        let retryAllowed = request.httpMethod == nil || request.httpMethod == "GET" || request.httpMethod == "HEAD"
+
+        while true {
+            do {
+                let (data, response) = try await session.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    throw APIError.invalidResponse(endpoint: endpoint)
+                }
+                return (data, http)
+            } catch let error as APIError {
+                throw error
+            } catch {
+                if let urlError = error as? URLError, urlError.code == .cancelled {
+                    throw error
+                }
+                guard Self.isNetworkError(error) else { throw error }
+                let code = (error as? URLError)?.code ?? .unknown
+                print("[APIService] network code=\(code.rawValue) scheme=\(request.url?.scheme ?? "?") host=\(request.url?.host ?? "?") endpoint=\(endpoint)")
+                guard retryAllowed, !didRetry else {
+                    throw APIError.network(code: code, endpoint: endpoint)
+                }
+                didRetry = true
+            }
+        }
+    }
+
+    private func httpError(for response: HTTPURLResponse, data: Data, endpoint: String) -> APIError {
+        if response.statusCode == 401 {
+            return .unauthorized(endpoint: endpoint)
+        }
+
+        let message: String?
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            message = (object["error"] as? String ?? object["message"] as? String)?.prefix(200).description
+        } else {
+            message = nil
+        }
+        return .httpStatus(statusCode: response.statusCode, endpoint: endpoint, message: message)
+    }
+
+    private static func isNetworkError(_ error: Error) -> Bool {
+        if error is URLError { return true }
+        return (error as NSError).domain == NSURLErrorDomain
     }
 
     // MARK: - Auth
@@ -134,10 +203,21 @@ final class APIService: @unchecked Sendable {
     /// Auth requests parse JSON body even on 4xx errors (e.g. 409 "Username taken")
     private func authPost<B: Encodable>(_ path: String, body: B) async throws -> AuthResponse {
         let url = try makeURL(path)
-        var request = authedRequest(url, method: "POST")
+        var request = authenticatedRequest(for: url, method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)
-        let (data, _) = try await session.data(for: request)
+        let (data, response) = try await send(request, endpoint: path)
+        if let authResponse = try? decoder.decode(AuthResponse.self, from: data) {
+            // Preserve server-provided validation messages while still surfacing
+            // unexpected non-JSON error statuses to callers.
+            if !(200..<300).contains(response.statusCode), authResponse.error == nil {
+                throw httpError(for: response, data: data, endpoint: path)
+            }
+            return authResponse
+        }
+        guard (200..<300).contains(response.statusCode) else {
+            throw httpError(for: response, data: data, endpoint: path)
+        }
         return try decoder.decode(AuthResponse.self, from: data)
     }
 
@@ -151,15 +231,30 @@ final class APIService: @unchecked Sendable {
         return try await authPost("/api/auth/login", body: Body(username: username, password: password))
     }
 
+    func logout() async {
+        do {
+            let _: OkResponse = try await post("/api/auth/logout", body: EmptyBody())
+        } catch {
+            // Local credentials must still be removed if the server is offline.
+        }
+        LibraryStore.shared.clearLocalLikes()
+        SettingsStore.shared.logout()
+    }
+
     // MARK: - Health
 
     func ping() async -> Bool {
         guard let url = URL(string: "\(serverURL)/health") else { return false }
-        do {
-            let (_, response) = try await pingSession.data(from: url)
-            return (response as? HTTPURLResponse)?.statusCode == 200
-        } catch {
-            return false
+        var didRetry = false
+
+        while true {
+            do {
+                let (_, response) = try await pingSession.data(from: url)
+                return (response as? HTTPURLResponse)?.statusCode == 200
+            } catch {
+                guard !didRetry, Self.isNetworkError(error) else { return false }
+                didRetry = true
+            }
         }
     }
 
@@ -284,13 +379,13 @@ final class APIService: @unchecked Sendable {
     // MARK: - Library
 
     func getAlbums(source: String? = nil) async throws -> [Album] {
-        let q = source != nil ? "?source=\(encodedQueryValue(source!))" : ""
+        let q = source.map { "?source=\(encodedQueryValue($0))" } ?? ""
         let response: AlbumsResponse = try await get("/api/albums\(q)")
         return response.albums
     }
 
     func getArtists(source: String? = nil) async throws -> [Artist] {
-        let q = source != nil ? "?source=\(encodedQueryValue(source!))" : ""
+        let q = source.map { "?source=\(encodedQueryValue($0))" } ?? ""
         let response: ArtistsResponse = try await get("/api/artists\(q)")
         return response.artists
     }
@@ -589,7 +684,9 @@ final class APIService: @unchecked Sendable {
         }
 
         if !normalized.hasPrefix("http://") && !normalized.hasPrefix("https://") {
-            normalized = "http://\(normalized)"
+            let isLocal = normalized == "localhost" || normalized.hasPrefix("localhost:") ||
+                normalized == "127.0.0.1" || normalized.hasPrefix("127.0.0.1:")
+            normalized = "\(isLocal ? "http" : "https")://\(normalized)"
         }
 
         guard var components = URLComponents(string: normalized) else {
@@ -603,9 +700,14 @@ final class APIService: @unchecked Sendable {
             components.port = 3001
         }
 
-        let shouldDowngradeToHTTP = components.scheme == "https" && components.port == 3001 && (host == "localhost" || host == "127.0.0.1" || isIPHost)
-        if shouldDowngradeToHTTP {
+        // The default server still serves plain HTTP on a public IP. Keep using
+        // HTTP there until TLS is configured, even if a previous launch stored
+        // the https:// URL in UserDefaults.
+        if components.scheme == "https" && (host == "45.146.167.109" || host == "45-146-167-109.nip.io") {
             components.scheme = "http"
+        }
+        if host == "45.146.167.109" && components.port == 3001 {
+            components.host = "45-146-167-109.nip.io"
         }
 
         if components.path == "/" {
@@ -629,10 +731,21 @@ final class APIService: @unchecked Sendable {
     // MARK: - URL Helpers
 
     func streamURL(forTrackID trackID: String, source: Track.TrackSource) -> String {
-        // Stream quality rides as a query param; the server honors it for Yandex
-        // (real bitrate tiers) and ignores it for fixed-quality sources.
-        let quality = SettingsStore.shared.streamQuality
-        return "\(serverURL)/api/downloads/stream/\(encodedTrackID(trackID))?quality=\(quality)"
+        // Quality is a non-sensitive playback preference. Provider URLs and
+        // credentials stay server-side; authentication is supplied out-of-band.
+        let quality = encodedQueryValue(SettingsStore.shared.streamQuality)
+        return "\(streamEndpointURL(forTrackID: trackID, source: source))?quality=\(quality)"
+    }
+
+    /// URL used by offline downloads. It deliberately has no query string so
+    /// credentials can only be sent in the Authorization header.
+    func downloadStreamURL(forTrackID trackID: String, source: Track.TrackSource) -> String {
+        streamEndpointURL(forTrackID: trackID, source: source)
+    }
+
+    func compressedDownloadURL(forTrackID trackID: String, bitrate: Int = 128) -> String {
+        let safeBitrate = min(256, max(64, bitrate))
+        return "\(serverURL)/api/downloads/compressed/\(encodedTrackID(trackID))?bitrate=\(safeBitrate)"
     }
 
     func streamURL(for track: ServerTrack) -> String {
@@ -641,8 +754,15 @@ final class APIService: @unchecked Sendable {
 
     func artworkURL(for coverUrl: String?) -> String? {
         guard let coverUrl else { return nil }
-        if coverUrl.hasPrefix("http") {
-            return coverUrl
+        // Never re-wrap a URL that already goes through the server artwork
+        // proxy (recursive wrapping made these URLs grow without bound).
+        if coverUrl.contains("/api/artwork") || coverUrl.hasPrefix(serverURL) {
+            return coverUrl.hasPrefix("http") ? coverUrl : "\(serverURL)\(coverUrl)"
+        }
+        if coverUrl.hasPrefix("http://") || coverUrl.hasPrefix("https://") {
+            var components = URLComponents(string: "\(serverURL)/api/artwork")
+            components?.queryItems = [URLQueryItem(name: "url", value: coverUrl)]
+            return components?.url?.absoluteString
         }
         return "\(serverURL)\(coverUrl)"
     }
@@ -666,6 +786,35 @@ final class APIService: @unchecked Sendable {
             duration: st.duration,
             source: st.source
         ))
+    }
+
+    private func streamEndpointURL(forTrackID trackID: String, source: Track.TrackSource) -> String {
+        "\(serverURL)/api/stream/\(source.rawValue)/\(encodedTrackID(trackID))"
+    }
+}
+
+private actor InFlightGETRequests {
+    private var requests: [String: Task<Data, Error>] = [:]
+
+    func value(
+        for key: String,
+        operation: @escaping @MainActor @Sendable () async throws -> Data
+    ) async throws -> Data {
+        if let request = requests[key] {
+            return try await request.value
+        }
+
+        let request = Task { try await operation() }
+        requests[key] = request
+
+        do {
+            let data = try await request.value
+            requests.removeValue(forKey: key)
+            return data
+        } catch {
+            requests.removeValue(forKey: key)
+            throw error
+        }
     }
 }
 
@@ -922,10 +1071,46 @@ struct MyVibeFiltersBody: Encodable {
 // MARK: - Errors
 
 enum APIError: LocalizedError {
+    case invalidURL(endpoint: String)
+    case invalidResponse(endpoint: String)
+    case unauthorized(endpoint: String)
+    case httpStatus(statusCode: Int, endpoint: String, message: String?)
+    case network(code: URLError.Code, endpoint: String)
     case requestFailed(String)
+
+    var statusCode: Int? {
+        switch self {
+        case .unauthorized:
+            return 401
+        case .httpStatus(let statusCode, _, _):
+            return statusCode
+        case .invalidURL, .invalidResponse, .network, .requestFailed:
+            return nil
+        }
+    }
+
     var errorDescription: String? {
         switch self {
-        case .requestFailed(let path): return "Request failed: \(path)"
+        case .invalidURL(let endpoint):
+            return "Invalid request path: \(Self.safeEndpoint(endpoint))"
+        case .invalidResponse(let endpoint):
+            return "Invalid server response from \(Self.safeEndpoint(endpoint))"
+        case .unauthorized(let endpoint):
+            return "Authentication required for \(Self.safeEndpoint(endpoint))."
+        case .httpStatus(let statusCode, let endpoint, let message):
+            let suffix = message.map { ": \($0)" } ?? ""
+            return "HTTP \(statusCode) for \(Self.safeEndpoint(endpoint))\(suffix)"
+        case .network(_, let endpoint):
+            return "Network request failed for \(Self.safeEndpoint(endpoint))."
+        case .requestFailed(let path):
+            return "Request failed: \(Self.safeEndpoint(path))"
         }
+    }
+
+    private static func safeEndpoint(_ endpoint: String) -> String {
+        guard let components = URLComponents(string: endpoint), !components.path.isEmpty else {
+            return endpoint
+        }
+        return components.path
     }
 }

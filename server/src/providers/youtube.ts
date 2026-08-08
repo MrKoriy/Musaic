@@ -7,10 +7,20 @@
  * range-serve it like any other source.
  */
 
-import type { Track, TrackMeta, MusicProvider } from "../types.js";
+import {
+  resolveProviderSearchOptions,
+  type ProviderArtistOptions,
+  type ProviderMetadataOptions,
+  type ProviderSearchOptions,
+  type ProviderStreamOptions,
+  type Track,
+  type TrackMeta,
+  type MusicProvider,
+} from "../types.js";
 import { upsertTrack, getDb } from "../db/index.js";
 import { sidecarGet, type SidecarTrack } from "./sidecar.js";
 import { hydrateFallbackArtwork } from "./artwork.js";
+import { normalizeComparableText } from "../utils/track-identity.js";
 
 function rawId(trackId: string): string {
   return trackId.replace(/^yt_/, "");
@@ -49,13 +59,7 @@ function cacheYouTubeTracks(tracks: Track[]): void {
 const ARTIST_STOP_TOKENS = new Set(["the", "a", "an", "of", "and", "feat", "ft", "dj", "mc", "band", "official"]);
 
 function normalizedArtistText(value: string): string {
-  return value
-    .normalize("NFKD")
-    .replace(/\p{M}+/gu, "")
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return normalizeComparableText(value);
 }
 
 function artistCredits(value: string): string[] {
@@ -171,7 +175,14 @@ export class YouTubeMusicProvider implements MusicProvider {
     return true; // no auth required
   }
 
-  async search(query: string, count = 30, offset = 0): Promise<Track[]> {
+  search(query: string, options?: ProviderSearchOptions): Promise<Track[]>;
+  search(query: string, count?: number, offset?: number): Promise<Track[]>;
+  async search(
+    query: string,
+    optionsOrCount: ProviderSearchOptions | number = {},
+    legacyOffset = 0,
+  ): Promise<Track[]> {
+    const { limit: count, offset } = resolveProviderSearchOptions(optionsOrCount, legacyOffset, 30);
     // ytmusicapi has no offset; only contribute to the first page to avoid dupes.
     if (offset > 0) return [];
     const { tracks } = await sidecarGet<{ tracks: SidecarTrack[] }>(
@@ -182,9 +193,10 @@ export class YouTubeMusicProvider implements MusicProvider {
     return mapped;
   }
 
-  async getArtistTracks(artistName: string): Promise<Track[]> {
+  async getArtistTracks(artistName: string, options?: ProviderArtistOptions): Promise<Track[]> {
+    const count = Math.max(1, Math.min(Math.floor(options?.limit ?? 100), 100));
     const { tracks } = await sidecarGet<{ tracks: SidecarTrack[] }>(
-      `/yt/artist?name=${encodeURIComponent(artistName)}&count=100`
+      `/yt/artist?name=${encodeURIComponent(artistName)}&count=${count}`
     );
     const mapped = await hydrateFallbackArtwork(tracks.map(sidecarTrackToTrack));
 
@@ -200,7 +212,7 @@ export class YouTubeMusicProvider implements MusicProvider {
     return cached.filter((track) => artistCreditMatches(artistName, track.artist));
   }
 
-  async getTrackMetadata(trackId: string): Promise<TrackMeta> {
+  async getTrackMetadata(trackId: string, _options?: ProviderMetadataOptions): Promise<TrackMeta> {
     const s = await sidecarGet<SidecarTrack>(`/yt/track/${encodeURIComponent(rawId(trackId))}`);
     const [track] = await hydrateFallbackArtwork([sidecarTrackToTrack(s)]);
     return {
@@ -216,7 +228,7 @@ export class YouTubeMusicProvider implements MusicProvider {
   }
 
   /** Resolve a direct googlevideo audio URL (Range-capable) via yt-dlp. */
-  async getStreamUrl(trackId: string): Promise<string> {
+  async getStreamUrl(trackId: string, _options?: ProviderStreamOptions): Promise<string> {
     const res = await sidecarGet<{ url: string }>(`/yt/stream/${encodeURIComponent(rawId(trackId))}`);
     if (!res.url) throw new Error(`No YouTube stream for ${trackId}`);
     return res.url;

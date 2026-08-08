@@ -20,6 +20,7 @@ import { getVKProvider } from "../providers/vk.js";
 import fs from "fs";
 import path from "path";
 import { Readable } from "stream";
+import { resolveAllowedLocalFile } from "../utils/stream-proxy.js";
 
 const router = new Hono();
 const DOWNLOADS_DIR = path.resolve(process.env.DOWNLOADS_DIR ?? "downloads");
@@ -36,9 +37,7 @@ function getSafeTrackAudioPath(trackId: string): string | null {
   } | null;
   if (!track?.local_path) return null;
 
-  const resolved = path.resolve(track.local_path);
-  if (!fs.existsSync(resolved)) return null;
-  return resolved;
+   return resolveAllowedLocalFile(track.local_path);
 }
 
 /**
@@ -120,6 +119,9 @@ async function fetchAndRespond(
  */
 router.post("/:trackId/generate", async (c) => {
   const trackId = decodeURIComponent(c.req.param("trackId"));
+  if (!trackId || /[\\/]|\.\./.test(trackId) || trackId.length > 256) {
+    return c.json({ error: "Invalid track ID" }, 400);
+  }
   await c.req.json().catch(() => null);
 
   const track = getTrack(trackId) as {

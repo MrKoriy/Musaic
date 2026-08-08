@@ -1,4 +1,4 @@
-import { getCached, setCached } from "./taste-engine.js";
+import { getCached, getOrSetCached } from "./taste-engine.js";
 
 const LASTFM_BASE = "https://ws.audioscrobbler.com/2.0/";
 const MIN_REQUEST_INTERVAL_MS = 220;
@@ -49,15 +49,16 @@ export async function getSimilarArtists(artist: string, limit = 50): Promise<Arr
   const key = cachedKey("artist-similar", artist);
   const cached = getCached<Array<{ artist: string; match: number }>>(key);
   if (cached) return cached.slice(0, limit);
-  const data = await lastfmGet<{
-    similarartists?: { artist?: Array<{ name?: string; match?: number | string }> };
-  }>({ method: "artist.getSimilar", artist, limit: String(Math.min(limit, 100)), autocorrect: "1" });
-  const result = (data.similarartists?.artist ?? []).flatMap((item) => {
-    const name = item.name?.trim();
-    const match = Number(item.match ?? 0);
-    return name && Number.isFinite(match) ? [{ artist: name, match: Math.max(0, Math.min(match, 1)) }] : [];
-  });
-  setCached(key, result, 30 * 86400_000);
+  const result = await getOrSetCached(key, async () => {
+    const data = await lastfmGet<{
+      similarartists?: { artist?: Array<{ name?: string; match?: number | string }> };
+    }>({ method: "artist.getSimilar", artist, limit: String(Math.min(limit, 100)), autocorrect: "1" });
+    return (data.similarartists?.artist ?? []).flatMap((item) => {
+      const name = item.name?.trim();
+      const match = Number(item.match ?? 0);
+      return name && Number.isFinite(match) ? [{ artist: name, match: Math.max(0, Math.min(match, 1)) }] : [];
+    });
+  }, 24 * 3600_000);
   return result.slice(0, limit);
 }
 
@@ -65,18 +66,19 @@ export async function getSimilarTracks(artist: string, title: string, limit = 30
   const key = cachedKey("track-similar", artist, title);
   const cached = getCached<LastfmSimilarItem[]>(key);
   if (cached) return cached.slice(0, limit);
-  const data = await lastfmGet<{
-    similartracks?: { track?: Array<{ name?: string; match?: number | string; artist?: { name?: string } }> };
-  }>({ method: "track.getSimilar", artist, track: title, limit: String(Math.min(limit, 100)), autocorrect: "1" });
-  const result = (data.similartracks?.track ?? []).flatMap((item) => {
-    const itemArtist = item.artist?.name?.trim();
-    const itemTitle = item.name?.trim();
-    const match = Number(item.match ?? 0);
-    return itemArtist && itemTitle && Number.isFinite(match)
-      ? [{ artist: itemArtist, title: itemTitle, match: Math.max(0, Math.min(match, 1)) }]
-      : [];
-  });
-  setCached(key, result, 12 * 3600_000);
+  const result = await getOrSetCached(key, async () => {
+    const data = await lastfmGet<{
+      similartracks?: { track?: Array<{ name?: string; match?: number | string; artist?: { name?: string } }> };
+    }>({ method: "track.getSimilar", artist, track: title, limit: String(Math.min(limit, 100)), autocorrect: "1" });
+    return (data.similartracks?.track ?? []).flatMap((item) => {
+      const itemArtist = item.artist?.name?.trim();
+      const itemTitle = item.name?.trim();
+      const match = Number(item.match ?? 0);
+      return itemArtist && itemTitle && Number.isFinite(match)
+        ? [{ artist: itemArtist, title: itemTitle, match: Math.max(0, Math.min(match, 1)) }]
+        : [];
+    });
+  }, 12 * 3600_000);
   return result.slice(0, limit);
 }
 
@@ -84,15 +86,16 @@ export async function getTrackTags(artist: string, title: string, limit = 20): P
   const key = cachedKey("track-tags", artist, title);
   const cached = getCached<LastfmTag[]>(key);
   if (cached) return cached.slice(0, limit);
-  const data = await lastfmGet<{ toptags?: { tag?: Array<{ name?: string; count?: number | string }> } }>({
-    method: "track.getTopTags", artist, track: title, autocorrect: "1",
-  });
-  const result = (data.toptags?.tag ?? []).flatMap((item) => {
-    const name = item.name?.trim();
-    const count = Number(item.count ?? 0);
-    return name ? [{ name, count: Number.isFinite(count) ? count : 0 }] : [];
-  });
-  setCached(key, result, 30 * 86400_000);
+  const result = await getOrSetCached(key, async () => {
+    const data = await lastfmGet<{ toptags?: { tag?: Array<{ name?: string; count?: number | string }> } }>({
+      method: "track.getTopTags", artist, track: title, autocorrect: "1",
+    });
+    return (data.toptags?.tag ?? []).flatMap((item) => {
+      const name = item.name?.trim();
+      const count = Number(item.count ?? 0);
+      return name ? [{ name, count: Number.isFinite(count) ? count : 0 }] : [];
+    });
+  }, 24 * 3600_000);
   return result.slice(0, limit);
 }
 
@@ -100,14 +103,15 @@ export async function getArtistTags(artist: string, limit = 20): Promise<LastfmT
   const key = cachedKey("artist-tags", artist);
   const cached = getCached<LastfmTag[]>(key);
   if (cached) return cached.slice(0, limit);
-  const data = await lastfmGet<{ toptags?: { tag?: Array<{ name?: string; count?: number | string }> } }>({
-    method: "artist.getTopTags", artist, autocorrect: "1",
-  });
-  const result = (data.toptags?.tag ?? []).flatMap((item) => {
-    const name = item.name?.trim();
-    const count = Number(item.count ?? 0);
-    return name ? [{ name, count: Number.isFinite(count) ? count : 0 }] : [];
-  });
-  setCached(key, result, 30 * 86400_000);
+  const result = await getOrSetCached(key, async () => {
+    const data = await lastfmGet<{ toptags?: { tag?: Array<{ name?: string; count?: number | string }> } }>({
+      method: "artist.getTopTags", artist, autocorrect: "1",
+    });
+    return (data.toptags?.tag ?? []).flatMap((item) => {
+      const name = item.name?.trim();
+      const count = Number(item.count ?? 0);
+      return name ? [{ name, count: Number.isFinite(count) ? count : 0 }] : [];
+    });
+  }, 24 * 3600_000);
   return result.slice(0, limit);
 }

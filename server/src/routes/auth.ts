@@ -11,6 +11,13 @@ import crypto from "crypto";
 import { getDb, upsertTrack } from "../db/index.js";
 import { clearUserRecommendationCaches } from "../providers/taste-engine.js";
 
+const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS ?? 90);
+
+function sessionExpiresAt(): number {
+  const days = Number.isFinite(SESSION_TTL_DAYS) && SESSION_TTL_DAYS > 0 ? SESSION_TTL_DAYS : 90;
+  return Math.floor(Date.now() / 1000) + Math.floor(days * 24 * 60 * 60);
+}
+
 const router = new Hono();
 const VALID_TRACK_SOURCES = new Set(["local", "vk", "soundcloud", "yandex", "youtube"]);
 
@@ -93,8 +100,8 @@ router.post("/register", async (c) => {
     VALUES ($id, $username, $display_name, $hash)
   `).run({ $id: id, $username: username, $display_name: displayName ?? username, $hash: hash });
 
-  db.prepare("INSERT INTO sessions (token, user_id) VALUES ($token, $uid)")
-    .run({ $token: token, $uid: id });
+  db.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES ($token, $uid, $expiresAt)")
+    .run({ $token: token, $uid: id, $expiresAt: sessionExpiresAt() });
 
   return c.json({
     ok: true,
@@ -124,8 +131,8 @@ router.post("/login", async (c) => {
 
   // Create a new session — doesn't invalidate other devices
   const token = generateToken();
-  db.prepare("INSERT INTO sessions (token, user_id) VALUES ($token, $uid)")
-    .run({ $token: token, $uid: user.id });
+  db.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES ($token, $uid, $expiresAt)")
+    .run({ $token: token, $uid: user.id, $expiresAt: sessionExpiresAt() });
   db.prepare("UPDATE users SET last_seen_at = unixepoch() WHERE id = $id")
     .run({ $id: user.id });
 

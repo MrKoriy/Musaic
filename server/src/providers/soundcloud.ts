@@ -9,8 +9,18 @@
  * Quality: Opus 64kbps (free tier).
  */
 
-import { upsertTrack, getDb } from "../db/index.js";
-import type { Track, TrackMeta, MusicProvider } from "../types.js";
+import { getDb, getSoundCloudConfig, setSoundCloudConfig, upsertTrack } from "../db/index.js";
+import {
+  resolveProviderArtistOptions,
+  resolveProviderSearchOptions,
+  type ProviderArtistOptions,
+  type ProviderMetadataOptions,
+  type ProviderSearchOptions,
+  type ProviderStreamOptions,
+  type Track,
+  type TrackMeta,
+  type MusicProvider,
+} from "../types.js";
 import { execFile } from "child_process";
 import { promisify } from "util";
 
@@ -131,14 +141,11 @@ async function getClientId(forceRefresh = false): Promise<string> {
     return _clientId;
   }
 
-  // Check DB cache
-  const db = getDb();
   if (!forceRefresh) {
-    const row = db
-      .prepare("SELECT token, token_expiry FROM vk_config WHERE id = 2")
-      .get() as { token: string | null; token_expiry: number | null } | null;
-    if (row?.token && row.token_expiry && now < row.token_expiry) {
-      _clientId = row.token;
+    const config = getSoundCloudConfig();
+    const expiry = config.clientIdFetchedAt == null ? 0 : config.clientIdFetchedAt + CLIENT_ID_TTL_MS;
+    if (config.clientId && now < expiry) {
+      _clientId = config.clientId;
       _clientIdFetchedAt = now;
       return _clientId;
     }
@@ -148,12 +155,7 @@ async function getClientId(forceRefresh = false): Promise<string> {
   _clientId = clientId;
   _clientIdFetchedAt = now;
 
-  // Store in DB (reusing vk_config table with id=2 for SC)
-  db.prepare(`
-    INSERT INTO vk_config (id, token, token_expiry, updated_at)
-    VALUES (2, ?, ?, unixepoch())
-    ON CONFLICT(id) DO UPDATE SET token = excluded.token, token_expiry = excluded.token_expiry, updated_at = unixepoch()
-  `).run(clientId, now + CLIENT_ID_TTL_MS);
+  setSoundCloudConfig({ clientId, fetchedAt: now });
 
   return clientId;
 }
@@ -454,7 +456,14 @@ export class SoundCloudProvider implements MusicProvider {
     return res.json() as Promise<T>;
   }
 
-  async search(query: string, limit = 30, offset = 0): Promise<Track[]> {
+  search(query: string, options?: ProviderSearchOptions): Promise<Track[]>;
+  search(query: string, limit?: number, offset?: number): Promise<Track[]>;
+  async search(
+    query: string,
+    optionsOrLimit: ProviderSearchOptions | number = {},
+    legacyOffset = 0,
+  ): Promise<Track[]> {
+    const { limit, offset } = resolveProviderSearchOptions(optionsOrLimit, legacyOffset, 30);
     const result = await this.apiGet<SCCollection<SCTrack>>("/search/tracks", {
       q: query,
       limit,
@@ -510,7 +519,7 @@ export class SoundCloudProvider implements MusicProvider {
     return tracks;
   }
 
-  async getStreamUrl(trackId: string): Promise<string> {
+  async getStreamUrl(trackId: string, _options?: ProviderStreamOptions): Promise<string> {
     const scNumericId = trackId.replace(/^sc_/, "");
 
     // Get track metadata with transcodings
@@ -580,7 +589,7 @@ export class SoundCloudProvider implements MusicProvider {
     }
   }
 
-  async getTrackMetadata(trackId: string): Promise<TrackMeta> {
+  async getTrackMetadata(trackId: string, _options?: ProviderMetadataOptions): Promise<TrackMeta> {
     const scNumericId = trackId.replace(/^sc_/, "");
     const track = await this.apiGet<SCTrack>(`/tracks/${scNumericId}`);
     return {
@@ -629,7 +638,10 @@ export class SoundCloudProvider implements MusicProvider {
     return tracks;
   }
 
-  async getArtistTracks(artistId: string, limit = 150): Promise<Track[]> {
+  getArtistTracks(artistId: string, options?: ProviderArtistOptions): Promise<Track[]>;
+  getArtistTracks(artistId: string, limit?: number): Promise<Track[]>;
+  async getArtistTracks(artistId: string, optionsOrLimit: ProviderArtistOptions | number = {}): Promise<Track[]> {
+    const { limit } = resolveProviderArtistOptions(optionsOrLimit, 150);
     const maxTracks = Math.max(1, Math.min(limit, 300));
     try {
       const user = await this.getUser(artistId);

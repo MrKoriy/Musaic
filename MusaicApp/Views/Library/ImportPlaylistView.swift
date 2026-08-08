@@ -172,61 +172,10 @@ struct ImportPlaylistView: View {
             LazyVStack(spacing: 8) {
                 ForEach(result.matches.indices, id: \.self) { idx in
                     let match = result.matches[idx]
-                    importTrackRow(match, index: idx + 1)
+                    ImportTrackRow(match: match)
                 }
             }
         }
-    }
-
-    private func importTrackRow(_ match: ImportMatch, index: Int) -> some View {
-        HStack(spacing: 12) {
-            // Status icon
-            ZStack {
-                switch match.confidence {
-                case "high":
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                case "medium":
-                    Image(systemName: "checkmark.circle")
-                        .foregroundStyle(.yellow)
-                default:
-                    Image(systemName: "xmark.circle")
-                        .foregroundStyle(.red.opacity(0.6))
-                }
-            }
-            .font(.system(size: 16))
-            .frame(width: 24)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(match.title)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(match.confidence != "none" ? Color.textPrimary : Color.textMuted)
-                    .lineLimit(1)
-                Text(match.artist)
-                    .font(.caption)
-                    .foregroundStyle(Color.textSecondary)
-                    .lineLimit(1)
-                if let matchSource = match.matchSource {
-                    Text("Found on \(matchSource)")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Color.textSecondary.opacity(0.7))
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if let dur = match.durationSec {
-                Text(formatDuration(TimeInterval(dur)))
-                    .font(.caption2)
-                    .foregroundStyle(Color.textMuted)
-            }
-        }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 14)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(match.confidence != "none" ? Color.white.opacity(0.05) : Color.white.opacity(0.02))
-        )
-        .padding(.horizontal, 16)
     }
 
     @MainActor
@@ -253,7 +202,8 @@ struct ImportPlaylistView: View {
             request.timeoutInterval = 300
 
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse else {
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
                 self.error = "No response"
                 return
             }

@@ -8,6 +8,10 @@ struct HomeView: View {
     @State private var recommendationsRequestId: String?
     @State private var dailyMixRequestId: String?
     @State private var loading = true
+    @State private var homeError: String?
+    @State private var homeUnauthorized = false
+    @State private var dailyMixError: String?
+    @State private var dailyMixUnauthorized = false
     @State private var selectedMood: String?
     @State private var myVibeFilters = MyVibeFilters.default
     @State private var startingMyVibe = false
@@ -20,6 +24,7 @@ struct HomeView: View {
     private let api = APIService.shared
     private let player = PlayerStore.shared
     private let library = LibraryStore.shared
+    private let settings = SettingsStore.shared
 
     private let moods = ["Energise", "Feel good", "Relax", "Workout", "Sad", "Party", "Focus", "Romance", "Sleep"]
 
@@ -31,31 +36,28 @@ struct HomeView: View {
 
                     heroSection
 
+                    if let dailyMixError {
+                        ErrorRetryView(
+                            title: dailyMixUnauthorized ? String(localized: "Session expired") : String(localized: "Daily Mix unavailable"),
+                            message: dailyMixError,
+                            isUnauthorized: dailyMixUnauthorized,
+                            onRetry: { Task { await loadDailyMix(refresh: true) } },
+                            onSignIn: dailyMixUnauthorized ? { settings.logout() } : nil
+                        )
+                        .padding(.horizontal, 18)
+                    }
+
                     VStack(alignment: .leading, spacing: 12) {
-                        LiquidSectionHeader(title: "Moods", subtitle: "Pick a lane and let the mix shift with it.")
+                        LiquidSectionHeader(title: String(localized: "Moods"), subtitle: String(localized: "Pick a lane and let the mix shift with it."))
                             .padding(.horizontal, 18)
 
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 10) {
-                                ForEach(moods, id: \.self) { mood in
-                                    Button {
-                                        loadMood(mood)
-                                    } label: {
-                                        Text(mood)
-                                            .font(.system(size: 13, weight: .semibold))
-                                            .foregroundStyle(selectedMood == mood ? Color.bgPrimary : Color.textPrimary)
-                                            .padding(.horizontal, 16)
-                                            .padding(.vertical, 10)
-                                            .background(
-                                                Capsule()
-                                                    .fill(selectedMood == mood ? Color.textPrimary.opacity(0.92) : Color.white.opacity(0.07))
-                                            )
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                            .padding(.horizontal, 18)
-                        }
+                        ChipSelector(
+                            options: moods,
+                            label: { $0 },
+                            isSelected: { selectedMood == $0 },
+                            onSelect: loadMood,
+                            style: .mood
+                        )
                     }
 
                     if !dailyMix.isEmpty {
@@ -69,7 +71,7 @@ struct HomeView: View {
                                     HStack(spacing: 6) {
                                         Image(systemName: "arrow.counterclockwise")
                                             .font(.system(size: 12, weight: .bold))
-                                        Text("Reload")
+                                 Text(String(localized: "Reload"))
                                             .font(.system(size: 12, weight: .semibold))
                                     }
                                     .foregroundStyle(Color.textPrimary)
@@ -131,7 +133,7 @@ struct HomeView: View {
         let likedTracks = Array(library.likedTracks.prefix(10))
         if !likedTracks.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Jump Back In")
+                     Text(String(localized: "Jump Back In"))
                     .font(.system(size: 16, weight: .bold, design: .rounded))
                     .foregroundStyle(Color.textPrimary)
                     .padding(.horizontal, 18)
@@ -196,7 +198,7 @@ struct HomeView: View {
                         .foregroundStyle(Color.textSecondary)
                 }
                 Spacer(minLength: 12)
-                LiquidIconButton(systemName: "arrow.clockwise") {
+                LiquidIconButton(systemName: "arrow.clockwise", accessibilityLabel: String(localized: "Reload")) {
                     selectedMood = nil
                     Task { await loadData() }
                 }
@@ -218,7 +220,7 @@ struct HomeView: View {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 8) {
-                        Text("My Vibe")
+                                 Text(String(localized: "My Vibe"))
                             .font(.system(size: 28, weight: .bold, design: .rounded))
                             .foregroundStyle(Color.textPrimary)
 
@@ -417,7 +419,7 @@ struct HomeView: View {
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Color.textSecondary)
                         .lineLimit(2)
-                    Text("Play curated blend")
+                     Text(String(localized: "Play curated blend"))
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Color.textPrimary.opacity(0.85))
                 }
@@ -436,11 +438,21 @@ struct HomeView: View {
             VStack(spacing: 14) {
                 ProgressView()
                     .tint(Color.textPrimary)
-                Text("Blending your feed")
+                Text(String(localized: "Blending your feed"))
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(Color.textSecondary)
             }
             .frame(maxWidth: .infinity)
+            .padding(.top, 80)
+        } else if let homeError {
+            ErrorRetryView(
+                title: homeUnauthorized ? String(localized: "Session expired") : String(localized: "Home unavailable"),
+                message: homeError,
+                isUnauthorized: homeUnauthorized,
+                onRetry: { Task { await loadData() } },
+                onSignIn: homeUnauthorized ? { settings.logout() } : nil
+            )
+            .padding(.horizontal, 18)
             .padding(.top, 80)
         } else if !tracks.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
@@ -475,7 +487,13 @@ struct HomeView: View {
                 }
             }
         } else {
-            ContentUnavailableView("Nothing Yet", systemImage: "music.note.house", description: Text("Connect to your server and scan some music to populate the home feed."))
+            EmptyStateView(
+                title: String(localized: "Nothing Yet"),
+                message: String(localized: "Connect to your server and scan some music to populate the home feed."),
+                systemImage: "music.note.house",
+                actionTitle: String(localized: "Retry"),
+                action: { Task { await loadData() } }
+            )
                 .padding(.top, 80)
         }
     }
@@ -562,6 +580,10 @@ struct HomeView: View {
     }
 
     private func loadRecommendations() async {
+        homeError = nil
+        homeUnauthorized = false
+        var lastError: Error?
+
         // Try up to 2 times with a short delay
         for attempt in 0..<2 {
             do {
@@ -570,31 +592,48 @@ struct HomeView: View {
                 tracks = response.tracks.map(api.toAppTrack)
                 return
             } catch {
+                lastError = error
                 if attempt == 0 {
                     try? await Task.sleep(for: .milliseconds(800))
                 }
             }
         }
         // Final fallback: try local tracks
-        if let st = try? await api.getTracks(source: "local", limit: 30) {
+        do {
+            let st = try await api.getTracks(source: "local", limit: 30)
             recommendationsRequestId = nil
             tracks = st.map(api.toAppTrack)
+            return
+        } catch {
+            lastError = error
         }
+
+        tracks = []
+        homeError = lastError?.localizedDescription ?? String(localized: "Could not load the home feed.")
+        homeUnauthorized = (lastError as? APIError)?.statusCode == 401
     }
 
     private func loadDailyMix(refresh: Bool = false) async {
+        dailyMixError = nil
+        dailyMixUnauthorized = false
         do {
             let mix = try await api.getDailyMix(refresh: refresh)
             dailyMixName = mix.name
             dailyMixRequestId = mix.requestId
             dailyMix = mix.tracks.map(api.toAppTrack)
-        } catch {}
+        } catch {
+            dailyMix = []
+            dailyMixError = error.localizedDescription
+            dailyMixUnauthorized = (error as? APIError)?.statusCode == 401
+        }
     }
 
     private func loadMood(_ mood: String) {
         selectedMood = mood
         recommendationsRequestId = nil
         tracks = []
+        homeError = nil
+        homeUnauthorized = false
         Task {
             do {
                 let response = try await api.getMoodTracks(mood: mood, limit: 20)
@@ -602,6 +641,8 @@ struct HomeView: View {
                 tracks = response.tracks.map(api.toAppTrack)
             } catch {
                 tracks = []
+                homeError = error.localizedDescription
+                homeUnauthorized = (error as? APIError)?.statusCode == 401
             }
         }
     }

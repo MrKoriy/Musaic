@@ -114,8 +114,6 @@ export function normaliseTrackForResponse(t: Track) {
     album: t.album,
     duration: t.duration,
     cover_url: t.coverUrl,
-    stream_url: t.streamUrl,
-    local_path: t.localPath,
     waveform_url: t.waveformUrl,
   };
 }

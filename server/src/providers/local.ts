@@ -6,14 +6,30 @@
  */
 
 import { getDb } from "../db/index.js";
-import type { Track, TrackMeta, MusicProvider } from "../types.js";
+import {
+  resolveProviderSearchOptions,
+  type ProviderArtistOptions,
+  type ProviderMetadataOptions,
+  type ProviderSearchOptions,
+  type ProviderStreamOptions,
+  type Track,
+  type TrackMeta,
+  type MusicProvider,
+} from "../types.js";
 import path from "path";
 import fs from "fs";
 
 export class LocalFLACProvider implements MusicProvider {
   constructor(private musicDir: string) {}
 
-  async search(query: string, limit = 50, offset = 0): Promise<Track[]> {
+  search(query: string, options?: ProviderSearchOptions): Promise<Track[]>;
+  search(query: string, limit?: number, offset?: number): Promise<Track[]>;
+  async search(
+    query: string,
+    optionsOrLimit: ProviderSearchOptions | number = {},
+    legacyOffset = 0,
+  ): Promise<Track[]> {
+    const { limit, offset } = resolveProviderSearchOptions(optionsOrLimit, legacyOffset, 50);
     const db = getDb();
     const q = query.trim();
     if (!q) return [];
@@ -31,7 +47,7 @@ export class LocalFLACProvider implements MusicProvider {
     return rows.map(rowToTrack);
   }
 
-  async getStreamUrl(trackId: string): Promise<string> {
+  async getStreamUrl(trackId: string, _options?: ProviderStreamOptions): Promise<string> {
     const db = getDb();
     const row = db
       .prepare("SELECT local_path FROM tracks WHERE id = $id AND source = 'local'")
@@ -41,7 +57,7 @@ export class LocalFLACProvider implements MusicProvider {
     return `/audio/local/${encodeURIComponent(trackId)}`;
   }
 
-  async getTrackMetadata(trackId: string): Promise<TrackMeta> {
+  async getTrackMetadata(trackId: string, _options?: ProviderMetadataOptions): Promise<TrackMeta> {
     const db = getDb();
     const row = db
       .prepare("SELECT * FROM tracks WHERE id = $id AND source = 'local'")
@@ -58,13 +74,14 @@ export class LocalFLACProvider implements MusicProvider {
     };
   }
 
-  async getArtistTracks(artistId: string): Promise<Track[]> {
+  async getArtistTracks(artistId: string, options?: ProviderArtistOptions): Promise<Track[]> {
     const db = getDb();
+    const limit = Math.max(1, Math.min(Math.floor(options?.limit ?? 100), 200));
     const rows = db
       .prepare(
-        "SELECT * FROM tracks WHERE source = 'local' AND LOWER(artist) = LOWER($artist) LIMIT 100"
+        "SELECT * FROM tracks WHERE source = 'local' AND LOWER(artist) = LOWER($artist) LIMIT $limit"
       )
-      .all({ $artist: artistId }) as Record<string, unknown>[];
+      .all({ $artist: artistId, $limit: limit }) as Record<string, unknown>[];
     return rows.map(rowToTrack);
   }
 
@@ -81,7 +98,7 @@ export class LocalFLACProvider implements MusicProvider {
 function rowToTrack(row: Record<string, unknown>): Track {
   return {
     id: row.id as string,
-    source: row.source as "local" | "vk" | "soundcloud",
+    source: row.source as Track["source"],
     title: row.title as string,
     artist: row.artist as string,
     album: row.album as string | undefined,

@@ -32,8 +32,6 @@ struct Track: Identifiable, Codable, Hashable {
         case id, title, artist, album, canonicalFamilyId, artwork, artworkColor, url, duration, source
         case coverUrl
         case cover_url
-        case streamUrl
-        case stream_url
     }
 
     init(
@@ -72,10 +70,9 @@ struct Track: Identifiable, Codable, Hashable {
             ?? container.decodeIfPresent(String.self, forKey: .coverUrl)
             ?? container.decodeIfPresent(String.self, forKey: .cover_url)
         artworkColor = try container.decodeIfPresent(String.self, forKey: .artworkColor)
-        url = try container.decodeIfPresent(String.self, forKey: .url)
-            ?? container.decodeIfPresent(String.self, forKey: .streamUrl)
-            ?? container.decodeIfPresent(String.self, forKey: .stream_url)
-            ?? ""
+        // Ignore server/provider stream_url fields. APIService supplies the
+        // authenticated proxy URL after decoding track metadata.
+        url = try container.decodeIfPresent(String.self, forKey: .url) ?? ""
         duration = try container.decodeIfPresent(TimeInterval.self, forKey: .duration)
         source = (try? container.decode(TrackSource.self, forKey: .source)) ?? .local
     }
@@ -257,15 +254,15 @@ struct ServerTrack: Codable {
     var coverUrl: String?
     var localPath: String?
     var waveformUrl: String?
-    var streamUrl: String?
 
-    // Server uses both snake_case and camelCase
+    // Provider stream URLs are intentionally not modeled: some contain
+    // short-lived credentials and playback always uses APIService's proxy URL.
+    // Server uses both snake_case and camelCase for the remaining fields.
     enum CodingKeys: String, CodingKey {
         case id, source, title, artist, album, duration, canonicalFamilyId
         case coverUrl = "cover_url"
         case localPath = "local_path"
         case waveformUrl = "waveform_url"
-        case streamUrl = "stream_url"
     }
 }
 
