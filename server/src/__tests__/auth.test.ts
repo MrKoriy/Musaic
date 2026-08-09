@@ -191,13 +191,16 @@ describe("application authentication", () => {
     expect(JSON.stringify(body)).not.toContain("/srv/music/private");
   });
 
-  test("blocks artwork access without auth and blocks private addresses with auth", async () => {
-    const anonymous = await request("/api/artwork?url=http%3A%2F%2Flocalhost%3A3001%2Fhealth");
+  test("blocks artwork private addresses without auth and still serves authenticated-only routes", async () => {
+    const artwork = await request("/api/artwork?url=http%3A%2F%2F169.254.169.254%2F");
+    expect(artwork.status).toBe(400);
+    expect(await artwork.json()).toEqual({ error: "Blocked address" });
+
+    const anonymous = await request("/api/downloads/stream/local-track");
     expect(anonymous.status).toBe(401);
 
     const token = await register();
-    const blocked = await request("/api/artwork?url=http%3A%2F%2F169.254.169.254%2F", { headers: bearer(token) });
-    expect(blocked.status).toBe(400);
-    expect(await blocked.json()).toEqual({ error: "Blocked address" });
+    const sensitive = await request("/api/stream/liliy-track", { headers: bearer(token) });
+    expect(sensitive.status).toBe(404);
   });
 });

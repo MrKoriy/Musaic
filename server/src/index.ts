@@ -260,7 +260,8 @@ app.use("/api/*", async (c, next) => {
 function requiresAuth(path: string, method: string): boolean {
   if (path === "/api/auth/register" || path === "/api/auth/login") return false;
   if (path.startsWith("/api/auth/")) return true;
-  if (path === "/api/artwork") return true;
+  // Artwork stays public unless REQUIRE_AUTH_READS=1 — covers should load for
+  // any client page without a login session.
   if (path.startsWith("/api/downloads/")) return true;
   if (path.startsWith("/api/stream/")) return true;
   if (path.startsWith("/api/yandex/proxy/") || path.startsWith("/api/yandex/stream/")) return true;
