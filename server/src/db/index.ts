@@ -262,6 +262,27 @@ export function dropTracksSourceCheck(db: Database): void {
 }
 
 // Track operations
+/** Unwrap nested artwork proxy chains back to the original URL.
+ *  Keeps relative /api/covers/... paths untouched. */
+export function normalizeCoverUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  let current = value.trim();
+  if (current.startsWith("/")) return current;
+  for (let depth = 0; depth < 10; depth++) {
+    let parsed: URL;
+    try {
+      parsed = new URL(current);
+    } catch {
+      return current;
+    }
+    if (!/^\/api\/artwork(?:\/|$)/.test(parsed.pathname)) return current;
+    const inner = parsed.searchParams.get("url")?.trim();
+    if (!inner) return null;
+    current = inner;
+  }
+  return null;
+}
+
 export function upsertTrack(track: {
   id: string;
   source: string;
@@ -300,7 +321,7 @@ export function upsertTrack(track: {
     $title: track.title,
     $artist: track.artist,
     $album: track.album ?? null,
-    $cover_url: track.cover_url ?? null,
+    $cover_url: normalizeCoverUrl(track.cover_url),
     $cover_path: track.cover_path ?? null,
     $local_path: track.local_path ?? null,
     $waveform_url: track.waveform_url ?? null,
@@ -583,7 +604,7 @@ export function logListening(
 export function updateTrackCoverUrl(trackId: string, coverUrl: string): void {
   const db = getDb();
   db.prepare("UPDATE tracks SET cover_url = $url, updated_at = unixepoch() WHERE id = $id")
-    .run({ $url: coverUrl, $id: trackId });
+    .run({ $url: normalizeCoverUrl(coverUrl), $id: trackId });
 }
 
 // Cover art

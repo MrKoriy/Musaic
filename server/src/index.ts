@@ -422,6 +422,29 @@ app.get("/api/server/info", (c) => {
   });
 });
 
+/**
+ * Unwrap nested artwork proxy chains (cover_url values that were accidentally
+ * re-wrapped as /api/artwork?url=/api/artwork?url=... during import cycles).
+ * Returns the outermost non-proxy target URL, or null if the input is invalid.
+ */
+function unwrapArtworkChain(raw: string): string | null {
+  let current = raw.trim();
+  if (current.startsWith("/")) return current;
+  for (let depth = 0; depth < 10; depth++) {
+    let parsed: URL;
+    try {
+      parsed = new URL(current);
+    } catch {
+      return null;
+    }
+    if (!/^\/api\/artwork(?:\/|$)/.test(parsed.pathname)) return current;
+    const inner = parsed.searchParams.get("url")?.trim();
+    if (!inner) return null;
+    current = inner;
+  }
+  return null;
+}
+
 app.on(["GET", "HEAD"], "/api/artwork", async (c) => {
   const rawUrl = c.req.query("url")?.trim();
   if (!rawUrl) {
@@ -430,7 +453,11 @@ app.on(["GET", "HEAD"], "/api/artwork", async (c) => {
 
   let upstreamURL: URL;
   try {
-    upstreamURL = new URL(rawUrl);
+    const unwrapped = unwrapArtworkChain(rawUrl);
+    if (!unwrapped) {
+      return c.json({ error: "Invalid artwork URL" }, 400);
+    }
+    upstreamURL = new URL(unwrapped);
   } catch {
     return c.json({ error: "Invalid artwork URL" }, 400);
   }
