@@ -257,18 +257,20 @@ router.post("/likes/sync", async (c) => {
         .map((r) => r.track_id)
     );
 
-    // Add new likes from client
-    const insert = db.prepare("INSERT OR IGNORE INTO liked_tracks (user_id, track_id) VALUES ($uid, $tid)");
-    for (const tid of normalizedTrackIds) {
+    // Add new likes from client with descending liked_at to preserve client ordering
+    const insert = db.prepare("INSERT OR IGNORE INTO liked_tracks (user_id, track_id, liked_at) VALUES ($uid, $tid, $likedAt)");
+    const now = Math.floor(Date.now() / 1000);
+    for (let i = 0; i < normalizedTrackIds.length; i++) {
+      const tid = normalizedTrackIds[i];
       persistTrackMetadata(tid, metadataById.get(tid));
       if (!serverLikes.has(tid)) {
-        insert.run({ $uid: userId, $tid: tid });
+        insert.run({ $uid: userId, $tid: tid, $likedAt: now - i });
       }
     }
   })();
 
-  // Return merged set
-  const allLikes = db.prepare("SELECT track_id FROM liked_tracks WHERE user_id = $uid ORDER BY liked_at DESC")
+  // Return merged set in stable chronological order (newest first)
+  const allLikes = db.prepare("SELECT track_id FROM liked_tracks WHERE user_id = $uid ORDER BY liked_at DESC, rowid DESC")
     .all({ $uid: userId }) as { track_id: string }[];
 
   clearUserRecommendationCaches(userId);

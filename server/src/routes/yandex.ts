@@ -216,8 +216,12 @@ router.post("/likes/import", async (c) => {
     `);
 
     db.transaction(() => {
-      for (const track of tracks) {
-        const timestamp = Math.max(0, Math.floor(likedAt.get(track.id) ?? Date.now() / 1000));
+      const now = Math.floor(Date.now() / 1000);
+      for (let i = 0; i < tracks.length; i++) {
+        const track = tracks[i];
+        const rawTid = track.id.replace(/^yandex_/, "");
+        const explicitTs = likedAt.get(track.id) ?? likedAt.get(rawTid);
+        const timestamp = explicitTs && explicitTs > 0 ? Math.floor(explicitTs) : (now - i);
         const before = db.prepare(
           "SELECT 1 FROM liked_tracks WHERE user_id = $userId AND track_id = $trackId"
         ).get({ $userId: userId, $trackId: track.id });
@@ -237,6 +241,27 @@ router.post("/likes/import", async (c) => {
           $context: JSON.stringify({ provider: "yandex", imported: true }),
         });
       }
+
+      // Mirror the imported likes into a per-user "Yandex Likes" playlist so the
+      // import is visible as a collection, not only inside Liked.
+      const playlistId = `yandex-likes:${userId}`;
+      db.prepare(`
+        INSERT OR IGNORE INTO playlists (id, name, description, user_id)
+        VALUES ($id, 'Yandex Likes', 'Imported from your Yandex Music likes', $uid)
+      `).run({ $id: playlistId, $uid: userId });
+      const maxPos = (db.prepare(
+        "SELECT COALESCE(MAX(position), 0) AS m FROM playlist_tracks WHERE playlist_id = $pid"
+      ).get({ $pid: playlistId }) as { m: number }).m;
+      const insertPlaylistTrack = db.prepare(`
+        INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position)
+        VALUES ($pid, $tid, $pos)
+      `);
+      let position = maxPos;
+      for (const track of tracks) {
+        insertPlaylistTrack.run({ $pid: playlistId, $tid: track.id, $pos: ++position });
+      }
+      db.prepare("UPDATE playlists SET updated_at = unixepoch() WHERE id = $id")
+        .run({ $id: playlistId });
     })();
     clearUserRecommendationCaches(userId);
     return c.json({ imported, alreadyHad, total, cached: tracks.length });
