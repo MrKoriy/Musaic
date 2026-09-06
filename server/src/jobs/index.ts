@@ -8,6 +8,7 @@ import { runAudioEmbeddingsJob } from "./audio-embeddings.js";
 import { runRetentionJob } from "./retention.js";
 import { runCoverMigrationJob } from "./cover-migration.js";
 import { runReleaseDetectionJob } from "./release-detection.js";
+import { runDownloadsEvictionJob } from "./downloads-eviction.js";
 
 let registered = false;
 
@@ -23,4 +24,5 @@ export function registerRecommendationJobs(): void {
   registerJob({ name: "retention", intervalHours: 24, run: () => runRetentionJob() });
   registerJob({ name: "cover-migration", intervalHours: 24, run: () => runCoverMigrationJob() });
   registerJob({ name: "release-detection", intervalHours: 12, run: () => runReleaseDetectionJob() });
+  registerJob({ name: "downloads-eviction", intervalHours: 24, run: () => runDownloadsEvictionJob() });
 }
