@@ -291,7 +291,12 @@ struct LyricsSheet: View {
         loading = true
         loadError = nil
         defer { loading = false }
-        try? await api.deleteLyrics(trackId: track.id)
+        do {
+            try await api.deleteLyrics(trackId: track.id)
+        } catch {
+            loadError = "Couldn't clear cached lyrics: \(error.localizedDescription)"
+            return
+        }
         do {
             let response = try await api.getLyrics(trackId: track.id, artist: artist, title: title)
             rawLrc = response.lrc
@@ -353,9 +358,19 @@ struct LyricsSheet: View {
         generating = true
         generateTask = Task { @MainActor in
             defer { generating = false }
-            try? await api.deleteLyrics(trackId: track.id)
+            do {
+                try await api.deleteLyrics(trackId: track.id)
+            } catch {
+                loadError = "Couldn't start generation: \(error.localizedDescription)"
+                return
+            }
             if Task.isCancelled { return }
-            _ = try? await api.generateLyrics(trackId: track.id)
+            do {
+                _ = try await api.generateLyrics(trackId: track.id)
+            } catch {
+                loadError = "Couldn't start generation: \(error.localizedDescription)"
+                return
+            }
             for _ in 0..<60 {
                 try? await Task.sleep(for: .seconds(2))
                 if Task.isCancelled { return }

@@ -6,7 +6,17 @@ struct PlaylistPickerView: View {
     @State private var loading = true
     @State private var newName = ""
     @State private var showNew = false
+    @State private var actionError: String?
     @Environment(\.dismiss) private var dismiss
+
+    private func addTrack(to playlistId: String) async {
+        do {
+            try await APIService.shared.addToPlaylist(playlistId: playlistId, trackId: track.id)
+            dismiss()
+        } catch {
+            actionError = "Couldn't add to playlist: \(error.localizedDescription)"
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -21,10 +31,7 @@ struct PlaylistPickerView: View {
                         VStack(spacing: 10) {
                             ForEach(playlists, id: \.id) { playlist in
                                 Button {
-                                    Task {
-                                        try? await APIService.shared.addToPlaylist(playlistId: playlist.id, trackId: track.id)
-                                        dismiss()
-                                    }
+                                    Task { await addTrack(to: playlist.id) }
                                 } label: {
                                     HStack(spacing: 12) {
                                         RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -61,11 +68,13 @@ struct PlaylistPickerView: View {
 
                             Button("Create and add track") {
                                 Task {
-                                    let id = try? await APIService.shared.createPlaylist(name: newName)
-                                    if let id {
-                                        try? await APIService.shared.addToPlaylist(playlistId: id, trackId: track.id)
+                                    do {
+                                        let id = try await APIService.shared.createPlaylist(name: newName)
+                                        try await APIService.shared.addToPlaylist(playlistId: id, trackId: track.id)
+                                        dismiss()
+                                    } catch {
+                                        actionError = "Couldn't create playlist: \(error.localizedDescription)"
                                     }
-                                    dismiss()
                                 }
                             }
                             .frame(maxWidth: .infinity)
@@ -106,10 +115,22 @@ struct PlaylistPickerView: View {
                 }
             }
             .task {
-                playlists = (try? await APIService.shared.getPlaylists()) ?? []
+                do {
+                    playlists = try await APIService.shared.getPlaylists()
+                } catch {
+                    actionError = "Couldn't load playlists: \(error.localizedDescription)"
+                }
                 loading = false
             }
         }
         .presentationDetents([.medium, .large])
+        .alert(
+            "Something went wrong",
+            isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(actionError ?? "")
+        }
     }
 }

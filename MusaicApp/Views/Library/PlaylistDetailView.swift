@@ -22,6 +22,7 @@ struct PlaylistDetailView: View {
     @State private var selectedPhotoItem: PhotosPickerItem?
     #endif
     @State private var showFileImporter = false
+    @State private var actionError: String?
 
     private let api = APIService.shared
     private let player = PlayerStore.shared
@@ -206,7 +207,11 @@ struct PlaylistDetailView: View {
             Button("Save") {
                 guard !renameText.trimmingCharacters(in: .whitespaces).isEmpty else { return }
                 Task {
-                    try? await api.updatePlaylist(id: playlistId, name: renameText.trimmingCharacters(in: .whitespaces))
+                    do {
+                        try await api.updatePlaylist(id: playlistId, name: renameText.trimmingCharacters(in: .whitespaces))
+                    } catch {
+                        actionError = "Couldn't rename: \(error.localizedDescription)"
+                    }
                     await refreshPlaylist()
                 }
             }
@@ -215,13 +220,25 @@ struct PlaylistDetailView: View {
         .alert("Delete Playlist?", isPresented: $showDeleteConfirm) {
             Button("Delete", role: .destructive) {
                 Task {
-                    try? await api.deletePlaylist(id: playlistId)
-                    dismiss()
+                    do {
+                        try await api.deletePlaylist(id: playlistId)
+                        dismiss()
+                    } catch {
+                        actionError = "Couldn't delete: \(error.localizedDescription)"
+                    }
                 }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This will permanently delete \"\(playlist.name)\" and all its tracks.")
+        }
+        .alert(
+            "Something went wrong",
+            isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(actionError ?? "")
         }
     }
 
@@ -255,7 +272,11 @@ struct PlaylistDetailView: View {
         Task {
             uploadingCover = true
             defer { uploadingCover = false }
-            _ = try? await api.uploadPlaylistCover(playlistId: playlistId, data: prepared.data, mimeType: prepared.mimeType)
+            do {
+                _ = try await api.uploadPlaylistCover(playlistId: playlistId, data: prepared.data, mimeType: prepared.mimeType)
+            } catch {
+                actionError = "Couldn't upload cover: \(error.localizedDescription)"
+            }
             await refreshPlaylist()
         }
     }
@@ -264,7 +285,11 @@ struct PlaylistDetailView: View {
         Task {
             uploadingCover = true
             defer { uploadingCover = false }
-            try? await api.deletePlaylistCover(playlistId: playlistId)
+            do {
+                try await api.deletePlaylistCover(playlistId: playlistId)
+            } catch {
+                actionError = "Couldn't remove cover: \(error.localizedDescription)"
+            }
             await refreshPlaylist()
         }
     }

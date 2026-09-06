@@ -37,10 +37,19 @@ struct ExternalPlaylistSheet: View {
 
         do {
             let playlistId = try await api.createPlaylist(name: playlist.title)
+            var failed = 0
             for track in tracks {
-                try? await api.addToPlaylist(playlistId: playlistId, trackId: track.id)
+                do {
+                    try await api.addToPlaylist(playlistId: playlistId, trackId: track.id)
+                } catch {
+                    failed += 1
+                }
             }
-            saved = true
+            if failed > 0 {
+                saveError = "\(failed) of \(tracks.count) tracks couldn't be added"
+            } else {
+                saved = true
+            }
         } catch {
             saveError = error.localizedDescription
         }

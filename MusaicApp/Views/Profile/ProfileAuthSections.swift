@@ -86,7 +86,13 @@ final class ProfileAuthState {
 
     func disconnectVK() {
         Task {
-            try? await api.vkLogout()
+            // Server-side logout is best-effort: local credentials must be
+            // cleared even when the server is unreachable.
+            do {
+                try await api.vkLogout()
+            } catch {
+                print("[Profile] VK server logout failed: \(error.localizedDescription)")
+            }
             settings.clearVkAuth()
         }
     }
@@ -160,7 +166,12 @@ final class ProfileAuthState {
 
     func disconnectYandex() {
         Task {
-            try? await api.yandexLogout()
+            // Best-effort server logout; local credentials are cleared regardless.
+            do {
+                try await api.yandexLogout()
+            } catch {
+                print("[Profile] Yandex server logout failed: \(error.localizedDescription)")
+            }
             settings.clearYandexAuth()
         }
     }
