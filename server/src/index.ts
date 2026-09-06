@@ -310,6 +310,9 @@ app.use("/api/*", async (c, next) => {
   await next();
   const response = c.res;
   if (!response.headers.get("content-type")?.includes("application/json")) return response;
+  // Routes that already reduced payloads to public fields mark themselves so
+  // this parse/re-serialize pass (expensive for large playlists) is skipped.
+  if (response.headers.get("x-private-stripped")) return response;
   const text = await response.clone().text();
   if (!text) return response;
   try {
@@ -510,7 +513,10 @@ app.on(["GET", "HEAD"], "/api/artwork", async (c) => {
 
     const headers = new Headers();
     headers.set("Content-Type", contentType);
-    headers.set("Cache-Control", upstream.headers.get("cache-control") ?? "public, max-age=86400");
+    // URLSession refuses to cache responses to Authorization-header requests
+    // unless the response is explicitly public. Cover art is immutable per
+    // URL, so pin a long public cache lifetime and ignore upstream headers.
+    headers.set("Cache-Control", "public, max-age=86400, immutable");
     for (const header of ["content-length", "etag", "last-modified", "accept-ranges"]) {
       const value = upstream.headers.get(header);
       if (value) {
@@ -569,7 +575,21 @@ app.get("/api/tracks/by-ids", async (c) => {
     .map((id) => rowsByID.get(id))
     .filter((row): row is Record<string, unknown> & { id: string } => Boolean(row));
 
-  return c.json({ tracks: publicTracks(orderedRows) });
+  // Let the client's hydration requests revalidate cheaply instead of
+  // re-downloading the same 1000-track metadata on every app launch.
+  const latest = orderedRows.reduce((max, row) => {
+    const updated = Number(row.updated_at ?? 0);
+    return updated > max ? updated : max;
+  }, 0);
+  const etag = `"${orderedRows.length}:${latest}"`;
+  if (c.req.header("if-none-match") === etag) {
+    return new Response(null, { status: 304, headers: { ETag: etag, "Cache-Control": "public, max-age=60" } });
+  }
+  return c.json({ tracks: publicTracks(orderedRows) }, 200, {
+    ETag: etag,
+    "Cache-Control": "public, max-age=60",
+    "X-Private-Stripped": "1",
+  });
 });
 
 // ─── History logging ──────────────────────────────────────────────────────────

@@ -13,6 +13,24 @@ import {
   getPlaylistCoverData,
   clearPlaylistCoverData,
 } from "../../db/index.js";
+import { publicTrack } from "../../utils/public-track.js";
+
+const CACHE_CONTROL_JSON = "public, max-age=30";
+
+function etagFor(value: string): string {
+  return `"${crypto.createHash("sha1").update(value).digest("hex").slice(0, 20)}"`;
+}
+
+function notModifiedResponse(etag: string): Response {
+  return new Response(null, {
+    status: 304,
+    headers: { ETag: etag, "Cache-Control": CACHE_CONTROL_JSON },
+  });
+}
+
+/** Payload rows are already reduced to public fields — tell the response
+ *  sanitizer middleware to skip the parse/re-serialize pass. */
+const PRIVATE_STRIPPED: Record<string, string> = { "X-Private-Stripped": "1" };
 
 function playlistOwnershipCheck(
   id: string,
@@ -49,7 +67,13 @@ export const playlistsRouter = new Hono();
 
 playlistsRouter.get("/", (c) => {
   const userId = (c as any).get("userId") as string | undefined;
-  return c.json({ playlists: getPlaylists(userId) });
+  const playlists = getPlaylists(userId);
+  const fingerprint = playlists
+    .map((p) => `${p.id}:${p.updated_at}:${p.track_count}`)
+    .join("|");
+  const etag = etagFor(`playlists:${fingerprint}`);
+  if (c.req.header("if-none-match") === etag) return notModifiedResponse(etag);
+  return c.json({ playlists }, 200, { ETag: etag, "Cache-Control": CACHE_CONTROL_JSON, ...PRIVATE_STRIPPED });
 });
 
 playlistsRouter.post("/", async (c) => {
@@ -70,7 +94,14 @@ playlistsRouter.delete("/:id", (c) => {
 });
 
 playlistsRouter.get("/:id/tracks", (c) => {
-  return c.json({ tracks: getPlaylistTracks(c.req.param("id")) });
+  const id = c.req.param("id");
+  const db = getDb();
+  const meta = db.prepare("SELECT updated_at FROM playlists WHERE id = $id")
+    .get({ $id: id }) as { updated_at: number } | null;
+  const etag = etagFor(`playlist-tracks:${id}:${meta?.updated_at ?? 0}`);
+  if (c.req.header("if-none-match") === etag) return notModifiedResponse(etag);
+  const tracks = getPlaylistTracks(id).map(publicTrack);
+  return c.json({ tracks }, 200, { ETag: etag, "Cache-Control": CACHE_CONTROL_JSON, ...PRIVATE_STRIPPED });
 });
 
 playlistsRouter.post("/:id/tracks", async (c) => {
@@ -208,5 +239,7 @@ playlistsRouter.get("/:id", (c) => {
     GROUP BY p.id
   `).get({ $id: id }) as Record<string, unknown> | null;
   if (!playlist) return c.json({ error: "Not found" }, 404);
-  return c.json({ playlist: normalizePlaylistRow(playlist) });
+  const etag = etagFor(`playlist:${id}:${playlist.updated_at}:${playlist.track_count}`);
+  if (c.req.header("if-none-match") === etag) return notModifiedResponse(etag);
+  return c.json({ playlist: normalizePlaylistRow(playlist) }, 200, { ETag: etag, "Cache-Control": CACHE_CONTROL_JSON, ...PRIVATE_STRIPPED });
 });

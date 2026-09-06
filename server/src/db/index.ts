@@ -651,10 +651,12 @@ export function normalizePlaylistRow(row: Record<string, unknown>): Record<strin
 export function getPlaylists(userId?: string | null): Record<string, unknown>[] {
   const db = getDb();
   const userClause = userId ? "WHERE (p.user_id = $uid OR p.user_id IS NULL)" : "";
+  // Correlated subqueries instead of a JOIN + GROUP BY over playlist_tracks:
+  // a 1000-track playlist no longer materialises 1000 rows just to count them.
   const rows = db.prepare(`
     SELECT
       p.*,
-      COUNT(pt.track_id) as track_count,
+      (SELECT COUNT(*) FROM playlist_tracks pt WHERE pt.playlist_id = p.id) as track_count,
       CASE WHEN pcd.playlist_id IS NOT NULL THEN 1 ELSE 0 END as has_custom_cover,
       COALESCE(
         CASE
@@ -671,10 +673,8 @@ export function getPlaylists(userId?: string | null): Record<string, unknown>[] 
         )
       ) as cover_url
     FROM playlists p
-    LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
     LEFT JOIN playlist_cover_data pcd ON p.id = pcd.playlist_id
     ${userClause}
-    GROUP BY p.id
     ORDER BY p.updated_at DESC
   `).all(userId ? { $uid: userId } : {}) as Record<string, unknown>[];
 
