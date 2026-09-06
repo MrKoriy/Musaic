@@ -264,6 +264,8 @@ function requiresAuth(path: string, method: string): boolean {
   // Artwork stays public unless REQUIRE_AUTH_READS=1 — covers should load for
   // any client page without a login session.
   if (path.startsWith("/api/downloads/")) return true;
+  // Streams proxy the user's paid provider accounts; they must never be
+  // reachable without a session even on a personal server (public IP).
   if (path.startsWith("/api/stream/")) return true;
   if (path.startsWith("/api/yandex/proxy/") || path.startsWith("/api/yandex/stream/")) return true;
   if (path.startsWith("/api/vk/stream/") || path.startsWith("/api/vk/proxy/")) return true;

@@ -21,8 +21,21 @@ setInterval(() => {
 }, 60_000).unref();
 
 function callbackBaseUrl(c: { req: { header(name: string): string | undefined; url?: string } }): string {
+  // The redirect URI must never be derived from a spoofable Host header alone:
+  // a forged Host would send the OAuth token to an attacker's origin.
+  const configured = process.env.VK_REDIRECT_BASE?.trim();
+  if (configured) {
+    return configured.replace(/\/+$/, "");
+  }
+  const host = c.req.header("host") ?? "";
+  const allowedHosts = (process.env.VK_ALLOWED_HOSTS ?? "45.146.167.109:3001,localhost:3001,127.0.0.1:3001")
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+  if (!allowedHosts.includes(host.toLowerCase())) {
+    throw new StreamProxyError(400, `Host not allowed for VK OAuth callback: ${host}`);
+  }
   const forwardedProto = c.req.header("x-forwarded-proto");
-  const host = c.req.header("host") ?? "localhost:3001";
   const requestProtocol = c.req.url ? new URL(c.req.url).protocol.replace(":", "") : undefined;
   const protocol = forwardedProto ?? requestProtocol ?? "http";
   return `${protocol}://${host}`;
