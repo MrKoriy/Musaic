@@ -87,6 +87,7 @@ final class PlayerStore {
         audio.onRemotePrevious = { [weak self] in self?.skipPrevious() }
         audio.onPlaybackProgress = { [weak self] position in
             self?.recordPlaybackProgress(position)
+            self?.pushProgressToWatch(position)
         }
         audio.onPlaybackPaused = { [weak self] in
             self?.handlePlaybackPaused()
@@ -108,6 +109,7 @@ final class PlayerStore {
         currentTrack = normalizedTrack
         audio.play(track: normalizedTrack, restartIfSame: restartIfCurrent)
         audio.updateNowPlayingInfo(track: normalizedTrack)
+        publishNowPlayingSnapshot(track: normalizedTrack)
         audio.onTrackEnd { [weak self] in self?.handleTrackEnd() }
 
         // Tell AudioPlayer what track comes next for crossfade
@@ -257,7 +259,18 @@ final class PlayerStore {
         audio.togglePlayPause()
         if let track = currentTrack {
             audio.updateNowPlayingInfo(track: track)
+            publishNowPlayingSnapshot(track: track)
         }
+    }
+
+    func resumePlayback() {
+        audio.resume()
+        if let track = currentTrack { publishNowPlayingSnapshot(track: track) }
+    }
+
+    func pausePlayback() {
+        audio.pause()
+        if let track = currentTrack { publishNowPlayingSnapshot(track: track) }
     }
 
     // MARK: - Sleep timer
@@ -787,6 +800,42 @@ final class PlayerStore {
 
         logPlaybackSnapshot(context: context, action: action, eventId: context.eventId)
     }
+
+    /// Write the current track to the App Group so the widget/watch can render
+    /// it without a network round-trip.
+    private func publishNowPlayingSnapshot(track: Track) {
+        NowPlayingShared.save(NowPlayingSnapshot(
+            trackId: track.id,
+            title: track.title,
+            artist: track.artist,
+            artworkURL: track.artwork,
+            isPlaying: audio.isPlaying,
+            updatedAt: Int(Date().timeIntervalSince1970)
+        ))
+        pushSnapshotToWatch()
+    }
+
+    private func pushSnapshotToWatch() {
+        #if os(iOS)
+        guard let snapshot = NowPlayingShared.load() else { return }
+        let liked = LibraryStore.shared.likedTrackIds.contains(snapshot.trackId)
+        WatchControlHandler.shared.pushSnapshotToWatch(snapshot, liked: liked)
+        #endif
+    }
+
+    private func pushProgressToWatch(_ position: TimeInterval) {
+        #if os(iOS)
+        guard let track = currentTrack, let duration = track.duration, duration > 0 else { return }
+        let fraction = position / duration
+        // Throttle to ~1Hz to keep the radio quiet.
+        if Int(fraction * 100) != Int(lastWatchProgressPercent) {
+            lastWatchProgressPercent = fraction * 100
+            WatchControlHandler.shared.pushProgressToWatch(fraction)
+        }
+        #endif
+    }
+
+    private var lastWatchProgressPercent: Double = -1
 
     #if DEBUG
     func seedDebugNowPlayingIfNeeded(autoplay: Bool = true) {

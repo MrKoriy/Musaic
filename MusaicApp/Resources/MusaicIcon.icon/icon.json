@@ -1,0 +1,23 @@
+{
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "image-name" : "Icon.png",
+          "name" : "Icon"
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : "shared"
+  }
+}

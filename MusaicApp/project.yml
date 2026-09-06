@@ -10,6 +10,7 @@ settings:
     SWIFT_VERSION: "6.0"
     MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: 1
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
 targets:
   Musaic:
@@ -62,6 +63,14 @@ targets:
         CODE_SIGN_IDENTITY: "Apple Development"
         CODE_SIGN_STYLE: Automatic
         PRODUCT_BUNDLE_IDENTIFIER: com.leonid.musaic
+        CODE_SIGN_ENTITLEMENTS: Resources/Musaic.entitlements
+    dependencies:
+      - target: MusaicWidget
+        embed: true
+        codeSign: true
+      - target: MusaicWatch
+        embed: true
+        codeSign: true
 
   MusaicMac:
     type: application
@@ -80,6 +89,8 @@ targets:
       path: Resources/Info-macOS.plist
       properties:
         LSApplicationCategoryType: public.app-category.music
+        CFBundleIconName: MusaicIcon
+        CFBundleIconFile: MusaicIcon
         NSAppTransportSecurity:
           # Plain-HTTP server on a public IP (no domain for a trusted cert yet).
           # Re-enable strict ATS once TLS is configured on the server.
@@ -98,3 +109,62 @@ targets:
         CODE_SIGN_STYLE: Automatic
         PRODUCT_BUNDLE_IDENTIFIER: com.leonid.musaic.mac.dev
         ENABLE_APP_SANDBOX: NO
+    postBuildScripts:
+      - name: Patch Liquid Glass app icon (macOS 26)
+        script: |
+          set -e
+          ACTOOL="$(xcrun -f actool)"
+          OUT="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources"
+          TMP="$(mktemp -d)"
+          "$ACTOOL" "${SRCROOT}/Resources/Assets.xcassets" "${SRCROOT}/Resources/MusaicIcon.icon" \
+            --compile "$TMP" --output-format human-readable-text --notices --warnings --errors \
+            --app-icon MusaicIcon --include-all-app-icons --enable-on-demand-resources NO \
+            --development-region en --target-device mac --minimum-deployment-target 15.0 \
+            --platform macosx --output-partial-info-plist "$TMP/p.plist" >/dev/null
+          cp "$TMP/Assets.car" "$OUT/Assets.car"
+          cp "$TMP/MusaicIcon.icns" "$OUT/"
+          rm -rf "$TMP"
+
+  MusaicWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Widgets
+      - path: Services/NowPlayingShared.swift
+    info:
+      path: Resources/Widget-Info.plist
+      properties:
+        CFBundleDisplayName: Musaic Now Playing
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.leonid.musaic.widget
+        CODE_SIGN_ENTITLEMENTS: Resources/Widget.entitlements
+        SWIFT_STRICT_CONCURRENCY: complete
+        DEVELOPMENT_TEAM: 72BG7PXY8J
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "Apple Development"
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+
+  MusaicWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - WatchApp
+      - path: Services/NowPlayingShared.swift
+    info:
+      path: Resources/Watch-Info.plist
+      properties:
+        CFBundleDisplayName: Musaic
+        WKApplication: true
+        WKCompanionAppBundleIdentifier: com.leonid.musaic
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.leonid.musaic.watch
+        CODE_SIGN_ENTITLEMENTS: Resources/Watch.entitlements
+        SWIFT_STRICT_CONCURRENCY: complete
+        DEVELOPMENT_TEAM: 72BG7PXY8J
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "Apple Development"
+        TARGETED_DEVICE_FAMILY: 4
