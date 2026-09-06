@@ -22,6 +22,30 @@ enum DownloadState: Equatable {
     }
 }
 
+/// URLSession delegate that reports download progress off the main thread.
+private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let handler: @Sendable (Double) -> Void
+
+    init(handler: @escaping @Sendable (Double) -> Void) {
+        self.handler = handler
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard totalBytesExpectedToWrite > 0 else { return }
+        handler(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        // The async download(for:delegate:) call returns the file; nothing to do.
+    }
+}
+
 @Observable
 @MainActor
 final class DownloadManager {
@@ -35,6 +59,17 @@ final class DownloadManager {
 
     private(set) var downloads: [String: DownloadedTrack] = [:]
     private(set) var activeDownloads: [String: DownloadState] = [:]
+
+    /// One shared session for every download (per-download sessions leak
+    /// connection pools). URLSession is thread-safe.
+    nonisolated(unsafe) private static let downloadSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForResource = 300
+        return URLSession(configuration: config)
+    }()
+
+    /// Last time a progress event was published per track (10 Hz cap).
+    private var lastProgressEventAt: [String: Date] = [:]
 
     var totalSizeBytes: Int64 {
         downloads.values.reduce(0) { $0 + $1.sizeBytes }
@@ -107,11 +142,23 @@ final class DownloadManager {
 
     // MARK: - Download Logic
 
-    private func performDownload(_ track: Track) async {
+    /// Publish download progress, throttled to ~10 Hz so a fast local server
+    /// cannot flood SwiftUI updates.
+    private func publishProgress(trackId: String, fraction: Double) {
+        guard case .downloading = activeDownloads[trackId] else { return }
+        let now = Date()
+        if fraction < 0.999, let last = lastProgressEventAt[trackId], now.timeIntervalSince(last) < 0.1 {
+            return
+        }
+        lastProgressEventAt[trackId] = now
+        activeDownloads[trackId] = .downloading(progress: min(max(fraction, 0), 1))
+    }
+
+    private nonisolated func performDownload(_ track: Track) async {
         let trackId = track.id
         // Download only through the server proxy. Provider stream URLs can
         // contain short-lived credentials and must never be persisted client-side.
-        let urlString = api.compressedDownloadURL(forTrackID: trackId)
+        let urlString = await api.compressedDownloadURL(forTrackID: trackId)
         guard let url = URL(string: urlString) else {
             await MainActor.run { activeDownloads[trackId] = .failed("Invalid URL") }
             return
@@ -121,14 +168,16 @@ final class DownloadManager {
             let dir = downloadsDirectory()
             try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
 
-            // Use a dedicated session so long-running downloads get a longer timeout.
-            let config = URLSessionConfiguration.default
-            config.timeoutIntervalForResource = 300
-            let session = URLSession(configuration: config)
-            var request = api.authenticatedRequest(for: url)
+            var request = await api.authenticatedRequest(for: url)
             request.setValue("audio/*", forHTTPHeaderField: "Accept")
 
-            let (tempURL, response) = try await session.download(for: request)
+            let reporter = DownloadProgressDelegate { [weak self] fraction in
+                Task { @MainActor [weak self] in
+                    self?.publishProgress(trackId: trackId, fraction: fraction)
+                }
+            }
+
+            let (tempURL, response) = try await Self.downloadSession.download(for: request, delegate: reporter)
 
             guard let http = response as? HTTPURLResponse else {
                 await MainActor.run { activeDownloads[trackId] = .failed("No response") }
@@ -180,18 +229,20 @@ final class DownloadManager {
             await MainActor.run {
                 downloads[trackId] = dl
                 activeDownloads[trackId] = .completed
+                lastProgressEventAt.removeValue(forKey: trackId)
                 saveDownloads()
             }
         } catch {
             await MainActor.run {
                 activeDownloads[trackId] = .failed(error.localizedDescription)
+                lastProgressEventAt.removeValue(forKey: trackId)
             }
         }
     }
 
     // MARK: - Storage
 
-    private func downloadsDirectory() -> String {
+    private nonisolated func downloadsDirectory() -> String {
         // .documentDirectory always exists on iOS/macOS, but fall back to the temp
         // directory just in case so we never trap on app launch.
         let docs = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first
@@ -199,11 +250,11 @@ final class DownloadManager {
         return (docs as NSString).appendingPathComponent("OfflineMusic")
     }
 
-    private func localFilePath(for fileName: String) -> String {
+    private nonisolated func localFilePath(for fileName: String) -> String {
         (downloadsDirectory() as NSString).appendingPathComponent(fileName)
     }
 
-    private func sanitizedFileName(trackId: String, artist: String, title: String, fileExtension: String) -> String {
+    private nonisolated func sanitizedFileName(trackId: String, artist: String, title: String, fileExtension: String) -> String {
         let safe = "\(artist) - \(title)"
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
@@ -217,7 +268,7 @@ final class DownloadManager {
         return "\(safe)_\(String(format: "%04x", hash)).\(fileExtension)"
     }
 
-    private func audioFileExtension(for mimeType: String?) -> String {
+    private nonisolated func audioFileExtension(for mimeType: String?) -> String {
         switch mimeType?.lowercased() {
         case "audio/mp4", "audio/x-m4a": return "m4a"
         case "audio/mpeg", "audio/mp3": return "mp3"
