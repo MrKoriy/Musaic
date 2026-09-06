@@ -78,12 +78,82 @@ struct LibraryView: View {
         }
     }
 
+    enum LikedSortOption: String, CaseIterable, Identifiable {
+        case recentlyAdded = "recently_added"
+        case oldest = "oldest"
+        case title = "title"
+        case artist = "artist"
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .recentlyAdded: return String(localized: "Recently Added")
+            case .oldest: return String(localized: "Oldest First")
+            case .title: return String(localized: "Title")
+            case .artist: return String(localized: "Artist")
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .recentlyAdded: return "clock.arrow.circlepath"
+            case .oldest: return "clock"
+            case .title: return "textformat"
+            case .artist: return "person"
+            }
+        }
+    }
+
+    @AppStorage("library_liked_sort_option") private var sortOptionRaw = LikedSortOption.recentlyAdded.rawValue
+
+    private var currentSortOption: LikedSortOption {
+        LikedSortOption(rawValue: sortOptionRaw) ?? .recentlyAdded
+    }
+
+    private func sortedLikedTracks(_ raw: [Track]) -> [Track] {
+        switch currentSortOption {
+        case .recentlyAdded:
+            return raw
+        case .oldest:
+            return raw.reversed()
+        case .title:
+            return raw.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        case .artist:
+            return raw.sorted { $0.artist.localizedCaseInsensitiveCompare($1.artist) == .orderedAscending }
+        }
+    }
+
     private var likedView: some View {
         let allLiked = library.displayedLikedTracks
-        let liked = downloadedOnly ? allLiked.filter { downloadManager.isDownloaded($0.id) } : allLiked
+        let filtered = downloadedOnly ? allLiked.filter { downloadManager.isDownloaded($0.id) } : allLiked
+        let liked = sortedLikedTracks(filtered)
 
         return VStack(spacing: 12) {
             HStack(spacing: 10) {
+                Menu {
+                    Picker("Sort by", selection: $sortOptionRaw) {
+                        ForEach(LikedSortOption.allCases) { option in
+                            Label(option.title, systemImage: option.icon).tag(option.rawValue)
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: currentSortOption.icon)
+                            .font(.system(size: 11))
+                        Text(currentSortOption.title)
+                            .font(.system(size: 12, weight: .semibold))
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .foregroundStyle(Color.accentStrong)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .glassCard(cornerRadius: 12, intensity: 0.08)
+                }
+
+                Spacer()
+
                 HStack(spacing: 6) {
                     Image(systemName: "arrow.down.circle.fill")
                         .font(.system(size: 13))
@@ -91,11 +161,10 @@ struct LibraryView: View {
                     Text("Downloaded only")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.textPrimary)
+                    Toggle("", isOn: $downloadedOnly)
+                        .labelsHidden()
+                        .tint(Color.accentStrong)
                 }
-                Spacer()
-                Toggle("", isOn: $downloadedOnly)
-                    .labelsHidden()
-                    .tint(Color.accentStrong)
             }
             .padding(.horizontal, 18)
 

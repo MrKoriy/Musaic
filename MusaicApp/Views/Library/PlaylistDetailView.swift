@@ -118,9 +118,8 @@ struct PlaylistDetailView: View {
                         }
                         .padding(.horizontal, 18)
 
-                        VStack(spacing: 10) {
-                            ForEach(tracks.indices, id: \.self) { idx in
-                                let track = tracks[idx]
+                        LazyVStack(spacing: 10) {
+                            ForEach(Array(tracks.enumerated()), id: \.element.id) { idx, track in
                                 TrackRow(
                                     track: track,
                                     index: idx + 1,
@@ -227,6 +226,13 @@ struct PlaylistDetailView: View {
     }
 
     private func refreshPlaylist() async {
+        // Show cached tracks instantly, then revalidate — reopening a large
+        // playlist (e.g. Yandex Likes with 1000+ tracks) must not show a spinner.
+        if tracks.isEmpty, let cached = api.cachedPlaylistTracks(playlistId: playlistId) {
+            tracks = cached.map(api.toAppTrack)
+            loading = false
+        }
+
         async let playlistTask = try? api.getPlaylist(id: playlistId)
         async let tracksTask = try? api.getPlaylistTracks(playlistId: playlistId)
 
@@ -234,7 +240,11 @@ struct PlaylistDetailView: View {
             playlist = fetchedPlaylist
         }
         if let fetchedTracks = await tracksTask {
-            tracks = fetchedTracks.map(api.toAppTrack)
+            api.storePlaylistTracks(fetchedTracks, playlistId: playlistId)
+            let mapped = fetchedTracks.map(api.toAppTrack)
+            if mapped != tracks {
+                tracks = mapped
+            }
         }
         loading = false
     }

@@ -30,10 +30,14 @@ final class AudioPlayer {
     private var endObserver: NSObjectProtocol?
     private var stalledObserver: NSObjectProtocol?
     private var failedObserver: NSObjectProtocol?
+    private var interruptionObserver: NSObjectProtocol?
+    private var routeChangeObserver: NSObjectProtocol?
     private var trackEndAction: (() -> Void)?
     private var lastNowPlayingElapsedSecond = -1
     private var lastNowPlayingDuration: TimeInterval = 0
     private var wantsPlayback = false
+    private var seekGeneration = 0
+    private var wasPlayingBeforeInterruption = false
 
     // Stalls are retried only for the current item. A new track, restart, or
     // explicit resume starts a fresh retry budget.
@@ -73,6 +77,7 @@ final class AudioPlayer {
 
     private init() {
         setupAudioSession()
+        setupAudioSessionObservers()
         setupRemoteCommands()
         applyPlaybackSettings()
     }
@@ -101,10 +106,55 @@ final class AudioPlayer {
     private func setupAudioSession() {
         #if os(iOS)
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.allowBluetoothA2DP])
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
             print("[AudioPlayer] Audio session error: \(error)")
+        }
+        #endif
+    }
+
+    private func setupAudioSessionObservers() {
+        #if os(iOS)
+        let center = NotificationCenter.default
+        interruptionObserver = center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            guard let info = notification.userInfo,
+                  let rawType = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
+            let rawOptions = (info[AVAudioSessionInterruptionOptionKey] as? UInt).map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                switch type {
+                case .began:
+                    self.wasPlayingBeforeInterruption = self.wantsPlayback || self.isPlaying
+                    self.player?.pause()
+                    self.transition(to: .paused)
+                case .ended:
+                    guard self.wasPlayingBeforeInterruption else { return }
+                    self.wasPlayingBeforeInterruption = false
+                    if rawOptions.contains(.shouldResume) { self.resume() }
+                @unknown default:
+                    break
+                }
+            }
+        }
+        routeChangeObserver = center.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            guard let reasonValue = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                  let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if reason == .oldDeviceUnavailable {
+                    self.pause()
+                }
+            }
         }
         #endif
     }
@@ -194,6 +244,10 @@ final class AudioPlayer {
         stallRetryTask?.cancel()
         stallRetryTask = nil
         player?.pause()
+        crossfadePlayer?.pause()
+        crossfadeTimer?.invalidate()
+        crossfadeTimer = nil
+        crossfadeStarted = false
         if player?.currentItem == nil {
             transition(to: .idle)
         } else {
@@ -332,7 +386,19 @@ final class AudioPlayer {
         if dur > duration { duration = dur }
 
         let target = CMTime(seconds: targetSeconds, preferredTimescale: 600)
-        player.seek(to: target)
+        seekGeneration += 1
+        let generation = seekGeneration
+        let shouldResume = wantsPlayback || isPlaying
+        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak player] finished in
+            Task { @MainActor [weak self, weak player] in
+                guard let self, let player, self.player === player, finished,
+                      self.seekGeneration == generation else { return }
+                self.currentTime = targetSeconds
+                self.progress = safeFraction
+                if shouldResume && !self.isPlaying { player.play() }
+                self.syncNowPlayingProgressIfNeeded(force: true)
+            }
+        }
         lastNowPlayingElapsedSecond = -1
         syncNowPlayingProgressIfNeeded(force: true)
     }
@@ -835,6 +901,13 @@ final class AudioPlayer {
 
     private func setupRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
+
+        center.playCommand.isEnabled = true
+        center.pauseCommand.isEnabled = true
+        center.togglePlayPauseCommand.isEnabled = true
+        center.nextTrackCommand.isEnabled = true
+        center.previousTrackCommand.isEnabled = true
+        center.changePlaybackPositionCommand.isEnabled = true
 
         center.playCommand.addTarget { [weak self] _ in
             Task { @MainActor [weak self] in self?.resume() }

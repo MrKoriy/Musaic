@@ -254,7 +254,10 @@ struct LyricsSheet: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: generating)
-        .task { await loadLyrics() }
+        .task(id: track.id) {
+            resetLyricsState()
+            await loadLyrics()
+        }
         .onAppear { startLyricsTimer() }
         .onDisappear { stopLyricsTimer() }
         .alert("Search lyrics manually", isPresented: $showManualSearch) {
@@ -315,6 +318,19 @@ struct LyricsSheet: View {
         timerTask = nil
         generateTask?.cancel()
         generateTask = nil
+    }
+
+    private func resetLyricsState() {
+        timerTask?.cancel()
+        generateTask?.cancel()
+        rawLrc = nil
+        lines = []
+        activeLine = 0
+        loading = true
+        generating = false
+        loadError = nil
+        tappedLineId = nil
+        userScrolledAway = false
     }
 
     private func updateActiveLine() {

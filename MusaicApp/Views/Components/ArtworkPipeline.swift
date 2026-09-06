@@ -47,6 +47,12 @@ actor ArtworkPipeline {
     private let session: URLSession
     private let imageCache: NSCache<NSString, PlatformImage>
 
+    // Opening a 1000-track playlist used to fire a 1000-image fetch storm.
+    // Cap concurrent network+decode work; queued loads wait for a free slot.
+    private let maxConcurrentLoads = 12
+    private var activeLoads = 0
+    private var loadWaiters: [CheckedContinuation<Void, Never>] = []
+
     init() {
         let configuration = URLSessionConfiguration.default
         configuration.requestCachePolicy = .returnCacheDataElseLoad
@@ -64,8 +70,27 @@ actor ArtworkPipeline {
         self.imageCache = imageCache
     }
 
+    private func acquireLoadSlot() async {
+        if activeLoads < maxConcurrentLoads {
+            activeLoads += 1
+            return
+        }
+        await withCheckedContinuation { loadWaiters.append($0) }
+        activeLoads += 1
+    }
+
+    private func releaseLoadSlot() {
+        if let waiter = loadWaiters.first {
+            loadWaiters.removeFirst()
+            waiter.resume()
+        } else {
+            activeLoads -= 1
+        }
+    }
+
     func loadImage(from url: URL, maxPixelSize: Int) async throws -> ArtworkLoadResult {
-        let cacheKey = "\(url.absoluteString)|\(maxPixelSize)" as NSString
+        let fetchURL = Self.unwrappedArtworkURL(url)
+        let cacheKey = "\(fetchURL.absoluteString)|\(maxPixelSize)" as NSString
         if let cached = imageCache.object(forKey: cacheKey) {
             return ArtworkLoadResult(image: cached, statusCode: nil, byteCount: nil, cacheHit: true)
         }
@@ -75,16 +100,27 @@ actor ArtworkPipeline {
             return try await inflightTask.value
         }
 
+        await acquireLoadSlot()
         let task = Task<ArtworkLoadResult, Error> { [session] in
-            var request = URLRequest(url: url)
+            defer { Task { await Self.shared.releaseLoadSlot() } }
+            // Rows that scrolled out of view cancel their load; bail before
+            // spending a slot on a download nobody needs.
+            if Task.isCancelled { throw CancellationError() }
+            var request = URLRequest(url: fetchURL)
             request.cachePolicy = .returnCacheDataElseLoad
             request.timeoutInterval = 20
             if url.path.hasPrefix("/api/artwork") || url.path.hasPrefix("/api/covers") {
                 request = await MainActor.run { APIService.shared.authenticatedRequest(for: url) }
+                // Upstream sends Cache-Control: max-age=86400,immutable — honor
+                // it so scrolling a 1000-track list never re-downloads covers.
+                request.cachePolicy = .useProtocolCachePolicy
+            } else if url.path.hasPrefix("/api/playlists/") && url.path.hasSuffix("/image") {
+                // Custom playlist covers can change; never serve a stale one.
                 request.cachePolicy = .reloadIgnoringLocalCacheData
             }
 
             let (data, response) = try await session.data(for: request)
+            if Task.isCancelled { throw CancellationError() }
             guard data.count <= 5 * 1024 * 1024 else { throw URLError(.dataLengthExceedsMaximum) }
             let statusCode = (response as? HTTPURLResponse)?.statusCode
             if let statusCode, !(200..<300).contains(statusCode) {
@@ -102,7 +138,11 @@ actor ArtworkPipeline {
 
         inflight[requestKey] = task
         defer { inflight[requestKey] = nil }
-        return try await task.value
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     private static func downsampledImage(from data: Data, maxPixelSize: Int) -> PlatformImage? {
@@ -128,6 +168,22 @@ actor ArtworkPipeline {
         let scale = image.platformScale
         let pixels = Int(image.platformSize.width * scale * image.platformSize.height * scale)
         return pixels * 4
+    }
+
+    /// Collapse legacy nested /api/artwork?url=/api/artwork?url=... chains that
+    /// were persisted into cached liked tracks — down to the innermost proxy URL.
+    /// The server also unwraps, but this keeps request URLs short (NSURLError -1013).
+    private static func unwrappedArtworkURL(_ url: URL) -> URL {
+        guard url.path.hasPrefix("/api/artwork") else { return url }
+        var current = url
+        for _ in 0..<10 {
+            guard let components = URLComponents(url: current, resolvingAgainstBaseURL: false),
+                  let innerRaw = components.queryItems?.first(where: { $0.name == "url" })?.value,
+                  let inner = URL(string: innerRaw),
+                  inner.path.hasPrefix("/api/artwork") else { return current }
+            current = inner
+        }
+        return current
     }
 }
 

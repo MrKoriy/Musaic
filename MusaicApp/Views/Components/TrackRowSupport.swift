@@ -4,12 +4,16 @@ struct PlayingIndicator: View {
     @State private var animate = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    // Deterministic per-bar heights — randomness in body would re-trigger
+    // view updates and defeat row diffing in long track lists.
+    private let barHeights: [CGFloat] = [6, 12, 9]
+
     var body: some View {
         HStack(spacing: 2) {
             ForEach(0..<3) { i in
                 RoundedRectangle(cornerRadius: 1)
                     .fill(Color.accent)
-                    .frame(width: 3, height: animate ? CGFloat.random(in: 6...14) : 4)
+                    .frame(width: 3, height: animate ? barHeights[i] : 4)
                     .animation(
                         reduceMotion
                             ? nil

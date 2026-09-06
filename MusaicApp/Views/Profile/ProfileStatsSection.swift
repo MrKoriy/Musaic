@@ -33,10 +33,10 @@ private enum StatsPeriod: String, CaseIterable {
     func secs(from overview: StatsOverview) -> Int {
         guard let t = overview.listeningTime else { return 0 }
         switch self {
-        case .today: return t.todaySecs
-        case .week: return t.weekSecs
-        case .month: return t.monthSecs
-        case .alltime: return t.allTimeSecs
+        case .today: return Int(t.todaySecs.rounded())
+        case .week: return Int(t.weekSecs.rounded())
+        case .month: return Int(t.monthSecs.rounded())
+        case .alltime: return Int(t.allTimeSecs.rounded())
         }
     }
 }
