@@ -58,3 +58,11 @@ server/sidecar/__pycache__/
 *.db-wal
 *.db-shm
 
+
+# local experiments / tool artifacts
+/.hermes/
+/musaic-api-cache/
+/musaic-artwork-cache/
+/musaic-cachetest/
+/musaic-cachetest2/
+/*.patch
