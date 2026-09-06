@@ -144,6 +144,11 @@ final class ProfileAuthState {
                         ? "Added \(result.imported) likes"
                         : "Likes are up to date"
                 }
+                // Pull the merged server likes into the library so the imported
+                // tracks appear without an app restart.
+                if await LibraryStore.shared.syncLikesWithServer() {
+                    await LibraryStore.shared.hydrateLikedTracksIfNeeded(force: true)
+                }
             } catch {
                 await MainActor.run {
                     yandexImporting = false

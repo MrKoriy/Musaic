@@ -131,7 +131,9 @@ final class APIService {
         let (data, response) = try await send(request, endpoint: path)
         guard (200..<300).contains(response.statusCode) else {
             if response.statusCode == 401 {
-                SettingsStore.shared.logout()
+                // An expired session must not erase the local library. Keep the
+                // token and cached likes until the user explicitly logs out.
+                SettingsStore.shared.markSessionExpired()
             }
             throw httpError(for: response, data: data, endpoint: path)
         }
@@ -289,12 +291,19 @@ final class APIService {
         let uniqueIDs = Array(Set(ids)).sorted()
         guard !uniqueIDs.isEmpty else { return [] }
 
-        let encodedIDs = uniqueIDs.map {
-            $0.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0
-        }.joined(separator: ",")
+        // The server caps /api/tracks/by-ids at 500 ids per request. Fetch in
+        // chunks so large libraries (e.g. imported Yandex likes) hydrate fully.
+        var collected: [ServerTrack] = []
+        for batchStart in stride(from: 0, to: uniqueIDs.count, by: 400) {
+            let batch = uniqueIDs[batchStart..<min(batchStart + 400, uniqueIDs.count)]
+            let encodedIDs = batch.map {
+                $0.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0
+            }.joined(separator: ",")
 
-        let response: TracksResponse = try await get("/api/tracks/by-ids?ids=\(encodedIDs)")
-        return response.tracks
+            let response: TracksResponse = try await get("/api/tracks/by-ids?ids=\(encodedIDs)")
+            collected.append(contentsOf: response.tracks)
+        }
+        return collected
     }
 
     // MARK: - Recommendations
@@ -458,18 +467,48 @@ final class APIService {
         return response.tracks
     }
 
+    // MARK: - Playlist tracks cache
+    //
+    // Reopening a playlist shows its tracks instantly (stale-while-revalidate):
+    // cached rows render first, then the fresh response replaces them. Server
+    // ETag + URLCache keep the revalidation round-trip tiny (304).
+
+    private var playlistTracksCache: [String: (tracks: [ServerTrack], fetchedAt: Date)] = [:]
+    private static let playlistCacheTTL: TimeInterval = 60
+    private static let playlistCacheMaxEntries = 16
+
+    func cachedPlaylistTracks(playlistId: String) -> [ServerTrack]? {
+        guard let entry = playlistTracksCache[playlistId] else { return nil }
+        return Date().timeIntervalSince(entry.fetchedAt) < Self.playlistCacheTTL ? entry.tracks : nil
+    }
+
+    func storePlaylistTracks(_ tracks: [ServerTrack], playlistId: String) {
+        playlistTracksCache[playlistId] = (tracks, Date())
+        if playlistTracksCache.count > Self.playlistCacheMaxEntries {
+            let oldest = playlistTracksCache.min { $0.value.fetchedAt < $1.value.fetchedAt }?.key
+            if let oldest { playlistTracksCache.removeValue(forKey: oldest) }
+        }
+    }
+
+    func invalidatePlaylistTracksCache(playlistId: String) {
+        playlistTracksCache.removeValue(forKey: playlistId)
+    }
+
     func addToPlaylist(playlistId: String, trackId: String) async throws {
         let body = AddTrackBody(trackId: trackId)
         let _: OkResponse = try await post("/api/playlists/\(playlistId)/tracks", body: body)
+        invalidatePlaylistTracksCache(playlistId: playlistId)
     }
 
     func removeFromPlaylist(playlistId: String, trackId: String) async throws {
         let _: OkResponse = try await delete("/api/playlists/\(playlistId)/tracks/\(trackId)")
+        invalidatePlaylistTracksCache(playlistId: playlistId)
     }
 
     func updatePlaylist(id: String, name: String? = nil, description: String? = nil) async throws {
         let body = UpdatePlaylistBody(name: name, description: description)
         let _: OkResponse = try await patch("/api/playlists/\(id)", body: body)
+        invalidatePlaylistTracksCache(playlistId: id)
     }
 
     func uploadPlaylistCover(playlistId: String, data: Data, mimeType: String) async throws -> String? {
@@ -494,11 +533,13 @@ final class APIService {
         }
         let body = UploadPlaylistCoverBody(imageBase64: compressedData.base64EncodedString(), mimeType: finalMime)
         let response: PlaylistCoverUploadResponse = try await post("/api/playlists/\(playlistId)/image", body: body)
+        invalidatePlaylistTracksCache(playlistId: playlistId)
         return response.coverUrl
     }
 
     func deletePlaylistCover(playlistId: String) async throws {
         let _: OkResponse = try await delete("/api/playlists/\(playlistId)/image")
+        invalidatePlaylistTracksCache(playlistId: playlistId)
     }
 
     // MARK: - VK Auth
@@ -676,6 +717,37 @@ final class APIService {
 
     func deleteLyrics(trackId: String) async throws {
         let _: OkResponse = try await delete("/api/lyrics/\(encodedTrackID(trackId))")
+    }
+
+    // MARK: - New Releases (push notifications)
+
+    struct Release: Decodable {
+        let id: String
+        let artist: String
+        let title: String
+        let year: Int?
+        let coverUrl: String?
+        let trackCount: Int?
+        let firstSeenAt: Int
+        let notifiedAt: Int?
+    }
+
+    struct ReleasesResponse: Decodable {
+        let releases: [Release]
+    }
+
+    struct AckResponse: Decodable {
+        let acked: Int
+    }
+
+    func getNewReleases(limit: Int = 50) async throws -> [Release] {
+        let response: ReleasesResponse = try await get("/api/releases/new?limit=\(limit)")
+        return response.releases
+    }
+
+    func ackReleases(ids: [String]) async throws {
+        guard !(ids.isEmpty) else { return }
+        let _: AckResponse = try await post("/api/releases/ack", body: ["ids": ids])
     }
 
     private static func normalizedServerURL(_ raw: String?) -> String? {
@@ -896,7 +968,7 @@ struct StatsOverview: Codable {
     let topArtist: TopArtistEntry?
     struct ListenCounts: Codable { let today: Int; let week: Int; let month: Int; let allTime: Int }
     struct ListeningTime: Codable {
-        let todaySecs: Int; let weekSecs: Int; let monthSecs: Int; let allTimeSecs: Int
+        let todaySecs: Double; let weekSecs: Double; let monthSecs: Double; let allTimeSecs: Double
     }
 }
 

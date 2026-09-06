@@ -135,6 +135,7 @@ final class SettingsStore {
         set { UserDefaults.standard.set(newValue, forKey: "auth_display_name") }
     }
     var isLoggedIn: Bool
+    var sessionExpired = false
 
     private init() {
         isLoggedIn = Self.loadAuthToken() != nil
@@ -189,6 +190,7 @@ final class SettingsStore {
         authUsername = username
         authDisplayName = displayName
         isLoggedIn = true
+        sessionExpired = false
         return true
     }
 
@@ -199,5 +201,10 @@ final class SettingsStore {
         authUsername = ""
         authDisplayName = ""
         isLoggedIn = false
+        sessionExpired = false
+    }
+
+    func markSessionExpired() {
+        sessionExpired = true
     }
 }

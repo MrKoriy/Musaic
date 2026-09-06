@@ -167,8 +167,9 @@ final class LibraryStore {
         do {
             let pendingRemovals = pendingUnlikedTrackIds
             // Upload local likes to server, get back merged set
+            let orderToSync = likedTrackOrder.isEmpty ? Array(likedTrackIds) : likedTrackOrder
             let serverIds = try await api.syncLikes(
-                trackIds: Array(likedTrackIds),
+                trackIds: orderToSync,
                 tracks: likedTracks,
                 removedTrackIds: Array(pendingRemovals)
             )

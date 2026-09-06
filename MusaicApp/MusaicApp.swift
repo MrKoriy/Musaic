@@ -4,6 +4,13 @@ import SwiftUI
 struct MusaicApp: App {
     private let settings = SettingsStore.shared
 
+    init() {
+        #if os(iOS)
+        ReleaseNotificationService.shared.requestAuthorizationIfNeeded()
+        WatchControlHandler.shared.activate()
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
             if settings.isLoggedIn {
@@ -15,10 +22,15 @@ struct MusaicApp: App {
             } else {
                 AuthView()
                     .preferredColorScheme(settings.theme.colorScheme)
+                    #if os(macOS)
+                    .frame(minWidth: 560, minHeight: 640)
+                    #endif
             }
         }
         #if os(macOS)
         .defaultSize(width: 1100, height: 750)
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentMinSize)
         .commands { MusaicCommands() }
         #endif
     }
@@ -152,11 +164,17 @@ struct ContentView: View {
         }
         .task {
             await LibraryStore.shared.ensureSynced(force: true)
+            #if os(iOS)
+            await ReleaseNotificationService.shared.checkForNewReleasesIfNeeded()
+            #endif
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             Task {
                 await LibraryStore.shared.ensureSynced(force: true)
+                #if os(iOS)
+                await ReleaseNotificationService.shared.checkForNewReleasesIfNeeded()
+                #endif
             }
         }
     }
@@ -214,6 +232,7 @@ struct ContentView: View {
                 // ── Main Content ──
                 ZStack {
                     screen(for: selectedTab)
+                        .frame(maxWidth: 760)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -228,7 +247,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showNowPlaying) {
             NowPlayingView()
-                .frame(minWidth: 560, idealWidth: 640, minHeight: 820, idealHeight: 880)
+                .frame(minWidth: 460, idealWidth: 500, minHeight: 600, idealHeight: 640)
         }
     }
 
@@ -257,8 +276,8 @@ struct ContentView: View {
                     .foregroundStyle(Color.textPrimary)
             }
             .padding(.horizontal, 18)
-            .padding(.top, 20)
-            .padding(.bottom, 24)
+            .padding(.top, 40)
+            .padding(.bottom, 14)
 
             // Nav items
             VStack(spacing: 4) {
@@ -302,55 +321,36 @@ struct ContentView: View {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                     macMetricTile(value: "\(player.queue.count)", label: String(localized: "Queue"), icon: "music.note.list")
                     macMetricTile(value: "\(library.likedTrackIds.count)", label: String(localized: "Liked"), icon: "heart.fill")
-                    macMetricTile(value: "3", label: String(localized: "Sources"), icon: "dot.radiowaves.left.and.right")
+                    macMetricTile(value: "\(enabledSourceCount)", label: String(localized: "Sources"), icon: "dot.radiowaves.left.and.right")
                     macMetricTile(value: "\(DownloadManager.shared.downloadCount)", label: String(localized: "Offline"), icon: "arrow.down.circle.fill")
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.top, 24)
-
-            // Open full player
-            if player.currentTrack != nil {
-                Button { showNowPlaying = true } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "arrow.up.right.circle.fill")
-                            .font(.system(size: 14, weight: .semibold))
-                        Text(String(localized: "Open full player"))
-                            .font(.system(size: 13, weight: .semibold))
-                        Spacer()
-                    }
-                    .foregroundStyle(Color.textPrimary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color.white.opacity(0.06))
-                    )
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 14)
-                .padding(.top, 14)
-            }
+            .padding(.top, 16)
 
             Spacer()
 
             // User info
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(settings.authDisplayName.isEmpty ? settings.authUsername : settings.authDisplayName)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color.textPrimary)
+                    .lineLimit(1)
 
-                Text(String(localized: "Local • VK • SoundCloud"))
-                    .font(.system(size: 11, weight: .medium))
+                Text(enabledSourcesLine)
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(Color.textSecondary)
+                    .lineLimit(1)
 
-                HStack(spacing: 6) {
+                HStack(spacing: 4) {
                     macSourceBadge("VK", active: settings.sourceVK)
                     macSourceBadge("SC", active: settings.sourceSoundcloud)
+                    macSourceBadge("YA", active: settings.sourceYandex)
+                    macSourceBadge("YT", active: settings.sourceYoutube)
                     macSourceBadge("LOCAL", active: true)
                 }
             }
-            .padding(14)
+            .padding(12)
             .background(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(Color.white.opacity(0.04))
@@ -360,7 +360,7 @@ struct ContentView: View {
                     )
             )
             .padding(.horizontal, 14)
-            .padding(.bottom, 18)
+            .padding(.bottom, 12)
         }
         .background(Color.white.opacity(0.02))
     }
@@ -615,17 +615,16 @@ struct ContentView: View {
              .help(String(localized: "Show lyrics"))
              .accessibilityLabel(Text(String(localized: "Show lyrics")))
 
-             Button(String(localized: "Expand")) { showNowPlaying = true }
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.textPrimary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(0.10))
-                )
-                .buttonStyle(.plain)
-                 .help(String(localized: "Open full player"))
+             Button { showNowPlaying = true } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.textSecondary)
+                    .frame(width: 32, height: 32)
+                    .background(Color.white.opacity(0.08), in: Circle())
+             }
+             .buttonStyle(.plain)
+              .help(String(localized: "Open full player"))
+              .accessibilityLabel(Text(String(localized: "Open full player")))
         }
         .padding(.horizontal, 18)
         .padding(.top, 18)
@@ -655,6 +654,24 @@ struct ContentView: View {
 
     // MARK: - Sidebar Helpers
 
+    private var enabledSourceCount: Int {
+        var count = 1 // local is always available
+        if settings.sourceVK { count += 1 }
+        if settings.sourceSoundcloud { count += 1 }
+        if settings.sourceYandex { count += 1 }
+        if settings.sourceYoutube { count += 1 }
+        return count
+    }
+
+    private var enabledSourcesLine: String {
+        var sources = ["Local"]
+        if settings.sourceVK { sources.append("VK") }
+        if settings.sourceSoundcloud { sources.append("SoundCloud") }
+        if settings.sourceYandex { sources.append("Yandex") }
+        if settings.sourceYoutube { sources.append("YouTube") }
+        return sources.joined(separator: " • ")
+    }
+
     private func macMetricTile(value: String, label: String, icon: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Image(systemName: icon)
@@ -681,12 +698,14 @@ struct ContentView: View {
 
     private func macSourceBadge(_ label: String, active: Bool) -> some View {
         Text(label)
-            .font(.system(size: 10, weight: .bold))
+            .font(.system(size: 9, weight: .bold))
             .foregroundStyle(active ? Color.textPrimary : Color.textMuted)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(active ? Color.white.opacity(0.08) : Color.white.opacity(0.03))
             )
     }
