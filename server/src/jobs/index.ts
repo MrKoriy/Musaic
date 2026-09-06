@@ -7,6 +7,7 @@ import { trainRanker } from "../reco/ranker.js";
 import { runAudioEmbeddingsJob } from "./audio-embeddings.js";
 import { runRetentionJob } from "./retention.js";
 import { runCoverMigrationJob } from "./cover-migration.js";
+import { runReleaseDetectionJob } from "./release-detection.js";
 
 let registered = false;
 
@@ -21,4 +22,5 @@ export function registerRecommendationJobs(): void {
   registerJob({ name: "audio-embeddings", intervalHours: 24, run: () => runAudioEmbeddingsJob() });
   registerJob({ name: "retention", intervalHours: 24, run: () => runRetentionJob() });
   registerJob({ name: "cover-migration", intervalHours: 24, run: () => runCoverMigrationJob() });
+  registerJob({ name: "release-detection", intervalHours: 12, run: () => runReleaseDetectionJob() });
 }

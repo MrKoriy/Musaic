@@ -417,6 +417,24 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 20,
+    description: "Track artist releases for new-release push notifications",
+    up: `
+      CREATE TABLE IF NOT EXISTS artist_releases (
+        id TEXT PRIMARY KEY,
+        artist TEXT NOT NULL,
+        title TEXT NOT NULL,
+        year INTEGER,
+        cover_url TEXT,
+        track_count INTEGER,
+        first_seen_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        notified_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_artist_releases_artist ON artist_releases(artist);
+      CREATE INDEX IF NOT EXISTS idx_artist_releases_notified ON artist_releases(notified_at);
+    `,
+  },
 ];
 
 /**
