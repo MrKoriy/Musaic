@@ -108,6 +108,15 @@ if [[ -f "$release_dir/deploy/musaic-server.service" ]]; then
   systemctl daemon-reload
 fi
 
+if [[ -f "$release_dir/deploy/musaic-backup.service" && -f "$release_dir/deploy/musaic-backup.timer" ]]; then
+  install -m 0644 "$release_dir/deploy/musaic-backup.service" /etc/systemd/system/musaic-backup.service
+  install -m 0644 "$release_dir/deploy/musaic-backup.timer" /etc/systemd/system/musaic-backup.timer
+fi
+
+if [[ -f "$release_dir/deploy/musaic-sidecar.service" ]]; then
+  install -m 0644 "$release_dir/deploy/musaic-sidecar.service" /etc/systemd/system/musaic-sidecar.service
+fi
+
 if systemctl cat "$service_name" >/dev/null 2>&1; then
   service_name="musaic-server.service"
 elif systemctl cat "$legacy_service_name" >/dev/null 2>&1; then
@@ -318,6 +327,7 @@ if ! health_gate; then
 fi
 
 prune_releases
+systemctl enable --now musaic-backup.timer >/dev/null 2>&1 || true
 trap - EXIT
 printf "Deploy complete: %s\n" "$release_dir"
 '

@@ -1,0 +1,16 @@
+[Unit]
+Description=Musaic media sidecar (Yandex/YouTube/yt-dlp)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/musaic-server/current/server/sidecar
+EnvironmentFile=-/opt/musaic-server/shared/.env
+Environment=MUSAIC_SIDECAR_PORT=8770
+Environment=MUSAIC_SECRET_PATH=/opt/musaic-server/shared/.musaic.secret
+ExecStart=/opt/musaic-server/current/server/sidecar/.venv/bin/python app.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+[Unit]
+Description=Musaic database backup
+After=musaic-server.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/musaic-server/current/server/scripts/backup-db.sh
