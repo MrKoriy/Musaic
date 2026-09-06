@@ -26,12 +26,19 @@ function ownedPlaylist(c: { get(key: string): unknown }, id: string): boolean {
   return row?.user_id === userId;
 }
 
-const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL ?? "minimax/minimax-m2.5:free";
-const OPENROUTER_TIMEOUT_MS = 15_000;
+const DEFAULT_AI_BASE = "https://api.b.ai/v1";
+const DEFAULT_MODEL = "glm-5.3-flash";
+const AI_TIMEOUT_MS = 15_000;
 
-function getOpenRouterKey(): string | null {
-  return process.env.OPENROUTER_API_KEY ?? null;
+// Read env at call time so tests (and config reloads) are not bound to the
+// process' startup environment.
+function aiConfig(): { base: string; key: string | null; model: string } {
+  const key = process.env.AI_API_KEY ?? process.env.OPENROUTER_API_KEY ?? null;
+  return {
+    base: (process.env.AI_BASE_URL ?? DEFAULT_AI_BASE).replace(/\/+$/, ""),
+    key: key && key.trim() ? key : null,
+    model: process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL,
+  };
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -149,8 +156,8 @@ router.post("/ai", async (c) => {
   const body = await c.req.json<{ prompt?: string; limit?: number; save?: boolean }>();
   if (!body.prompt?.trim()) return c.json({ error: "prompt required" }, 400);
 
-  const key = getOpenRouterKey();
-  if (!key) return c.json({ error: "OPENROUTER_API_KEY not configured" }, 503);
+  const { base, key, model } = aiConfig();
+  if (!key) return c.json({ error: "AI_API_KEY not configured" }, 503);
 
   const limit = Math.min(Number(body.limit ?? 30), 100);
   const db = getDb();
@@ -177,14 +184,14 @@ Rules:
 
   let aiTracks: string[] = [];
   try {
-    const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+    const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: OPENROUTER_MODEL,
+        model,
         messages: [
           { role: "system", content: systemMsg },
           { role: "user", content: body.prompt.trim() },
@@ -192,9 +199,9 @@ Rules:
         temperature: 0.7,
         max_tokens: 1000,
       }),
-      signal: AbortSignal.timeout(OPENROUTER_TIMEOUT_MS),
+      signal: AbortSignal.timeout(AI_TIMEOUT_MS),
     });
-    if (!res.ok) throw new Error(`OpenRouter error: ${res.status}`);
+    if (!res.ok) throw new Error(`AI error: ${res.status}`);
     const data = await res.json() as { choices: Array<{ message: { content: string } }> };
     const content = data.choices[0]?.message.content ?? "";
 

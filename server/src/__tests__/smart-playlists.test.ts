@@ -100,16 +100,18 @@ describe("smart playlists", () => {
       .toEqual({ n: 0 });
   });
 
-  it("uses the OpenRouter response to create an AI playlist without network access", async () => {
+  it("uses the AI provider response to create an AI playlist without network access", async () => {
     const userId = "smart-ai-user";
     seedUser(userId);
     const trackId = seedTrack({ id: "ai-track", title: "Blue Hour", artist: "Dreamer" });
-    const previousKey = process.env.OPENROUTER_API_KEY;
-    process.env.OPENROUTER_API_KEY = "test-openrouter-key";
+    const previousKey = process.env.AI_API_KEY;
+    const previousLegacyKey = process.env.OPENROUTER_API_KEY;
+    process.env.AI_API_KEY = "test-ai-key";
+    delete process.env.OPENROUTER_API_KEY;
     const restoreFetch = installFetchMock((input, init) => {
       const url = requestUrl(input);
-      expect(url).toBe("https://openrouter.ai/api/v1/chat/completions");
-      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer test-openrouter-key");
+      expect(url).toBe("https://api.b.ai/v1/chat/completions");
+      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer test-ai-key");
       const requestBody = JSON.parse(String(init?.body)) as {
         messages: Array<{ role: string; content: string }>;
         model: string;
@@ -145,8 +147,10 @@ describe("smart playlists", () => {
         .toEqual({ track_id: trackId });
     } finally {
       restoreFetch();
-      if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
-      else process.env.OPENROUTER_API_KEY = previousKey;
+      if (previousKey === undefined) delete process.env.AI_API_KEY;
+      else process.env.AI_API_KEY = previousKey;
+      if (previousLegacyKey === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previousLegacyKey;
     }
   });
 

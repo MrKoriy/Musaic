@@ -36,19 +36,24 @@ function directApp(userId: string | null = null): Hono {
 
 describe("recommendation chat", () => {
   let previousApiKey: string | undefined;
+  let previousLegacyKey: string | undefined;
   let previousTrustProxy: string | undefined;
 
   beforeEach(() => {
-    previousApiKey = process.env.OPENROUTER_API_KEY;
+    previousApiKey = process.env.AI_API_KEY;
+    previousLegacyKey = process.env.OPENROUTER_API_KEY;
     previousTrustProxy = process.env.TRUST_PROXY;
     process.env.TRUST_PROXY = "1";
+    delete process.env.AI_API_KEY;
     delete process.env.OPENROUTER_API_KEY;
     setupTestDb();
   });
 
   afterEach(() => {
-    if (previousApiKey === undefined) delete process.env.OPENROUTER_API_KEY;
-    else process.env.OPENROUTER_API_KEY = previousApiKey;
+    if (previousApiKey === undefined) delete process.env.AI_API_KEY;
+    else process.env.AI_API_KEY = previousApiKey;
+    if (previousLegacyKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = previousLegacyKey;
     if (previousTrustProxy === undefined) delete process.env.TRUST_PROXY;
     else process.env.TRUST_PROXY = previousTrustProxy;
     teardownTestDb();
@@ -70,17 +75,17 @@ describe("recommendation chat", () => {
     });
     expect(unavailable.status).toBe(503);
     expect(await unavailable.json()).toEqual({
-      error: "OPENROUTER_API_KEY not configured. Add it to server/.env",
+      error: "AI_API_KEY not configured. Add it to server/.env",
     });
   });
 
-  it("sends taste context and history to OpenRouter and returns the reply", async () => {
-    process.env.OPENROUTER_API_KEY = "test-openrouter-key";
+  it("sends taste context and history to the AI provider and returns the reply", async () => {
+    process.env.AI_API_KEY = "test-ai-key";
     seedTrack({ id: "chat-track", title: "Signal", artist: "North Star", source: "local" });
     let requestHeaders: Headers | undefined;
     let requestPayload: Record<string, unknown> | undefined;
     const restoreFetch = installFetchMock((input, init) => {
-      expect(String(input)).toContain("openrouter.ai/api/v1/chat/completions");
+      expect(String(input)).toContain("api.b.ai/v1/chat/completions");
       requestHeaders = new Headers(init?.headers);
       requestPayload = JSON.parse(String(init?.body)) as Record<string, unknown>;
       return jsonResponse({ choices: [{ message: { content: "Try a late-night electronic set." } }] });
@@ -97,8 +102,8 @@ describe("recommendation chat", () => {
       });
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ reply: "Try a late-night electronic set." });
-      expect(requestHeaders?.get("Authorization")).toBe("Bearer test-openrouter-key");
-      expect(requestHeaders?.get("HTTP-Referer")).toBe("https://musaic.app");
+      expect(requestHeaders?.get("Authorization")).toBe("Bearer test-ai-key");
+      expect(requestHeaders?.get("HTTP-Referer")).toBe(null);
       const messages = requestPayload?.messages as Array<{ role: string; content: string }>;
       expect(messages).toHaveLength(3);
       expect(messages[0]?.role).toBe("system");
@@ -112,7 +117,7 @@ describe("recommendation chat", () => {
   });
 
   it("returns an explicit fallback when the AI upstream fails", async () => {
-    process.env.OPENROUTER_API_KEY = "test-openrouter-key";
+    process.env.AI_API_KEY = "test-ai-key";
     const restoreFetch = installFetchMock(() => new Response(null, { status: 503 }));
     try {
       const response = await directApp().request("/api/recommendations/chat", {

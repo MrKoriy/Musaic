@@ -1,13 +1,15 @@
 import { getDb } from "../db/index.js";
 import { buildWeightedProfile } from "./profile.js";
 
-const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL ?? "minimax/minimax-m2.5:free";
-const OPENROUTER_TIMEOUT_MS = 15_000;
-const OPENROUTER_MAX_TOKENS = 10;
+const DEFAULT_AI_BASE = "https://api.b.ai/v1";
+// Keep the model configurable so provider model renames do not require a
+// client release. GLM is the default recommendation assistant model.
+const DEFAULT_MODEL = "glm-5.3-flash";
+const AI_TIMEOUT_MS = 15_000;
+const AI_MAX_TOKENS_PER_MINUTE = 10;
 
-let openrouterTokens = OPENROUTER_MAX_TOKENS;
-let openrouterLastRefill = Date.now();
+let aiTokens = AI_MAX_TOKENS_PER_MINUTE;
+let aiLastRefill = Date.now();
 
 export interface RecommendationChatBody {
   message: string;
@@ -19,33 +21,50 @@ export interface RecommendationChatResult {
   body: Record<string, unknown>;
 }
 
-function consumeOpenRouterToken(): boolean {
+function consumeAiToken(): boolean {
   const now = Date.now();
-  if (now - openrouterLastRefill >= 60_000) {
-    openrouterTokens = OPENROUTER_MAX_TOKENS;
-    openrouterLastRefill = now;
+  if (now - aiLastRefill >= 60_000) {
+    aiTokens = AI_MAX_TOKENS_PER_MINUTE;
+    aiLastRefill = now;
   }
-  if (openrouterTokens <= 0) return false;
-  openrouterTokens--;
+  if (aiTokens <= 0) return false;
+  aiTokens--;
   return true;
 }
 
-function releaseOpenRouterToken(): void {
-  openrouterTokens = Math.min(openrouterTokens + 1, OPENROUTER_MAX_TOKENS);
+function releaseAiToken(): void {
+  aiTokens = Math.min(aiTokens + 1, AI_MAX_TOKENS_PER_MINUTE);
+}
+
+// Read env at call time so tests (and config reloads) are not bound to the
+// process' startup environment.
+function aiConfig(): { base: string; key: string | null; model: string } {
+  const key = process.env.AI_API_KEY ?? process.env.OPENROUTER_API_KEY ?? null;
+  return {
+    base: (process.env.AI_BASE_URL ?? DEFAULT_AI_BASE).replace(/\/+$/, ""),
+    key: key && key.trim() ? key : null,
+    model: process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL,
+  };
 }
 
 export async function generateRecommendationChat(
   body: RecommendationChatBody,
   userId: string | null
 ): Promise<RecommendationChatResult> {
-  if (!body.message) return { status: 400, body: { error: "message required" } };
+  if (!body.message?.trim()) return { status: 400, body: { error: "message required" } };
+  if (body.message.length > 2_000) return { status: 400, body: { error: "message too long" } };
 
-  const key = process.env.OPENROUTER_API_KEY ?? null;
+  const history = (body.history ?? [])
+    .filter((item) => item && (item.role === "user" || item.role === "assistant") && typeof item.content === "string")
+    .slice(-12)
+    .map((item) => ({ role: item.role, content: item.content.slice(0, 2_000) }));
+
+  const { base, key, model } = aiConfig();
   if (!key) {
-    return { status: 503, body: { error: "OPENROUTER_API_KEY not configured. Add it to server/.env" } };
+    return { status: 503, body: { error: "AI_API_KEY not configured. Add it to server/.env" } };
   }
 
-  if (!consumeOpenRouterToken()) {
+  if (!consumeAiToken()) {
     return { status: 429, body: { error: "AI rate limit reached. Try again in a minute." } };
   }
 
@@ -61,24 +80,22 @@ User taste: Top artists: ${profile.topArtists.slice(0, 8).map((a) => a.artist).j
 Library: ${stats.total} tracks, ${stats.artists} artists. Be concise and enthusiastic.`;
   const messages = [
     { role: "system", content: systemPrompt },
-    ...(body.history ?? []),
-    { role: "user", content: body.message },
+    ...history,
+    { role: "user", content: body.message.trim() },
   ];
 
   try {
-    const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+    const response = await fetch(`${base}/chat/completions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://musaic.app",
-        "X-Title": "Musaic",
       },
-      body: JSON.stringify({ model: OPENROUTER_MODEL, messages, max_tokens: 500, temperature: 0.8 }),
-      signal: AbortSignal.timeout(OPENROUTER_TIMEOUT_MS),
+      body: JSON.stringify({ model, messages, max_tokens: 500, temperature: 0.65 }),
+      signal: AbortSignal.timeout(AI_TIMEOUT_MS),
     });
     if (!response.ok) {
-      releaseOpenRouterToken();
+      releaseAiToken();
       return {
         status: 500,
         body: { error: `AI service error: ${response.status}`, fallback: "Please try again shortly." },
@@ -88,7 +105,7 @@ Library: ${stats.total} tracks, ${stats.artists} artists. Be concise and enthusi
     const data = await response.json() as { choices?: Array<{ message: { content: string } }> };
     return { status: 200, body: { reply: data.choices?.[0]?.message?.content ?? "Sorry, I couldn't generate a response." } };
   } catch (error: unknown) {
-    releaseOpenRouterToken();
+    releaseAiToken();
     return { status: 500, body: { error: (error as Error).message, fallback: "AI is temporarily unavailable." } };
   }
 }
