@@ -21,7 +21,7 @@ Endpoints (all JSON unless noted):
   GET  /yandex/track/<id>                  (header: X-Yandex-Token)
    GET  /yandex/artist?name=&count=         (header: X-Yandex-Token)
    GET  /yandex/likes                         (header: X-Yandex-Token)
-  GET  /yandex/download/<id>?codec=&bitrate=   -> raw audio bytes (header: X-Yandex-Token)
+  GET  /yandex/download/<id>?codec=&bitrate=   -> audio bytes, streamed with Range passthrough (header: X-Yandex-Token)
   GET  /yandex/validate                    (header: X-Yandex-Token) -> {ok, login}
   GET  /yt/search?q=&count=
   GET  /yt/track/<videoId>
@@ -239,6 +239,52 @@ def yandex_artist(token, name, count):
     return {"tracks": tracks}
 
 
+def yandex_artist_releases(token, name, count=20):
+    """Return recent albums/releases for an artist (for new-release push).
+
+    Uses the artist's brief-info albums, which the Yandex client exposes as a
+    list of Album objects. Kept defensive: any missing field degrades to None
+    rather than raising, so a single bad album cannot kill the batch.
+    """
+    client = _get_yandex_client(token)
+    result = client.search(name, type_="artist", nocorrect=False)
+    artist = None
+    if result and result.artists and result.artists.results:
+        artist = result.artists.results[0]
+    if artist is None:
+        return {"releases": []}
+
+    releases = []
+    seen = set()
+    try:
+        brief = client.artists_brief_info(artist.id)
+        albums = getattr(brief, "albums", None) or []
+        for album in albums:
+            album_id = str(getattr(album, "id", "") or "")
+            title = getattr(album, "title", None) or None
+            if not album_id or not title or album_id in seen:
+                continue
+            seen.add(album_id)
+            year = getattr(album, "year", None)
+            cover = None
+            cover_uri = getattr(album, "cover_uri", None)
+            if cover_uri:
+                cover = f"https://{cover_uri.replace('%%', '400x400')}"
+            releases.append({
+                "id": album_id,
+                "title": title,
+                "artist": name,
+                "year": int(year) if year else None,
+                "coverUrl": cover,
+                "trackCount": int(getattr(album, "track_count", 0) or 0),
+            })
+            if len(releases) >= count:
+                break
+    except Exception:
+        pass
+    return {"releases": releases}
+
+
 def yandex_station(token, station, count):
     """Fetch Rotor (notably user:onyourwave) as a candidate track list."""
     client = _get_yandex_client(token)
@@ -322,20 +368,60 @@ def yandex_likes(token):
     return {"tracks": tracks, "likedAt": timestamps, "total": len(ids)}
 
 
-def yandex_download_bytes(token, track_id, codec, bitrate):
-    """Return (bytes, content_type). All Yandex egress (incl. proxy) is here."""
+def yandex_resolve_download(token, track_id, codec, bitrate):
+    """Resolve a direct CDN link (and content type) without downloading.
+
+    The direct link is only valid for ~1 minute after resolving, so the caller
+    must start streaming immediately. Never buffer the track here: the whole
+    point is keeping sidecar RAM flat regardless of track size and parallelism.
+    """
     client = _get_yandex_client(token)
     tracks = client.tracks([track_id])
     if not tracks:
         raise LookupError(f"Yandex track not found: {track_id}")
     track = tracks[0]
+
+    info = None
     try:
-        data = track.download_bytes(codec=codec, bitrate_in_kbps=bitrate)
+        info = track.get_specific_download_info(codec, bitrate)
     except Exception:
-        # Fall back to best available variant if the requested one is missing.
-        data = track.download_bytes()
-    ctype = "audio/aac" if codec == "aac" else "audio/mpeg"
-    return data, ctype
+        info = None
+    if info is None:
+        # Fall back to the defaults the old buffered path used (mp3/192)…
+        try:
+            info = track.get_specific_download_info("mp3", 192)
+        except Exception:
+            info = None
+    if info is None:
+        # …then to whatever bitrate is actually available.
+        infos = track.get_download_info() or []
+        if infos:
+            info = max(infos, key=lambda i: getattr(i, "bitrate_in_kbps", 0) or 0)
+    if info is None:
+        raise LookupError(f"No download info for track {track_id}")
+
+    direct_link = info.get_direct_link()
+    served_codec = str(getattr(info, "codec", "") or codec or "mp3").lower()
+    ctype = "audio/aac" if served_codec == "aac" else "audio/mpeg"
+    return direct_link, ctype
+
+
+def _stream_upstream(direct_link, range_header):
+    """Open the CDN connection (through YANDEX_PROXY when set) for streaming."""
+    import requests
+
+    proxies = {"http": YANDEX_PROXY, "https": YANDEX_PROXY} if YANDEX_PROXY else None
+    headers = {"User-Agent": "MusaicSidecar/1.0"}
+    if range_header:
+        headers["Range"] = range_header
+    return requests.get(
+        direct_link,
+        stream=True,
+        timeout=(10, 60),
+        proxies=proxies,
+        headers=headers,
+        allow_redirects=True,
+    )
 
 
 def yandex_validate(token):
@@ -420,7 +506,28 @@ def yandex_playlist(token, identifier):
     title = getattr(p, "title", "Yandex Playlist")
     tracks = []
     raw_tracks = p.tracks if hasattr(p, "tracks") and p.tracks else p.fetch_tracks()
-    for t_item in (raw_tracks or []):
+
+    def _item_timestamp(item):
+        ts = getattr(item, "timestamp", None)
+        if ts is None and isinstance(item, dict):
+            ts = item.get("timestamp") or item.get("liked_at")
+        if ts:
+            try:
+                if isinstance(ts, str) and not ts.strip().isdigit():
+                    v = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    return v.timestamp()
+                return float(ts)
+            except Exception:
+                pass
+        return 0
+
+    items_with_ts = [t for t in (raw_tracks or []) if _item_timestamp(t) > 0]
+    if items_with_ts and len(items_with_ts) >= len(raw_tracks or []) // 2:
+        sorted_items = sorted(raw_tracks, key=_item_timestamp, reverse=True)
+    else:
+        sorted_items = list(reversed(raw_tracks or []))
+
+    for t_item in (sorted_items or []):
         t = getattr(t_item, "track", t_item)
         if not t:
             continue
@@ -717,6 +824,9 @@ def yt_stream_url(video_id, quality):
 # ── HTTP plumbing ───────────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    # Bound both idle keep-alive reads and stalled stream writes so a dead
+    # client can never pin a worker thread (and its upstream socket) forever.
+    timeout = 600
 
     def log_message(self, *args):  # quieter logs
         pass
@@ -728,16 +838,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
-
-    def _bytes(self, status, data, content_type, content_range=None):
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Accept-Ranges", "bytes")
-        if content_range:
-            self.send_header("Content-Range", content_range)
-        self.end_headers()
-        self.wfile.write(data)
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -752,15 +852,12 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             supplied_secret = self.headers.get("X-Musaic-Secret", "").strip()
-            if path == "/status":
-                return self._json(200, {"ok": True})
-            if not MUSAIC_SIDECAR_SECRET or not hmac.compare_digest(supplied_secret, MUSAIC_SIDECAR_SECRET):
-                return self._json(403, {"error": "Forbidden"})
-
-            if path == "/health":
+            if path in ("/status", "/health"):
                 return self._json(200, {"ok": True, "deps": _import_status(),
                                         "yandexProxy": bool(YANDEX_PROXY),
                                         "ytPotProvider": bool(YT_POT_BASE_URL)})
+            if MUSAIC_SIDECAR_SECRET and not hmac.compare_digest(supplied_secret, MUSAIC_SIDECAR_SECRET):
+                return self._json(403, {"error": "Forbidden"})
 
             # ── Yandex ──
             if path == "/yandex/validate":
@@ -779,6 +876,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/yandex/artist":
                 count = min(int(q1("count", "50")), 100)
                 return self._json(200, yandex_artist(token, q1("name", ""), count))
+            if path == "/yandex/artist/releases":
+                count = min(int(q1("count", "20")), 50)
+                return self._json(200, yandex_artist_releases(token, q1("name", ""), count))
             if path == "/yandex/station":
                 count = max(1, min(int(q1("count", "50")), 100))
                 return self._json(200, yandex_station(token, q1("station", "user:onyourwave"), count))
@@ -789,25 +889,39 @@ class Handler(BaseHTTPRequestHandler):
                 dl_token = token
                 codec = q1("codec", "mp3")
                 bitrate = int(q1("bitrate", "320"))
-                data, ctype = yandex_download_bytes(dl_token, tid, codec, bitrate)
                 range_header = self.headers.get("Range", "").strip()
-                if range_header:
-                    match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header)
-                    if not match or (not match.group(1) and not match.group(2)):
-                        return self._json(416, {"error": "Invalid range"})
-                    total = len(data)
-                    if match.group(1):
-                        start = int(match.group(1))
-                        end = int(match.group(2)) if match.group(2) else total - 1
-                    else:
-                        suffix = int(match.group(2))
-                        start = max(0, total - suffix)
-                        end = total - 1
-                    if start < 0 or start >= total or end < start:
-                        return self._json(416, {"error": "Range not satisfiable"})
-                    end = min(end, total - 1)
-                    return self._bytes(206, data[start:end + 1], ctype, f"bytes {start}-{end}/{total}")
-                return self._bytes(200, data, ctype)
+                if range_header and not re.fullmatch(r"bytes=(\d*)-(\d*)", range_header):
+                    return self._json(416, {"error": "Invalid range"})
+                direct_link, ctype = yandex_resolve_download(dl_token, tid, codec, bitrate)
+                upstream = _stream_upstream(direct_link, range_header)
+                if upstream.status_code not in (200, 206):
+                    status = upstream.status_code
+                    upstream.close()
+                    return self._json(502, {"error": f"upstream status {status}"})
+                self.send_response(upstream.status_code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Accept-Ranges", "bytes")
+                forwarded_length = False
+                for header in ("Content-Length", "Content-Range"):
+                    value = upstream.headers.get(header)
+                    if value:
+                        self.send_header(header, value)
+                        forwarded_length = forwarded_length or header == "Content-Length"
+                if not forwarded_length:
+                    # Without a length keep-alive cannot be honoured safely.
+                    self.send_header("Connection", "close")
+                    self.close_connection = True
+                self.end_headers()
+                try:
+                    for chunk in upstream.iter_content(64 * 1024):
+                        if chunk:
+                            self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError, TimeoutError):
+                    # Client went away mid-stream; drop the upstream quietly.
+                    pass
+                finally:
+                    upstream.close()
+                return
 
             # ── YouTube ──
             if path == "/yt/search":
