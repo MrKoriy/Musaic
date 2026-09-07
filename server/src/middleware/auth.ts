@@ -1,5 +1,6 @@
 import type { Context, Next } from "hono";
 import { getDb } from "../db/index.js";
+import { hashSessionToken } from "../db/migrations.js";
 import { runWithRequestUser } from "../utils/request-scope.js";
 
 const DEFAULT_SESSION_TTL_DAYS = 90;
@@ -23,20 +24,21 @@ export function authenticateRequest(c: Context): boolean {
 
   try {
     const db = getDb();
+    const tokenHash = hashSessionToken(token);
     const user = db.prepare(`
       SELECT u.id, u.username
       FROM sessions s
       JOIN users u ON u.id = s.user_id
-      WHERE s.token = $token
+      WHERE s.token_hash = $tokenHash
         AND COALESCE(s.expires_at, s.created_at + $ttl) >= unixepoch()
-    `).get({ $token: token, $ttl: sessionTtlSeconds() }) as {
+    `).get({ $tokenHash: tokenHash, $ttl: sessionTtlSeconds() }) as {
       id: string;
       username: string;
     } | null;
 
     if (!user) {
-      db.prepare("DELETE FROM sessions WHERE token = $token AND expires_at < unixepoch()")
-        .run({ $token: token });
+      db.prepare("DELETE FROM sessions WHERE token_hash = $tokenHash AND expires_at < unixepoch()")
+        .run({ $tokenHash: tokenHash });
       return false;
     }
 
@@ -44,8 +46,8 @@ export function authenticateRequest(c: Context): boolean {
     db.prepare(`
       UPDATE sessions
       SET last_used_at = unixepoch(), expires_at = $expiresAt
-      WHERE token = $token
-    `).run({ $token: token, $expiresAt: expiresAt });
+      WHERE token_hash = $tokenHash
+    `).run({ $tokenHash: tokenHash, $expiresAt: expiresAt });
 
     c.set("userId", user.id);
     c.set("username", user.username);

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { app } from "../index.js";
 import { getDb } from "../db/index.js";
+import { hashSessionToken } from "../db/migrations.js";
 import { seedTrack, setupTestDb, teardownTestDb } from "./setup.js";
 
 async function request(path: string, init: RequestInit = {}): Promise<Response> {
@@ -49,13 +50,14 @@ describe("application authentication", () => {
   test("rejects legacy tokens and expired sessions", async () => {
     const token = await register();
     const db = getDb();
+    const tokenHash = hashSessionToken(token);
 
-    db.prepare("UPDATE users SET token = 'legacy-token' WHERE id = (SELECT user_id FROM sessions WHERE token = $token)")
-      .run({ $token: token });
+    db.prepare("UPDATE users SET token = 'legacy-token' WHERE id = (SELECT user_id FROM sessions WHERE token_hash = $th)")
+      .run({ $th: tokenHash });
     const legacy = await request("/api/auth/me", { headers: bearer("legacy-token") });
     expect(legacy.status).toBe(401);
 
-    db.prepare("UPDATE sessions SET expires_at = unixepoch() - 1 WHERE token = $token").run({ $token: token });
+    db.prepare("UPDATE sessions SET expires_at = unixepoch() - 1 WHERE token_hash = $th").run({ $th: tokenHash });
     const expired = await request("/api/auth/me", { headers: bearer(token) });
     expect(expired.status).toBe(401);
   });
@@ -63,11 +65,12 @@ describe("application authentication", () => {
   test("renews a valid session when it is used", async () => {
     const token = await register();
     const db = getDb();
-    db.prepare("UPDATE sessions SET expires_at = unixepoch() + 60 WHERE token = $token").run({ $token: token });
+    const tokenHash = hashSessionToken(token);
+    db.prepare("UPDATE sessions SET expires_at = unixepoch() + 60 WHERE token_hash = $th").run({ $th: tokenHash });
 
     const response = await request("/api/auth/me", { headers: bearer(token) });
     expect(response.status).toBe(200);
-    const renewed = db.prepare("SELECT expires_at FROM sessions WHERE token = $token").get({ $token: token }) as { expires_at: number };
+    const renewed = db.prepare("SELECT expires_at FROM sessions WHERE token_hash = $th").get({ $th: tokenHash }) as { expires_at: number };
     expect(renewed.expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000) + 60);
   });
 
@@ -126,6 +129,18 @@ describe("application authentication", () => {
     expect(getDb().prepare("SELECT password_hash FROM users WHERE id = $id").get({ $id: registeredBody.user.id }))
       .toEqual(expect.objectContaining({ password_hash: expect.stringContaining(":") }));
 
+    // Session storage must contain hashes only — never the raw token.
+    const sessionDb = getDb();
+    const sessionColumns = (sessionDb.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]).map((c) => c.name);
+    expect(sessionColumns).not.toContain("token");
+    for (const row of sessionDb.prepare("SELECT * FROM sessions").all() as Record<string, unknown>[]) {
+      for (const [column, value] of Object.entries(row)) {
+        if (typeof value === "string") {
+          expect(`${column}=${value}`).not.toContain(registeredBody.token);
+        }
+      }
+    }
+
     const duplicate = await request("/api/auth/register", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -173,7 +188,7 @@ describe("application authentication", () => {
     });
     expect(logout.status).toBe(200);
     expect(await logout.json()).toEqual({ ok: true });
-    expect(getDb().prepare("SELECT 1 FROM sessions WHERE token = $token").get({ $token: loginBody.token })).toBeNull();
+    expect(getDb().prepare("SELECT 1 FROM sessions WHERE token_hash = $th").get({ $th: hashSessionToken(loginBody.token) })).toBeNull();
 
     const afterLogout = await request("/api/auth/me", { headers: bearer(loginBody.token) });
     expect(afterLogout.status).toBe(401);

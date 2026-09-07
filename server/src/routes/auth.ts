@@ -10,6 +10,7 @@ import { Hono } from "hono";
 import crypto from "crypto";
 import { getDb, upsertTrack } from "../db/index.js";
 import { clearUserRecommendationCaches } from "../providers/taste-engine.js";
+import { hashSessionToken } from "../db/migrations.js";
 
 const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS ?? 90);
 
@@ -30,16 +31,26 @@ type LikeTrackMetadata = {
   coverUrl?: string;
 };
 
-function hashPassword(password: string, salt?: string): { hash: string; salt: string } {
+function computePasswordHash(password: string, salt: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    // Async scrypt keeps login/register from blocking the event loop.
+    crypto.scrypt(password, salt, 64, (err, derived) => {
+      if (err) reject(err);
+      else resolve(derived.toString("hex"));
+    });
+  });
+}
+
+async function hashPassword(password: string, salt?: string): Promise<{ hash: string; salt: string }> {
   const s = salt ?? crypto.randomBytes(16).toString("hex");
-  const hash = crypto.scryptSync(password, s, 64).toString("hex");
+  const hash = await computePasswordHash(password, s);
   return { hash: `${s}:${hash}`, salt: s };
 }
 
-function verifyPassword(password: string, stored: string): boolean {
-  const [salt, hash] = stored.split(":");
-  if (!salt || !hash) return false;
-  const { hash: computed } = hashPassword(password, salt);
+async function verifyPassword(password: string, stored: string): Promise<boolean> {
+  const [salt] = stored.split(":");
+  if (!salt) return false;
+  const { hash: computed } = await hashPassword(password, salt);
   return computed === stored;
 }
 
@@ -92,7 +103,7 @@ router.post("/register", async (c) => {
   }
 
   const id = crypto.randomUUID();
-  const { hash } = hashPassword(password);
+  const { hash } = await hashPassword(password);
   const token = generateToken();
 
   db.prepare(`
@@ -100,8 +111,8 @@ router.post("/register", async (c) => {
     VALUES ($id, $username, $display_name, $hash)
   `).run({ $id: id, $username: username, $display_name: displayName ?? username, $hash: hash });
 
-  db.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES ($token, $uid, $expiresAt)")
-    .run({ $token: token, $uid: id, $expiresAt: sessionExpiresAt() });
+  db.prepare("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($tokenHash, $uid, $expiresAt)")
+    .run({ $tokenHash: hashSessionToken(token), $uid: id, $expiresAt: sessionExpiresAt() });
 
   return c.json({
     ok: true,
@@ -125,14 +136,14 @@ router.post("/login", async (c) => {
     "SELECT id, username, display_name, password_hash FROM users WHERE username = $u COLLATE NOCASE"
   ).get({ $u: username }) as { id: string; username: string; display_name: string | null; password_hash: string } | null;
 
-  if (!user || !verifyPassword(password, user.password_hash)) {
+  if (!user || !(await verifyPassword(password, user.password_hash))) {
     return c.json({ error: "Invalid username or password" }, 401);
   }
 
   // Create a new session — doesn't invalidate other devices
   const token = generateToken();
-  db.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES ($token, $uid, $expiresAt)")
-    .run({ $token: token, $uid: user.id, $expiresAt: sessionExpiresAt() });
+  db.prepare("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($tokenHash, $uid, $expiresAt)")
+    .run({ $tokenHash: hashSessionToken(token), $uid: user.id, $expiresAt: sessionExpiresAt() });
   db.prepare("UPDATE users SET last_seen_at = unixepoch() WHERE id = $id")
     .run({ $id: user.id });
 
@@ -153,8 +164,8 @@ router.post("/logout", (c) => {
     const token = auth.slice(7).trim();
     if (token) {
       const db = getDb();
-      db.prepare("DELETE FROM sessions WHERE token = $t AND user_id = $uid")
-        .run({ $t: token, $uid: userId });
+      db.prepare("DELETE FROM sessions WHERE token_hash = $th AND user_id = $uid")
+        .run({ $th: hashSessionToken(token), $uid: userId });
     }
   }
   return c.json({ ok: true });

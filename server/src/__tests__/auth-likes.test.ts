@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Hono } from "hono";
 import authRoutes from "../routes/auth.js";
 import { getDb } from "../db/index.js";
+import { hashSessionToken } from "../db/migrations.js";
 import { setupTestDb, teardownTestDb } from "./setup.js";
 
 function buildApp() {
@@ -15,8 +16,8 @@ function buildApp() {
       const user = db.prepare(`
         SELECT u.id, u.username FROM sessions s
         JOIN users u ON u.id = s.user_id
-        WHERE s.token = $token
-      `).get({ $token: token }) as { id: string; username: string } | null;
+        WHERE s.token_hash = $th
+      `).get({ $th: hashSessionToken(token) }) as { id: string; username: string } | null;
       if (user) {
         (c as any).set("userId", user.id);
         (c as any).set("username", user.username);
@@ -42,8 +43,8 @@ async function register(app: Hono): Promise<string> {
 }
 
 function userIdForToken(token: string): string {
-  const row = getDb().prepare("SELECT user_id FROM sessions WHERE token = $token")
-    .get({ $token: token }) as { user_id: string } | null;
+  const row = getDb().prepare("SELECT user_id FROM sessions WHERE token_hash = $th")
+    .get({ $th: hashSessionToken(token) }) as { user_id: string } | null;
   if (!row) throw new Error("Test session not found");
   return row.user_id;
 }

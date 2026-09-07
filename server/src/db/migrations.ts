@@ -20,10 +20,17 @@ const SESSION_TTL_SECONDS = Math.floor(
   (Number.isFinite(configuredSessionDays) && configuredSessionDays > 0 ? configuredSessionDays : 90) * 24 * 60 * 60,
 );
 
+/** SHA-256 helper shared by the v21 migration and session creation code. */
+export function hashSessionToken(token: string): string {
+  return new Bun.CryptoHasher("sha256").update(token).digest("hex");
+}
+
 interface Migration {
   version: number;
   description: string;
   up: string;
+  /** Optional TypeScript step run inside the same transaction right after `up`. */
+  migrate?: (db: Database) => void;
   down?: string;
 }
 
@@ -435,6 +442,47 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_artist_releases_notified ON artist_releases(notified_at);
     `,
   },
+  {
+    version: 21,
+    description: "Store session token hashes instead of raw tokens",
+    up: `
+      ALTER TABLE sessions RENAME TO sessions_v21_legacy;
+      CREATE TABLE sessions (
+        token_hash TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        device_name TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        last_used_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        expires_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+      CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+    `,
+    migrate: (db) => {
+      const rows = db.prepare(`
+        SELECT token, user_id, device_name, created_at, last_used_at, expires_at
+        FROM sessions_v21_legacy
+      `).all() as Array<{
+        token: string; user_id: string; device_name: string | null;
+        created_at: number; last_used_at: number; expires_at: number | null;
+      }>;
+      const insert = db.prepare(`
+        INSERT OR REPLACE INTO sessions (token_hash, user_id, device_name, created_at, last_used_at, expires_at)
+        VALUES ($th, $uid, $name, $created, $used, $expires)
+      `);
+      for (const row of rows) {
+        insert.run({
+          $th: hashSessionToken(row.token),
+          $uid: row.user_id,
+          $name: row.device_name,
+          $created: row.created_at,
+          $used: row.last_used_at,
+          $expires: row.expires_at,
+        });
+      }
+      db.exec("DROP TABLE sessions_v21_legacy");
+    },
+  },
 ];
 
 /**
@@ -488,6 +536,8 @@ export function runMigrations(db: Database): void {
           }
         }
       }
+
+      migration.migrate?.(db);
 
       db.prepare(
         "INSERT INTO schema_migrations (version, description) VALUES ($v, $d)"
