@@ -337,7 +337,7 @@ function requiresAuth(path: string, method: string): boolean {
   if (path.startsWith("/api/playlists") && ["POST", "PUT", "PATCH", "DELETE"].includes(method)) return true;
   if (path.startsWith("/api/smart-playlists")) return true;
   if (path.startsWith("/api/lyrics/") && ["POST", "PUT", "DELETE"].includes(method)) return true;
-  if (path === "/api/recommendations/chat" || path === "/api/recommendations/scrobble") return true;
+  if (path === "/api/recommendations/chat" || path === "/api/recommendations/scrobble" || path === "/api/recommendations/dj-intro") return true;
   if (path === "/api/vk/auth" || path === "/api/vk/auth-token" || path === "/api/vk/_probe" || path === "/api/vk/logout" || path === "/api/vk/import") return true;
   if (path.startsWith("/api/yandex/token") || path.startsWith("/api/yandex/device/") || path === "/api/yandex/logout" || path === "/api/yandex/likes/import") return true;
   if (path.startsWith("/audio/local/")) return true;

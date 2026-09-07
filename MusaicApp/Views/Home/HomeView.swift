@@ -206,6 +206,10 @@ struct HomeView: View {
 
             myVibeHeroCard
 
+            if let intro = player.djIntroMessage, player.isDjIntroVisible {
+                djIntroBanner(intro)
+            }
+
             HStack(spacing: 12) {
                 statCard(title: "Queue", value: "\(player.queue.count)", icon: "music.note.list")
                 statCard(title: "Liked", value: "\(library.likedTrackIds.count)", icon: "heart.fill")
@@ -215,12 +219,36 @@ struct HomeView: View {
         .padding(.horizontal, 18)
     }
 
+    /// AI DJ line: appears right after the wave starts, auto-hides after 7s.
+    private func djIntroBanner(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "dot.radiowaves.forward")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Color.accentStrong)
+            Text(text)
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .glassCard(cornerRadius: 18, intensity: 0.12)
+        .transition(.opacity.combined(with: .move(edge: .top)))
+        .task {
+            try? await Task.sleep(for: .seconds(7.5))
+            withAnimation(.easeOut(duration: 0.4)) {
+                player.djIntroMessage = nil
+            }
+        }
+    }
+
     private var myVibeHeroCard: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 8) {
-                                 Text(String(localized: "My Vibe"))
+                                  Text(String(localized: "My Vibe"))
                             .font(.system(size: 28, weight: .bold, design: .rounded))
                             .foregroundStyle(Color.textPrimary)
 

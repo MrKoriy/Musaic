@@ -109,3 +109,78 @@ Library: ${stats.total} tracks, ${stats.artists} artists. Be concise and enthusi
     return { status: 500, body: { error: (error as Error).message, fallback: "AI is temporarily unavailable." } };
   }
 }
+
+export interface DjIntroResult {
+  status: 200 | 429 | 500 | 503;
+  body: Record<string, unknown>;
+}
+
+/**
+ * One-shot AI DJ intro for the personalized wave station: a short, warm
+ * station-host line built from the user's taste profile. Cheap enough to
+ * call on every station start; falls back to a canned line without the AI.
+ */
+export async function generateDjIntro(userId: string | null, seedTitles: string[]): Promise<DjIntroResult> {
+  const { base, key, model } = aiConfig();
+  if (!key) return { status: 200, body: { intro: djIntroFallback(seedTitles) } };
+
+  if (!consumeAiToken()) {
+    return { status: 200, body: { intro: djIntroFallback(seedTitles) } };
+  }
+
+  const db = getDb();
+  const profile = buildWeightedProfile(userId);
+  const hour = new Date().getUTCHours();
+  const daypart = hour < 5 ? "глубокой ночью" : hour < 11 ? "утром" : hour < 17 ? "днём" : hour < 22 ? "вечером" : "поздним вечером";
+  const artists = profile.topArtists.slice(0, 6).map((a) => a.artist).join(", ") || "мало данных";
+  const genres = profile.topGenres.slice(0, 4).map((g) => g.genre).join(", ") || "разное";
+  const seeds = seedTitles.slice(0, 6).join("; ") || "избранное";
+
+  const systemPrompt = `Ты — DJ персональной радиостанции в музыкальном приложении Musaic. Задача: одна короткая живая подводка перед запуском станции.
+Правила:
+- Ровно 1-2 предложения, до 200 символов
+- Обратись к слушателю тепло, без имени
+- Упомяни 1-2 артиста из профиля или вайб жанров, можно связать со временем суток
+- Никаких списков, эмодзи, кавычек, markdown
+- Пиши на русском`;
+
+  const userPrompt = `Время суток: ${daypart}. Топ-артисты: ${artists}. Топ-жанры: ${genres}. Стартовые треки: ${seeds}. Сгенерируй подводку.`;
+
+  try {
+    const response = await fetch(`${base}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        max_tokens: 120,
+        temperature: 0.9,
+      }),
+      signal: AbortSignal.timeout(AI_TIMEOUT_MS),
+    });
+    releaseAiToken();
+    if (!response.ok) {
+      return { status: 200, body: { intro: djIntroFallback(seedTitles) } };
+    }
+    const data = await response.json() as { choices?: Array<{ message: { content: string } }> };
+    const text = data.choices?.[0]?.message?.content?.trim() ?? "";
+    const clean = text.replace(/^["'«]+|["'»]+$/g, "").slice(0, 240);
+    return { status: 200, body: { intro: clean || djIntroFallback(seedTitles) } };
+  } catch {
+    releaseAiToken();
+    return { status: 200, body: { intro: djIntroFallback(seedTitles) } };
+  }
+}
+
+function djIntroFallback(seedTitles: string[]): string {
+  const first = seedTitles[0];
+  return first
+    ? `Включаю волну по вашему избранному — начинаем с «${first}». Поехали.`
+    : "Включаю волну по вашему избранному. Приятного прослушивания.";
+}

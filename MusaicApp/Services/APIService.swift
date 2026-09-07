@@ -102,7 +102,8 @@ final class APIService {
         return String(hasher.finalize())
     }
 
-    private func post<T: Decodable>(_ path: String, body: Encodable) async throws -> T {
+    /// Generic POST for ad-hoc client calls (fire-and-forget features).
+    func post<T: Decodable>(_ path: String, body: Encodable) async throws -> T {
         let url = try makeURL(path)
         var request = authenticatedRequest(for: url, method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

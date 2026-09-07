@@ -34,7 +34,7 @@ import {
   recommendationEnvelope,
   saveDailyMixSnapshot,
 } from "../reco/persistence.js";
-import { generateRecommendationChat, type RecommendationChatBody } from "../reco/chat.js";
+import { generateRecommendationChat, generateDjIntro, type RecommendationChatBody } from "../reco/chat.js";
 import { recordScrobble, type ScrobbleBody } from "../reco/scrobble.js";
 
 function requestUserId(c: unknown): string | null {
@@ -226,6 +226,18 @@ recommendationsRouter.get("/quality", (c) => c.json(getRecommendationQuality({
 recommendationsRouter.post("/chat", async (c) => {
   const body = await c.req.json<RecommendationChatBody>();
   const result = await generateRecommendationChat(body, requestUserId(c));
+  return c.json(result.body, result.status);
+});
+
+// AI DJ intro for the wave station. Always returns 200 with an `intro` string —
+// without an AI key or on upstream failure it degrades to a canned line.
+recommendationsRouter.post("/dj-intro", async (c) => {
+  const body = await c.req.json<{ seeds?: Array<{ title?: string; artist?: string }> }>().catch(() => ({}) as { seeds?: Array<{ title?: string; artist?: string }> });
+  const seedTitles = (Array.isArray(body?.seeds) ? body.seeds : [])
+    .map((seed) => seed?.title && seed.artist ? `${seed.artist} — ${seed.title}` : (seed?.title ?? seed?.artist ?? ""))
+    .filter((value): value is string => Boolean(value))
+    .slice(0, 8);
+  const result = await generateDjIntro(requestUserId(c), seedTitles);
   return c.json(result.body, result.status);
 });
 

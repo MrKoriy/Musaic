@@ -169,4 +169,33 @@ describe("recommendation chat", () => {
     expect(responses[10]?.status).toBe(429);
     expect(await responses[10]!.json()).toEqual({ error: "Too Many Requests" });
   });
+
+  it("generates a DJ intro from the AI provider and degrades without a key", async () => {
+    // No key configured → still 200 with a canned line, never an error.
+    const fallback = await directApp("dj-user").request("/api/recommendations/dj-intro", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seeds: [{ artist: "North Star", title: "Signal" }] }),
+    });
+    expect(fallback.status).toBe(200);
+    const fallbackBody = await fallback.json() as { intro: string };
+    expect(fallbackBody.intro).toContain("North Star — Signal");
+
+    // With a key the upstream reply becomes the intro (quotes trimmed).
+    process.env.AI_API_KEY = "test-ai-key";
+    const restoreFetch = installFetchMock(() =>
+      jsonResponse({ choices: [{ message: { content: "«Доброй ночи, ловите волну!»" } }] }));
+    try {
+      seedTrack({ id: "dj-track", title: "Signal", artist: "North Star", source: "local" });
+      const response = await directApp("dj-user").request("/api/recommendations/dj-intro", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seeds: [{ artist: "North Star", title: "Signal" }] }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ intro: "Доброй ночи, ловите волну!" });
+    } finally {
+      restoreFetch();
+    }
+  });
 });

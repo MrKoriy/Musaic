@@ -30,6 +30,9 @@ final class PlayerStore {
     var queueIndex: Int = 0
     var repeatMode: RepeatMode = .off
     var isShuffled = false
+    /// Short AI DJ line shown once when the wave station starts.
+    var djIntroMessage: String?
+    private var djIntroVisibleUntil: Date?
     private var originalQueue: [Track] = []
     private var stationMode: DynamicStationMode?
     private var stationSeedTracks: [Track] = []
@@ -222,6 +225,32 @@ final class PlayerStore {
             queueIndex = 0
             playTrack(first)
         }
+        await fetchDjIntro(for: seeds)
+    }
+
+    /// Ask the server for a one-shot AI DJ line about this station start.
+    /// Fire-and-forget: failures leave the previous intro cleared.
+    private func fetchDjIntro(for seeds: [Track]) async {
+        djIntroMessage = nil
+        djIntroVisibleUntil = nil
+        struct DjIntroResponse: Decodable { let intro: String }
+        do {
+            let response: DjIntroResponse = try await api.post(
+                "/api/recommendations/dj-intro",
+                body: ["seeds": seeds.prefix(8).map { ["artist": $0.artist, "title": $0.title] }]
+            )
+            guard !response.intro.isEmpty else { return }
+            djIntroMessage = response.intro
+            djIntroVisibleUntil = Date().addingTimeInterval(7)
+        } catch {
+            // Silent: the DJ intro is pure garnish.
+        }
+    }
+
+    /// Whether the DJ intro is still within its display window.
+    var isDjIntroVisible: Bool {
+        guard let message = djIntroMessage else { return false }
+        return Date() < (djIntroVisibleUntil ?? .distantPast)
     }
 
     @MainActor
