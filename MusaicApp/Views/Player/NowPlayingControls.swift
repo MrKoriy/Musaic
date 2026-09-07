@@ -4,6 +4,7 @@ struct NowPlayingTopBarView: View {
     @Binding var showLyrics: Bool
     @Binding var showQueue: Bool
     @Binding var showSleepTimer: Bool
+    @Binding var showIPodWheel: Bool
     @Environment(\.dismiss) private var dismiss
 
     private let audio = AudioPlayer.shared
@@ -20,6 +21,13 @@ struct NowPlayingTopBarView: View {
                 Spacer()
                 LiquidGlassGroup(spacing: 10) {
                     HStack(spacing: 10) {
+                        LiquidIconButton(
+                            systemName: "dial.max",
+                            size: 42,
+                            accessibilityLabel: String(localized: "iPod wheel")
+                        ) {
+                            showIPodWheel = true
+                        }
                         LiquidIconButton(systemName: sleepIcon, size: 42, accessibilityLabel: String(localized: "Sleep timer")) {
                             showSleepTimer = true
                         }

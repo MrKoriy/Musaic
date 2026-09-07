@@ -5,6 +5,7 @@ struct NowPlayingView: View {
     @State private var showLyrics = false
     @State private var showQueue = false
     @State private var showSleepTimer = false
+    @State private var showIPodWheel = false
 
     private let player = PlayerStore.shared
 
@@ -28,6 +29,14 @@ struct NowPlayingView: View {
                 SleepTimerSheet()
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
+            }
+            .sheet(isPresented: $showIPodWheel) {
+                ZStack {
+                    Color.bgPrimary.ignoresSafeArea()
+                    IPodWheelView(isPresented: $showIPodWheel)
+                }
+                .presentationDetents([.height(560)])
+                .presentationDragIndicator(.visible)
             }
         } else {
             ZStack {
@@ -151,7 +160,8 @@ struct NowPlayingView: View {
                 NowPlayingTopBarView(
                     showLyrics: $showLyrics,
                     showQueue: $showQueue,
-                    showSleepTimer: $showSleepTimer
+                    showSleepTimer: $showSleepTimer,
+                    showIPodWheel: $showIPodWheel
                 )
 
                 Spacer(minLength: 6)
