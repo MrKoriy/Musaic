@@ -218,4 +218,14 @@ describe("application authentication", () => {
     const sensitive = await request("/api/stream/liliy-track", { headers: bearer(token) });
     expect(sensitive.status).toBe(404);
   });
+
+  test("blocks artwork hostnames whose DNS resolves to private addresses", async () => {
+    // 127.0.0.1.nip.io genuinely resolves to 127.0.0.1 through DNS, exercising
+    // the resolve-then-connect path rather than a literal IP check. The pinned
+    // lookup must refuse to connect even when the pre-check race allows it.
+    const rebinding = await request("/api/artwork?url=http%3A%2F%2F127.0.0.1.nip.io%2Fcover.jpg");
+    expect([400, 500, 502]).toContain(rebinding.status);
+    const metadata = await request("/api/artwork?url=http%3A%2F%2F10.0.0.5.nip.io%2Fcover.jpg");
+    expect([400, 500, 502]).toContain(metadata.status);
+  });
 });

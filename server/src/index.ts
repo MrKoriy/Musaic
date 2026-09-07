@@ -2,6 +2,9 @@ import { Hono } from "hono";
 import { logger as honoLogger } from "hono/logger";
 import { serve } from "@hono/node-server";
 import type { Server } from "node:http";
+import http from "node:http";
+import https from "node:https";
+import { Readable } from "node:stream";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import os from "os";
@@ -136,21 +139,78 @@ function blockedIPv6(address: string): boolean {
   }
 }
 
+/** Resolve a hostname to ADDRESSES THAT ALL PASS the SSRF blocklist.
+ *  Returns null when the host is forbidden or unresolvable. */
+async function resolveAllowedArtworkAddresses(hostname: string): Promise<Array<{ address: string; family: number }> | null> {
+  if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost")) return null;
+  try {
+    const family = isIP(hostname);
+    if (family === 4) return blockedIPv4(hostname) ? null : [{ address: hostname, family }];
+    if (family === 6) return blockedIPv6(hostname) ? null : [{ address: hostname, family }];
+    const addresses = await lookup(hostname, { all: true, verbatim: true });
+    if (addresses.length === 0) return null;
+    const allowed = addresses.every((entry) => entry.family === 4
+      ? !blockedIPv4(entry.address)
+      : !blockedIPv6(entry.address));
+    return allowed ? addresses : null;
+  } catch {
+    return null;
+  }
+}
+
 async function isAllowedArtworkURL(url: URL): Promise<boolean> {
   if (!['http:', 'https:'].includes(url.protocol)) return false;
   const hostname = url.hostname.replace(/^\[|\]$/g, "");
-  if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost")) return false;
+  return (await resolveAllowedArtworkAddresses(hostname)) !== null;
+}
 
-  try {
-    if (isIP(hostname) === 4) return !blockedIPv4(hostname);
-    if (isIP(hostname) === 6) return !blockedIPv6(hostname);
-    const addresses = await lookup(hostname, { all: true, verbatim: true });
-    return addresses.length > 0 && addresses.every((entry) => entry.family === 4
-      ? !blockedIPv4(entry.address)
-      : !blockedIPv6(entry.address));
-  } catch {
-    return false;
-  }
+interface PinnedArtworkResponse {
+  status: number;
+  headers: Headers;
+  body: ReadableStream<Uint8Array> | null;
+}
+
+/**
+ * Fetch artwork over node:http(s) with a custom `lookup` that pins the
+ * connection to DNS results verified against the SSRF blocklist. The
+ * pre-check and the actual connect share ONE resolution, closing the
+ * TOCTOU/DNS-rebinding window of a separate check-then-fetch flow
+ * (Host header and TLS SNI still come from the original hostname).
+ */
+function fetchArtworkWithPinnedLookup(url: URL, method: string): Promise<PinnedArtworkResponse> {
+  return new Promise((resolve, reject) => {
+    const lookup = (hostname: string, _options: unknown, cb: (err: Error | null, addresses?: Array<{ address: string; family: number }>) => void) => {
+      resolveAllowedArtworkAddresses(hostname)
+        .then((addresses) => {
+          if (!addresses || addresses.length === 0) cb(new Error("Blocked artwork address"));
+          else cb(null, addresses);
+        })
+        .catch(() => cb(new Error("Artwork DNS lookup failed")));
+    };
+    const mod = url.protocol === "https:" ? https : http;
+    const request = mod.request(url, {
+      method,
+      lookup: lookup as never,
+      timeout: 10_000,
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+      },
+    }, (res) => {
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(res.headers)) {
+        if (typeof value === "string") headers.set(name, value);
+        else if (Array.isArray(value)) headers.set(name, value.join(", "));
+      }
+      const body = method === "HEAD" || (res.statusCode ?? 0) >= 300
+        ? null
+        : Readable.toWeb(res) as unknown as ReadableStream<Uint8Array>;
+      resolve({ status: res.statusCode ?? 0, headers, body });
+    });
+    request.on("timeout", () => request.destroy(new Error("Artwork fetch timed out")));
+    request.on("error", reject);
+    request.end();
+  });
 }
 
 async function readLimitedBody(body: ReadableStream<Uint8Array>, limit: number): Promise<Buffer> {
@@ -475,20 +535,15 @@ app.on(["GET", "HEAD"], "/api/artwork", async (c) => {
 
   try {
     let currentURL = upstreamURL;
-    let upstream: Response | null = null;
+    let upstream: PinnedArtworkResponse | null = null;
     for (let redirect = 0; redirect <= 5; redirect++) {
       if (!(await isAllowedArtworkURL(currentURL))) {
         throw new ArtworkProxyError(400, "Blocked address");
       }
-      upstream = await fetch(currentURL, {
-        method: c.req.method,
-        redirect: "manual",
-        headers: {
-          "User-Agent": "Mozilla/5.0",
-          Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-        },
-        signal: AbortSignal.timeout(10_000),
-      });
+      // The pinned lookup re-verifies DNS inside the connect path itself, so
+      // a rebinding resolver cannot pass the check above and then serve a
+      // private address to the fetch.
+      upstream = await fetchArtworkWithPinnedLookup(currentURL, c.req.method);
       if (upstream.status < 300 || upstream.status >= 400) break;
       const location = upstream.headers.get("location");
       if (!location || redirect === 5) throw new ArtworkProxyError(502, "Too many artwork redirects");
@@ -497,8 +552,9 @@ app.on(["GET", "HEAD"], "/api/artwork", async (c) => {
 
     if (!upstream) throw new ArtworkProxyError(502, "Artwork fetch failed");
 
-    if (!upstream.ok || (c.req.method !== "HEAD" && !upstream.body)) {
-      return c.json({ error: `Artwork fetch failed: ${upstream.status}` }, 502);
+    if (!upstream || upstream.status < 200 || upstream.status >= 300 ||
+        (c.req.method !== "HEAD" && !upstream.body)) {
+      return c.json({ error: `Artwork fetch failed: ${upstream?.status ?? "no response"}` }, 502);
     }
 
     const contentType = upstream.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
