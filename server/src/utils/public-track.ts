@@ -13,6 +13,8 @@ export type PublicTrack = {
   last_played_at?: number | null;
   updated_at?: number | null;
   created_at?: number | null;
+  loudness_lufs?: number | null;
+  loudness_peak_db?: number | null;
 };
 
 /** Convert an internal DB row into a response without filesystem paths. */
@@ -32,6 +34,8 @@ export function publicTrack(row: Record<string, unknown>): PublicTrack {
     last_played_at: row.last_played_at == null ? null : Number(row.last_played_at),
     updated_at: row.updated_at == null ? null : Number(row.updated_at),
     created_at: row.created_at == null ? null : Number(row.created_at),
+    loudness_lufs: row.loudness_lufs == null ? null : Number(row.loudness_lufs),
+    loudness_peak_db: row.loudness_peak_db == null ? null : Number(row.loudness_peak_db),
   };
 }
 

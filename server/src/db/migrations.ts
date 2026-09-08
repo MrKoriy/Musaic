@@ -485,6 +485,18 @@ const MIGRATIONS: Migration[] = [
       db.exec("DROP TABLE sessions_v21_legacy");
     },
   },
+  {
+    version: 22,
+    description: "Store per-track loudness for volume normalization",
+    up: `
+      ALTER TABLE tracks ADD COLUMN loudness_lufs REAL;
+      ALTER TABLE tracks ADD COLUMN loudness_peak_db REAL;
+      ALTER TABLE tracks ADD COLUMN loudness_source TEXT;
+      ALTER TABLE tracks ADD COLUMN loudness_scanned_at INTEGER;
+      CREATE INDEX IF NOT EXISTS idx_tracks_loudness_pending
+        ON tracks(id) WHERE local_path IS NOT NULL AND loudness_scanned_at IS NULL;
+    `,
+  },
 ];
 
 /**
