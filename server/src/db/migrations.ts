@@ -14,6 +14,8 @@
  */
 
 import type { Database } from "bun:sqlite";
+import fs from "node:fs";
+import path from "node:path";
 
 const configuredSessionDays = Number(process.env.SESSION_TTL_DAYS ?? 90);
 const SESSION_TTL_SECONDS = Math.floor(
@@ -510,6 +512,16 @@ export function runMigrations(db: Database): void {
     return; // Nothing to do
   }
 
+  // Snapshot the database before touching the schema — migrations have
+  // bitten us before, and 20MB copies are cheap. Restored by hand with:
+  //   sqlite3 <db> ".restore pre-migration-<version>-<ts>.db"
+  try {
+    snapshotBeforeMigration(db, pending[0]!.version);
+  } catch (err: unknown) {
+    console.error(`[migrations] pre-migration snapshot failed, refusing to migrate: ${err instanceof Error ? err.message : String(err)}`);
+    throw err;
+  }
+
   console.log(`[migrations] Applying ${pending.length} pending migration(s)...`);
 
   for (const migration of pending) {
@@ -554,6 +566,33 @@ export function runMigrations(db: Database): void {
   }
 
   console.log(`[migrations] All migrations applied.`);
+}
+
+/**
+ * Copy the database file next to itself before migrating, keeping the last
+ * three snapshots. VACUUM INTO produces a transaction-consistent compact
+ * copy and is safe while the server is running. Restored by hand with:
+ *   cp pre-migration-<version>-<ts>.db musaic.db   (service stopped)
+ */
+function snapshotBeforeMigration(db: Database, version: number): void {
+  // In-memory databases (tests, tooling) have nothing on disk to protect, and
+  // parallel test workers would collide on snapshot names in cwd.
+  if (db.filename === ":memory:" || db.filename.includes("mode=memory")) {
+    return;
+  }
+  const dbPath = process.env.DB_PATH ?? path.join(process.cwd(), "musaic.db");
+  const dir = path.dirname(path.resolve(dbPath));
+  const stamp = `${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}-${process.pid}`;
+  const dest = path.join(dir, `pre-migration-v${version}-${stamp}.db`);
+  db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
+  const snapshots = fs.readdirSync(dir)
+    .filter((name) => /^pre-migration-v\d+-.*\.db$/.test(name))
+    .sort()
+    .reverse();
+  for (const stale of snapshots.slice(3)) {
+    try { fs.unlinkSync(path.join(dir, stale)); } catch { /* best effort */ }
+  }
+  console.log(`[migrations] pre-migration snapshot: ${dest}`);
 }
 
 /**

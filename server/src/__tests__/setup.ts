@@ -11,7 +11,7 @@ import { Database } from "bun:sqlite";
 import { setDbForTest, getDb } from "../db/index.js";
 import { runMigrations } from "../db/migrations.js";
 
-function createSchema(db: Database): void {
+export function createSchema(db: Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS tracks (
       id TEXT PRIMARY KEY,
