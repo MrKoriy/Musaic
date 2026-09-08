@@ -85,6 +85,10 @@ struct ProfileView: View {
                         gapless: Binding(
                             get: { settings.gapless },
                             set: { settings.gapless = $0 }
+                        ),
+                        normalization: Binding(
+                            get: { settings.normalization },
+                            set: { settings.normalization = $0 }
                         )
                     )
 

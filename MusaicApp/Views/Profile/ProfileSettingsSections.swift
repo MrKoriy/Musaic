@@ -166,6 +166,7 @@ struct ProfilePlaybackSection: View {
     @Binding var streamQuality: String
     @Binding var crossfadeSeconds: Int
     @Binding var gapless: Bool
+    @Binding var normalization: Bool
 
     var body: some View {
         ProfileSettingsCard(title: String(localized: "Playback")) {
@@ -193,19 +194,11 @@ struct ProfilePlaybackSection: View {
                     }
                 )
             )
+            ProfileSourceToggle(title: String(localized: "Volume Normalization"), isOn: $normalization)
             Text("Stream Quality applies to Yandex (real bitrate tiers); other sources serve a fixed quality. Gapless uses a short seamless bridge between tracks when Crossfade is Off.")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(Color.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Text(String(localized: "Volume Normalization"))
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Color.textMuted)
-                Spacer()
-                Text(String(localized: "Coming soon"))
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.textMuted)
-            }
         }
     }
 

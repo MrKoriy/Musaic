@@ -55,6 +55,21 @@ final class AudioPlayer {
     var crossfadeSec: TimeInterval = 5.0
     var crossfadeEnabled = true
 
+    // Loudness normalization (ReplayGain-style). Base volume per track; fades
+    // and sleep-timer ramps multiply on top of it. AVPlayer volume is capped at
+    // 1.0, so louder-than-target tracks are attenuated while quieter ones play
+    // untouched (no boosting into clipping).
+    static let loudnessTargetLufs: Double = -16
+    private var currentTrackBaseVolume: Float = 1
+    private var nextTrackBaseVolume: Float = 1
+
+    static func normalizationVolume(forLoudness lufs: Double?) -> Float {
+        guard SettingsStore.shared.normalization, let lufs, lufs.isFinite else { return 1 }
+        let gainDb = loudnessTargetLufs - lufs
+        let linear = pow(10.0, gainDb / 20.0)
+        return Float(min(max(linear, 0.1), 1.0))
+    }
+
     // State
     private(set) var playbackState: PlaybackState = .idle
     var isPlaying: Bool { playbackState == .playing }
@@ -164,9 +179,9 @@ final class AudioPlayer {
     func play(track: Track, restartIfSame: Bool = false) {
         // Prefer local file if downloaded for offline playback.
         if let localURL = DownloadManager.shared.localFileURL(for: track.id) {
-            play(trackID: track.id, url: localURL.absoluteString, restartIfSame: restartIfSame)
+            play(trackID: track.id, url: localURL.absoluteString, restartIfSame: restartIfSame, loudnessLufs: track.loudnessLufs)
         } else {
-            play(trackID: track.id, url: track.url, restartIfSame: restartIfSame)
+            play(trackID: track.id, url: track.url, restartIfSame: restartIfSame, loudnessLufs: track.loudnessLufs)
         }
     }
 
@@ -174,7 +189,7 @@ final class AudioPlayer {
         play(trackID: nil, url: url, restartIfSame: true)
     }
 
-    private func play(trackID: String?, url: String, restartIfSame: Bool) {
+    private func play(trackID: String?, url: String, restartIfSame: Bool, loudnessLufs: Double? = nil) {
         let normalizedURL = Self.normalizedPlaybackURLString(url) ?? url
 
         guard let audioURL = URL(string: normalizedURL) else {
@@ -206,6 +221,7 @@ final class AudioPlayer {
         cleanup()
         currentTrackID = trackID
         currentURLString = normalizedURL
+        currentTrackBaseVolume = loudnessLufs.map { Self.normalizationVolume(forLoudness: $0) } ?? currentTrackBaseVolume
         progress = 0
         currentTime = 0
         duration = 0
@@ -219,6 +235,7 @@ final class AudioPlayer {
         let item = makePlayerItem(for: audioURL)
         let player = AVPlayer(playerItem: item)
         player.automaticallyWaitsToMinimizeStalling = true
+        player.volume = currentTrackBaseVolume
         self.player = player
         attachObservers(player: player, item: item)
 
@@ -271,7 +288,7 @@ final class AudioPlayer {
         stallRetryTask = nil
         stallRetryCount = 0
         cancelVolumeFade()
-        player.volume = 1.0
+        player.volume = currentTrackBaseVolume
         wantsPlayback = true
         transition(to: .loading, clearError: true)
         player.play()
@@ -304,8 +321,8 @@ final class AudioPlayer {
 
     /// Reset any sleep-timer-induced volume fade.
     func cancelVolumeFade() {
-        player?.volume = 1.0
-        crossfadePlayer?.volume = 1.0
+        player?.volume = currentTrackBaseVolume
+        crossfadePlayer?.volume = nextTrackBaseVolume
     }
 
     private func tickSleepTimer() {
@@ -314,8 +331,8 @@ final class AudioPlayer {
 
         if remaining <= 0 {
             pauseAll()
-            player?.volume = 1.0
-            crossfadePlayer?.volume = 1.0
+            player?.volume = currentTrackBaseVolume
+            crossfadePlayer?.volume = nextTrackBaseVolume
             sleepDeadline = nil
             // Mirror the cleared state on the PlayerStore so the UI refreshes.
             Task { @MainActor in
@@ -326,12 +343,12 @@ final class AudioPlayer {
 
         if remaining <= sleepFadeDuration {
             let factor = max(0, min(1, remaining / sleepFadeDuration))
-            player?.volume = Float(factor)
-            crossfadePlayer?.volume = Float(factor)
+            player?.volume = Float(factor) * currentTrackBaseVolume
+            crossfadePlayer?.volume = Float(factor) * nextTrackBaseVolume
         } else {
-            // Keep volume at unity outside the fade window in case user re-armed.
-            if let p = player, p.volume < 0.999 { p.volume = 1.0 }
-            if let cp = crossfadePlayer, cp.volume < 0.999 { cp.volume = 1.0 }
+            // Keep volume at the track's base level in case user re-armed.
+            if let p = player, p.volume < currentTrackBaseVolume - 0.001 { p.volume = currentTrackBaseVolume }
+            if let cp = crossfadePlayer, cp.volume < nextTrackBaseVolume - 0.001 { cp.volume = nextTrackBaseVolume }
         }
     }
 
@@ -631,10 +648,11 @@ final class AudioPlayer {
     // MARK: - Crossfade
 
     /// Tell the player what track comes next so it can crossfade into it.
-    func setCrossfadeNextURL(_ urlString: String?) {
+    func setCrossfadeNextURL(_ urlString: String?, loudnessLufs: Double? = nil) {
         guard crossfadeNextURLString != urlString else { return }
         cleanupCrossfade()
         crossfadeNextURLString = urlString
+        nextTrackBaseVolume = Self.normalizationVolume(forLoudness: loudnessLufs)
     }
 
     private func beginCrossfade(to urlString: String, over remaining: TimeInterval) {
@@ -678,7 +696,7 @@ final class AudioPlayer {
     private func rampCrossfadeVolumes(fadePlayer: AVPlayer, over duration: TimeInterval) {
         guard duration > 0 else {
             player?.volume = 0
-            fadePlayer.volume = 1
+            fadePlayer.volume = nextTrackBaseVolume
             return
         }
 
@@ -697,8 +715,8 @@ final class AudioPlayer {
             let fadeProgress = min(Float(elapsed / duration), 1.0)
             Task { @MainActor [weak self, weak fadePlayer] in
                 guard let self, let fadePlayer else { return }
-                self.player?.volume = 1.0 - fadeProgress
-                fadePlayer.volume = fadeProgress
+                self.player?.volume = (1.0 - fadeProgress) * self.currentTrackBaseVolume
+                fadePlayer.volume = fadeProgress * self.nextTrackBaseVolume
 
                 if fadeProgress >= 1.0 {
                     self.crossfadeTimer?.invalidate()
@@ -719,7 +737,9 @@ final class AudioPlayer {
         crossfadeTimer = nil
         crossfadePlayerStatusObserver = nil
 
-        fadePlayer.volume = 1.0
+        currentTrackBaseVolume = nextTrackBaseVolume
+        nextTrackBaseVolume = 1
+        fadePlayer.volume = currentTrackBaseVolume
         player = fadePlayer
         crossfadePlayer = nil
         crossfadeStarted = false

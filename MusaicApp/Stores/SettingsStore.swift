@@ -87,7 +87,7 @@ final class SettingsStore {
         set { UserDefaults.standard.set(newValue, forKey: "gapless") }
     }
     var normalization: Bool {
-        get { UserDefaults.standard.bool(forKey: "normalization") }
+        get { UserDefaults.standard.object(forKey: "normalization") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "normalization") }
     }
 

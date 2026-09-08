@@ -146,7 +146,7 @@ final class PlayerStore {
             } else {
                 url = next.url
             }
-            audio.setCrossfadeNextURL(url)
+            audio.setCrossfadeNextURL(url, loudnessLufs: next.loudnessLufs)
         } else {
             audio.setCrossfadeNextURL(nil)
         }

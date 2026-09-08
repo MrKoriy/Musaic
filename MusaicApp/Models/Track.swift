@@ -13,6 +13,8 @@ struct Track: Identifiable, Codable, Hashable {
     var url: String
     var duration: TimeInterval?
     let source: TrackSource
+    var loudnessLufs: Double?
+    var loudnessPeakDb: Double?
 
     enum TrackSource: String, Codable, Hashable {
         case local, vk, soundcloud, yandex, youtube
@@ -32,6 +34,8 @@ struct Track: Identifiable, Codable, Hashable {
         case id, title, artist, album, canonicalFamilyId, artwork, artworkColor, url, duration, source
         case coverUrl
         case cover_url
+        case loudnessLufs = "loudness_lufs"
+        case loudnessPeakDb = "loudness_peak_db"
     }
 
     init(
@@ -44,7 +48,9 @@ struct Track: Identifiable, Codable, Hashable {
         artworkColor: String? = nil,
         url: String,
         duration: TimeInterval? = nil,
-        source: TrackSource
+        source: TrackSource,
+        loudnessLufs: Double? = nil,
+        loudnessPeakDb: Double? = nil
     ) {
         self.id = id
         self.title = title
@@ -56,6 +62,8 @@ struct Track: Identifiable, Codable, Hashable {
         self.url = url
         self.duration = duration
         self.source = source
+        self.loudnessLufs = loudnessLufs
+        self.loudnessPeakDb = loudnessPeakDb
     }
 
     init(from decoder: Decoder) throws {
@@ -75,6 +83,8 @@ struct Track: Identifiable, Codable, Hashable {
         url = try container.decodeIfPresent(String.self, forKey: .url) ?? ""
         duration = try container.decodeIfPresent(TimeInterval.self, forKey: .duration)
         source = (try? container.decode(TrackSource.self, forKey: .source)) ?? .local
+        loudnessLufs = try container.decodeIfPresent(Double.self, forKey: .loudnessLufs)
+        loudnessPeakDb = try container.decodeIfPresent(Double.self, forKey: .loudnessPeakDb)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -89,6 +99,8 @@ struct Track: Identifiable, Codable, Hashable {
         try container.encode(url, forKey: .url)
         try container.encodeIfPresent(duration, forKey: .duration)
         try container.encode(source, forKey: .source)
+        try container.encodeIfPresent(loudnessLufs, forKey: .loudnessLufs)
+        try container.encodeIfPresent(loudnessPeakDb, forKey: .loudnessPeakDb)
     }
 }
 
