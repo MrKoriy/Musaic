@@ -61,7 +61,14 @@ function decryptStoredValue(value: string | null): string | null {
 export function getDb(): Database {
   if (!_db) {
     _db = new Database(DB_PATH, { create: true });
-    _db.exec("PRAGMA journal_mode = WAL");
+    // bun:sqlite's WAL checkpoint-on-close corrupted the production database
+    // three times (truncated main file + dangling page references, identical
+    // pages each time, always around service stop). DB_JOURNAL_MODE=DELETE
+    // switches to the classic rollback journal, which sidesteps that code
+    // path entirely; single-user write load makes the locking cost negligible.
+    const requestedMode = (process.env.DB_JOURNAL_MODE ?? "WAL").trim().toUpperCase();
+    const journalMode = requestedMode === "DELETE" || requestedMode === "TRUNCATE" ? requestedMode : "WAL";
+    _db.exec(`PRAGMA journal_mode = ${journalMode}`);
     _db.exec("PRAGMA foreign_keys = ON");
     initSchema(_db);
   }
