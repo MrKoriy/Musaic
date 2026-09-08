@@ -34,6 +34,28 @@ describe("pre-migration snapshots", () => {
     }
   });
 
+  test("writes the snapshot next to the symlink target, not the symlink", () => {
+    const sharedDir = tempDbDir();
+    const releaseDir = tempDbDir();
+    const realDb = path.join(sharedDir, "musaic.db");
+    process.env.DB_PATH = path.join(releaseDir, "musaic.db"); // relative-style symlink like deploys use
+    try {
+      fs.symlinkSync(realDb, process.env.DB_PATH);
+      const db = new Database(realDb, { create: true });
+      createSchema(db);
+      db.close();
+
+      const snapshots = fs.readdirSync(sharedDir)
+        .filter((name) => /^pre-migration-v\d+-.*\.db$/.test(name));
+      expect(snapshots.length).toBeGreaterThan(0);
+      expect(fs.readdirSync(releaseDir).filter((n) => n.endsWith(".db")).length).toBe(1); // just the symlink
+    } finally {
+      delete process.env.DB_PATH;
+      fs.rmSync(sharedDir, { recursive: true, force: true });
+      fs.rmSync(releaseDir, { recursive: true, force: true });
+    }
+  });
+
   test("skips snapshots for in-memory databases", () => {
     const db = new Database(":memory:", { create: true });
     createSchema(db); // must not throw or write snapshots to cwd

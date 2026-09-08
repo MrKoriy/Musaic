@@ -581,7 +581,15 @@ function snapshotBeforeMigration(db: Database, version: number): void {
     return;
   }
   const dbPath = process.env.DB_PATH ?? path.join(process.cwd(), "musaic.db");
-  const dir = path.dirname(path.resolve(dbPath));
+  // Follow symlinks (deploy keeps musaic.db as a symlink into shared/) so the
+  // snapshot lands in durable storage instead of the rotating release dir.
+  let resolved: string;
+  try {
+    resolved = fs.realpathSync(dbPath);
+  } catch {
+    resolved = path.resolve(dbPath);
+  }
+  const dir = path.dirname(resolved);
   const stamp = `${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}-${process.pid}`;
   const dest = path.join(dir, `pre-migration-v${version}-${stamp}.db`);
   db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
