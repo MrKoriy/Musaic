@@ -10,6 +10,7 @@ import { runCoverMigrationJob } from "./cover-migration.js";
 import { runReleaseDetectionJob } from "./release-detection.js";
 import { runDownloadsEvictionJob } from "./downloads-eviction.js";
 import { runLoudnessScanJob } from "./loudness-scan.js";
+import { runDbIntegrityJob } from "./db-integrity.js";
 
 let registered = false;
 
@@ -27,4 +28,5 @@ export function registerRecommendationJobs(): void {
   registerJob({ name: "release-detection", intervalHours: 12, run: () => runReleaseDetectionJob() });
   registerJob({ name: "downloads-eviction", intervalHours: 24, run: () => runDownloadsEvictionJob() });
   registerJob({ name: "loudness-scan", intervalHours: 1, run: () => runLoudnessScanJob() });
+  registerJob({ name: "db-integrity", intervalHours: 1, run: () => runDbIntegrityJob() });
 }
