@@ -783,7 +783,9 @@ try {
   dropTracksSourceCheck(db);
 } catch (err: unknown) {
   log.error("server", "Migration failed — aborting startup:", err instanceof Error ? err.message : String(err));
-  process.exit(1);
+  // Never hard-exit right after DB writes: bun:sqlite's async VFS flush can
+  // tear the header page (root cause of the repeated corruption incidents).
+  exitAfterDbSettled(1);
 }
 
 registerRecommendationJobs();
@@ -837,6 +839,23 @@ if (tlsCertPath && tlsKeyPath) {
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
 
+/**
+ * Close the database and only then exit, with a short grace window.
+ *
+ * bun:sqlite's custom VFS can flush written pages asynchronously; calling
+ * process.exit() immediately after writes tears the on-disk state (we saw
+ * "header page_count stale, data pages present" corruption three times,
+ * always right after a service stop or a migration-abort crash loop).
+ * The 250ms non-unref'd timer keeps the event loop alive until the flush
+ * has landed before the exit fires.
+ */
+function exitAfterDbSettled(code: number): void {
+  try {
+    (getDb() as any).close?.();
+  } catch { /* ignore */ }
+  setTimeout(() => process.exit(code), 250);
+}
+
 function shutdown(signal: string): void {
   log.info("server", `Received ${signal} — shutting down gracefully...`);
 
@@ -849,25 +868,17 @@ function shutdown(signal: string): void {
   if (httpServer) {
     httpServer.close(() => {
       log.info("server", "HTTP server closed");
-      try {
-        (getDb() as any).close?.();
-        log.info("server", "DB closed");
-      } catch { /* ignore */ }
+      exitAfterDbSettled(0);
       log.info("server", "Shutdown complete");
       clearTimeout(forceExit);
-      process.exit(0);
     });
   } else if (bunServer) {
     bunServer.stop(true);
     log.info("server", "HTTP server closed");
-    try {
-      (getDb() as any).close?.();
-      log.info("server", "DB closed");
-    } catch { /* ignore */ }
+    exitAfterDbSettled(0);
     clearTimeout(forceExit);
-    process.exit(0);
   } else {
-    process.exit(0);
+    exitAfterDbSettled(0);
   }
 }
 
