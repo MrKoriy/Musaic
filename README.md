@@ -41,7 +41,7 @@ The Xcode project is generated — edit `project.yml`, not `Musaic.xcodeproj`.
 
 ## CI & releases
 
-- Push to `main` runs **CI**: server tests + lint, macOS and iOS app builds (`.github/workflows/ci.yml`, Xcode 26.3).
+- Push to `main` runs **CI**: server tests + lint, macOS and iOS app builds (`.github/workflows/ci.yml`, macos-26 runner, Xcode 26.6).
 - Push a tag `v*.*.*` runs **Release**: builds the unsigned macOS app and the server bundle, attaches them to a GitHub Release (`.github/workflows/release.yml`).
 
 ```sh
