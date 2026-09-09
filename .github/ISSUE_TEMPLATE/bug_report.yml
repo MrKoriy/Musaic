@@ -1,0 +1,49 @@
+name: Bug report
+description: Something is broken in the server or the app
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Server
+        - iOS app
+        - macOS app
+        - watchOS app / widget
+        - Deploy / CI
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Server version (`bun src/index.ts --version` or release tag) / app build. `main` + date is fine.
+      placeholder: "v0.1.0 / main @ 2026-09-09"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Actual behavior vs expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps, request examples welcome (redact tokens).
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Server log excerpt, Xcode error, or CI job link. Redact tokens and secrets.
+      render: text

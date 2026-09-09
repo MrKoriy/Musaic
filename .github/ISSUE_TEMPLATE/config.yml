@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Design system
+    url: https://github.com/MrKoriy/Musaic/blob/main/DESIGN.md
+    about: Palette, glassmorphism rules and component specs
+  - name: Task plan
+    url: https://github.com/MrKoriy/Musaic/blob/main/tasks.md
+    about: Executable improvement plan and production server state

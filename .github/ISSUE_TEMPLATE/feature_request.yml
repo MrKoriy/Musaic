@@ -1,0 +1,36 @@
+name: Feature request
+description: Propose an improvement for the server or the app
+title: "[feat]: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Server
+        - iOS app
+        - macOS app
+        - watchOS app / widget
+        - Deploy / CI
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Suggested behavior, API shape, or UI sketch.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Constraints, alternatives considered, links to tasks.md / DESIGN.md.

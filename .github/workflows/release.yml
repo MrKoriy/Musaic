@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-15
+    env:
+      # Same toolchain as CI app builds (image default is Xcode 16.4).
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build macOS app (Release, unsigned)
+        working-directory: MusaicApp
+        run: >-
+          xcodegen generate &&
+          xcodebuild -project Musaic.xcodeproj -scheme MusaicMac -configuration Release
+          -destination 'platform=macOS' -derivedDataPath "$RUNNER_TEMP/derived"
+          CODE_SIGNING_ALLOWED=NO build
+
+      - name: Package macOS app
+        run: |
+          APP_PATH=$(find "$RUNNER_TEMP/derived/Build/Products/Release" -maxdepth 1 -name "*.app" | head -1)
+          test -n "$APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "musaic-macos-${{ github.ref_name }}.zip"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Package server bundle
+        working-directory: server
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+          tar -czf "../musaic-server-${{ github.ref_name }}.tar.gz" -C dist server.js
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          gh release create "${{ github.ref_name }}"
+          --title "Musaic ${{ github.ref_name }}"
+          --generate-notes
+          "musaic-macos-${{ github.ref_name }}.zip"
+          "musaic-server-${{ github.ref_name }}.tar.gz"
