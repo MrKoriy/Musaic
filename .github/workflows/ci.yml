@@ -71,6 +71,10 @@ jobs:
   app-build-macos:
     name: macOS App Build
     runs-on: macos-15
+    env:
+      # Match local dev toolchain (Swift 6.2). Image default is Xcode 16.4,
+      # whose Swift 6.1 concurrency checking rejects code that is valid on 26.x.
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
 
     steps:
       - name: Checkout
@@ -92,6 +96,10 @@ jobs:
   app-build-ios:
     name: iOS App Build
     runs-on: macos-15
+    env:
+      # Match local dev toolchain (Swift 6.2). Image default is Xcode 16.4,
+      # whose Swift 6.1 concurrency checking rejects code that is valid on 26.x.
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
 
     steps:
       - name: Checkout

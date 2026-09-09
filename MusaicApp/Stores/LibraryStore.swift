@@ -327,14 +327,13 @@ final class LibraryStore {
         // Debounce: cancel pending rebuild and schedule new one after 150ms
         rebuildTask?.cancel()
         let tracks = displayedLikedTracks
-        rebuildTask = Task.detached(priority: .userInitiated) { [weak self] in
-            let albums = Self.computeAlbums(from: tracks)
-            let artists = Self.computeArtists(from: tracks)
+        rebuildTask = Task { [weak self] in
+            let (albums, artists) = await Task.detached(priority: .userInitiated) {
+                (Self.computeAlbums(from: tracks), Self.computeArtists(from: tracks))
+            }.value
             guard !Task.isCancelled else { return }
-            await MainActor.run {
-                self?.likedAlbums = albums
-                self?.likedArtists = artists
-            }
+            self?.likedAlbums = albums
+            self?.likedArtists = artists
         }
     }
 

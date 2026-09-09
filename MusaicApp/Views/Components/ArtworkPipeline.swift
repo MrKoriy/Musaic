@@ -33,7 +33,7 @@ private struct ArtworkDebugSnapshot {
     var errorMessage: String?
 }
 
-struct ArtworkLoadResult {
+struct ArtworkLoadResult: @unchecked Sendable {
     let image: PlatformImage
     let statusCode: Int?
     let byteCount: Int?
