@@ -52,7 +52,7 @@ targets:
           NSAllowsArbitraryLoadsForMedia: true
           NSAllowsLocalNetworking: true
           NSExceptionDomains:
-            45-146-167-109.nip.io:
+            94-103-1-126.nip.io:
               NSExceptionAllowsInsecureHTTPLoads: true
               NSIncludesSubdomains: true
         UIBackgroundModes:
@@ -100,7 +100,7 @@ targets:
           NSAllowsArbitraryLoadsForMedia: true
           NSAllowsLocalNetworking: true
           NSExceptionDomains:
-            45-146-167-109.nip.io:
+            94-103-1-126.nip.io:
               NSExceptionAllowsInsecureHTTPLoads: true
               NSIncludesSubdomains: true
     settings:

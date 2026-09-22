@@ -7,7 +7,7 @@ import Foundation
 final class APIService {
     static let shared = APIService()
 
-    private let defaultServer = "http://45-146-167-109.nip.io:3001"
+    private let defaultServer = "http://94-103-1-126.nip.io:3001"
     private(set) var serverURL: String
     private let session: URLSession
     private let pingSession: URLSession
@@ -773,17 +773,15 @@ final class APIService {
             components.port = 3001
         }
 
-        // Keep the known HTTP deployment reachable from iOS: ATS accepts the
+        // Keep the live HTTP deployment reachable from iOS: ATS accepts the
         // nip.io hostname, while direct IP HTTP is rejected on some iOS builds.
-        // Preserve explicit HTTPS for future TLS deployments, except for the
-        // old stored default which was never backed by TLS.
-        if host == "45.146.167.109" && components.port == 3001 {
-            if components.scheme == "http" {
-                components.host = "45-146-167-109.nip.io"
-            } else if components.scheme == "https" {
-                components.scheme = "http"
-                components.host = "45-146-167-109.nip.io"
-            }
+        // Installs that stored the retired server are moved onto the live one;
+        // it has no TLS yet, so the scheme is forced back to http.
+        let legacyHosts: Set<String> = ["45.146.167.109", "45-146-167-109.nip.io"]
+        if let currentHost = components.host, legacyHosts.contains(currentHost), components.port == 3001 {
+            // The old deployment is gone: heal stored settings onto the live server.
+            components.scheme = "http"
+            components.host = "94-103-1-126.nip.io"
         }
 
         if components.path == "/" {

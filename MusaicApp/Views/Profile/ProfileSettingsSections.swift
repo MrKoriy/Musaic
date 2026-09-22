@@ -256,7 +256,7 @@ struct ProfileServerSection: View {
         ProfileSettingsCard(title: String(localized: "Server")) {
             if editingServer {
                 VStack(spacing: 10) {
-                    TextField("45.146.167.109:3001", text: $serverDraft)
+                    TextField("94.103.1.126:3001", text: $serverDraft)
                         .textFieldStyle(.plain)
                         .foregroundStyle(Color.textPrimary)
                         .padding(.horizontal, 16)

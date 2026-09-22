@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 server_dir="$script_dir/server"
-remote_host="${MUSAIC_DEPLOY_HOST:-root@45.146.167.109}"
+remote_host="${MUSAIC_DEPLOY_HOST:-root@94.103.1.126}"
 remote_dir="/opt/musaic-server"
 service_name="musaic-server.service"
 legacy_service_name="musaic.service"

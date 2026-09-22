@@ -28,7 +28,7 @@ function callbackBaseUrl(c: { req: { header(name: string): string | undefined; u
     return configured.replace(/\/+$/, "");
   }
   const host = c.req.header("host") ?? "";
-  const allowedHosts = (process.env.VK_ALLOWED_HOSTS ?? "45.146.167.109:3001,localhost:3001,127.0.0.1:3001")
+  const allowedHosts = (process.env.VK_ALLOWED_HOSTS ?? "94.103.1.126:3001,localhost:3001,127.0.0.1:3001")
     .split(",")
     .map((entry) => entry.trim().toLowerCase())
     .filter(Boolean);
