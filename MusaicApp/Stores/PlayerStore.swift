@@ -91,6 +91,7 @@ final class PlayerStore {
         audio.onPlaybackProgress = { [weak self] position in
             self?.recordPlaybackProgress(position)
             self?.pushProgressToWatch(position)
+            self?.processPendingWidgetCommands()
         }
         audio.onPlaybackPaused = { [weak self] in
             self?.handlePlaybackPaused()
@@ -300,6 +301,25 @@ final class PlayerStore {
     func pausePlayback() {
         audio.pause()
         if let track = currentTrack { publishNowPlayingSnapshot(track: track) }
+    }
+
+    /// Execute pending control commands mailed in by widget / Live Activity
+    /// buttons. Those run in another process and can only drop a note into the
+    /// App Group mailbox, so we drain it on every playback tick and on
+    /// activation.
+    func processPendingWidgetCommands() {
+        while let command = NowPlayingShared.drainCommand() {
+            switch command {
+            case "toggle": togglePlayPause()
+            case "play": resumePlayback()
+            case "pause": pausePlayback()
+            case "next": skipNext()
+            case "previous": skipPrevious()
+            case "like":
+                if let track = currentTrack { LibraryStore.shared.toggleLike(track: track) }
+            default: break
+            }
+        }
     }
 
     // MARK: - Sleep timer
@@ -842,6 +862,16 @@ final class PlayerStore {
             updatedAt: Int(Date().timeIntervalSince1970)
         ))
         pushSnapshotToWatch()
+        #if os(iOS)
+        NowPlayingActivityController.shared.update(
+            trackId: track.id,
+            title: track.title,
+            artist: track.artist,
+            artworkURL: track.artwork,
+            isPlaying: audio.isPlaying,
+            progress: audio.duration > 0 ? audio.currentTime / audio.duration : 0
+        )
+        #endif
     }
 
     private func pushSnapshotToWatch() {
@@ -860,6 +890,7 @@ final class PlayerStore {
         if Int(fraction * 100) != Int(lastWatchProgressPercent) {
             lastWatchProgressPercent = fraction * 100
             WatchControlHandler.shared.pushProgressToWatch(fraction)
+            NowPlayingActivityController.shared.updateProgress(fraction)
         }
         #endif
     }

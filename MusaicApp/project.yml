@@ -57,6 +57,7 @@ targets:
               NSIncludesSubdomains: true
         UIBackgroundModes:
           - audio
+        NSSupportsLiveActivities: true
     settings:
       base:
         SWIFT_STRICT_CONCURRENCY: complete

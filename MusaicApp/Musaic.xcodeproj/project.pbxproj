@@ -133,6 +133,7 @@
 		F524BE490032804F4F04B7E9 /* MusaicApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 898C1A6328E2E990647DA948 /* MusaicApp.swift */; };
 		F61FE40BC8C9C27D69697030 /* ProfileYandexDeviceFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 191F9D01C7B12ABFF9279F08 /* ProfileYandexDeviceFlow.swift */; };
 		F8D39392BD2BE857FB64B9AA /* ProfileStatsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94DF4FA643FE2AF785DD4556 /* ProfileStatsSection.swift */; };
+		F90BCB7000F3D829245334DD /* NowPlayingLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 741350AC56A6276BDDA4EE55 /* NowPlayingLiveActivity.swift */; };
 		F968F1CD0207BC0EE80C8E93 /* NowPlayingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FD4D6A7929929371468C258 /* NowPlayingView.swift */; };
 		FDE82037FBC83AFCD6805338 /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C6689D0BB3952FB2EFBA7EE /* SearchView.swift */; };
 		FEF14384E4630ED6147763CF /* ProfileStatsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94DF4FA643FE2AF785DD4556 /* ProfileStatsSection.swift */; };
@@ -222,6 +223,7 @@
 		6FAF4250E0CA6EDD8B0CABD5 /* MusaicMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MusaicMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		71E7D826F8472E051B49362A /* WatchControlHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchControlHandler.swift; sourceTree = "<group>"; };
 		735F6E3D858AF7E7C142CE06 /* AuthView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthView.swift; sourceTree = "<group>"; };
+		741350AC56A6276BDDA4EE55 /* NowPlayingLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingLiveActivity.swift; sourceTree = "<group>"; };
 		75F30196F9A04263D3E3450B /* APIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIService.swift; sourceTree = "<group>"; };
 		790BBB6F4AF76760EE8CF0E5 /* SearchCards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchCards.swift; sourceTree = "<group>"; };
 		7D7C6122D4F873711AF447C4 /* VKAuthSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VKAuthSheet.swift; sourceTree = "<group>"; };
@@ -338,6 +340,7 @@
 			isa = PBXGroup;
 			children = (
 				53764BC19F66CC82027A621C /* MusaicWidget.swift */,
+				741350AC56A6276BDDA4EE55 /* NowPlayingLiveActivity.swift */,
 			);
 			path = Widgets;
 			sourceTree = "<group>";
@@ -621,6 +624,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				195D1C9FD43BD450FA511575 /* MusaicWidget.swift in Sources */,
+				F90BCB7000F3D829245334DD /* NowPlayingLiveActivity.swift in Sources */,
 				D25774E3C1587132B0875EC7 /* NowPlayingShared.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

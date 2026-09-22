@@ -8,6 +8,8 @@
  * Produces:
  *   - LRC with accurate per-line timestamps, mapped from whisper word-level output
  *     to reference text via sequence alignment.
+ *   - Word-level timings (karaoke): each reference word carries its own start/end
+ *     seconds, taken from the matched whisper word (interpolated when unmatched).
  *
  * This is a CPU-only forced-alignment approximation that's dramatically more
  * accurate than raw LRCLIB timestamps (which are human-typed with reaction-time
@@ -23,7 +25,7 @@
  *   5. For each reference *line*, we pick the earliest matched word's timestamp
  *      as the line's start time. Missing lines are interpolated between known
  *      neighbours so the scroll still moves smoothly.
- *   6. Output LRC: `[mm:ss.xx] line text`
+ *   6. Output LRC: `[mm:ss.xx] line text`, plus word timings JSON for karaoke.
  */
 
 import fs from "fs";
@@ -41,6 +43,14 @@ interface WhisperWord {
 interface ReferenceToken {
   line: number; // index of the line this word belongs to
   word: string; // normalized word
+  raw: string;  // original word as written in the reference text
+}
+
+/** Per-word timing attached to a reference word. Times in milliseconds. */
+interface WordTiming {
+  raw: string;
+  start: number | null;
+  end: number | null;
 }
 
 export interface AlignOptions {
@@ -56,15 +66,22 @@ export interface AlignOptions {
   perceptualLeadSec?: number;
 }
 
+export interface AlignResult {
+  /** LRC string, one timestamped line per reference line. */
+  lrc: string;
+  /** JSON string: Array<Array<{t, s, e}>> — per line, per word (seconds). */
+  wordsJson: string;
+}
+
 /**
- * Run the full alignment pipeline. Returns LRC string on success.
+ * Run the full alignment pipeline. Returns LRC + word-level timings on success.
  * Throws on fatal errors (ffmpeg missing, whisper binary missing, empty refText).
  */
-export async function alignLyricsWithWhisper(
+export async function alignLyricsDetailed(
   audioPath: string,
   referenceText: string,
   opts: AlignOptions
-): Promise<string> {
+): Promise<AlignResult> {
   const lines = referenceText
     .split("\n")
     .map((l) => l.trim())
@@ -86,16 +103,31 @@ export async function alignLyricsWithWhisper(
       throw new Error("whisper produced no usable words");
     }
 
-    const lineStarts = alignReferenceToWhisper(lines, words);
+    const { lineStarts, lineWords } = alignReferenceToWhisper(lines, words);
 
     const lead = opts.perceptualLeadSec ?? 0.15;
 
-    return formatLrc(lines, lineStarts, lead);
+    fillWordTimes(lineWords, lineStarts);
+
+    return {
+      lrc: formatLrc(lines, lineStarts, lead),
+      wordsJson: formatWordsJson(lineWords, lead),
+    };
   } finally {
     for (const f of [wavPath, `${jsonPath}.json`]) {
       try { fs.unlinkSync(f); } catch {}
     }
   }
+}
+
+/** Back-compat wrapper: LRC string only. */
+export async function alignLyricsWithWhisper(
+  audioPath: string,
+  referenceText: string,
+  opts: AlignOptions
+): Promise<string> {
+  const result = await alignLyricsDetailed(audioPath, referenceText, opts);
+  return result.lrc;
 }
 
 // ── 1. ffmpeg conversion ─────────────────────────────────────────────────────
@@ -176,7 +208,7 @@ function tokenizeReference(lines: string[]): ReferenceToken[] {
   for (let i = 0; i < lines.length; i++) {
     for (const w of lines[i].split(/\s+/)) {
       const norm = normalizeWord(w);
-      if (norm) tokens.push({ line: i, word: norm });
+      if (norm) tokens.push({ line: i, word: norm, raw: w });
     }
   }
   return tokens;
@@ -184,26 +216,35 @@ function tokenizeReference(lines: string[]): ReferenceToken[] {
 
 // ── 4. Alignment (greedy sliding-window + fuzzy match) ───────────────────────
 
+interface AlignOutput {
+  /** map[lineIndex] → firstMatchedWordMs | null */
+  lineStarts: Array<number | null>;
+  /** map[lineIndex] → per-word timings for karaoke */
+  lineWords: WordTiming[][];
+}
+
 /**
- * Given ordered reference tokens and ordered whisper words, return:
- *   map[lineIndex] → firstMatchedWordMs | null
+ * Given ordered reference tokens and ordered whisper words, return the line
+ * start times AND per-word timings.
  *
  * Strategy: walk both sequences forward. For each reference token, look in a
  * rolling window of upcoming whisper words (size 12). Pick the first word whose
  * normalised form equals the reference word OR has edit distance ≤ 1. Anchor
  * there and advance past that word.
  *
- * If nothing matches in the window, skip the reference token (we'll interpolate
- * the line's timestamp later if no other word in that line matched either).
+ * If nothing matches in the window, skip the reference token (its word timing
+ * is interpolated later; line timestamps are interpolated if no other word in
+ * that line matched either).
  */
 function alignReferenceToWhisper(
   lines: string[],
   whisper: WhisperWord[]
-): Array<number | null> {
+): AlignOutput {
   const refTokens = tokenizeReference(lines);
   const lineStarts: Array<number | null> = Array(lines.length).fill(null);
+  const lineWords: WordTiming[][] = lines.map(() => []);
 
-  const normalizedWhisper = whisper.map((w) => ({ norm: normalizeWord(w.text), from: w.from }));
+  const normalizedWhisper = whisper.map((w) => ({ norm: normalizeWord(w.text), from: w.from, to: w.to }));
 
   let j = 0; // pointer into whisper words
   const WINDOW = 12;
@@ -229,18 +270,22 @@ function alignReferenceToWhisper(
     }
 
     if (bestIdx >= 0) {
+      const matched = normalizedWhisper[bestIdx];
       // Anchor: record earliest word per line (first one wins).
       if (lineStarts[ref.line] === null) {
-        lineStarts[ref.line] = normalizedWhisper[bestIdx].from;
+        lineStarts[ref.line] = matched.from;
       }
+      lineWords[ref.line].push({ raw: ref.raw, start: matched.from, end: matched.to });
       j = bestIdx + 1;
+    } else {
+      lineWords[ref.line].push({ raw: ref.raw, start: null, end: null });
     }
   }
 
   // Interpolate lines that had zero matched words.
   interpolateGaps(lineStarts);
 
-  return lineStarts;
+  return { lineStarts, lineWords };
 }
 
 /**
@@ -316,7 +361,76 @@ function interpolateGaps(lineStarts: Array<number | null>): void {
   }
 }
 
-// ── 5. LRC formatter ─────────────────────────────────────────────────────────
+// ── 5. Word timings (karaoke) ────────────────────────────────────────────────
+
+const WORD_STEP_MS = 280;   // spacing for words with no matched anchor
+const WORD_LEN_MS = 240;    // assumed spoken length of an unmatched word
+
+/**
+ * Fill in timings for reference words that never matched a whisper word,
+ * distributing them evenly between their matched neighbours inside the line.
+ * Lines without any anchor are laid out from the line's interpolated start.
+ */
+function fillWordTimes(lineWords: WordTiming[][], lineStarts: Array<number | null>): void {
+  for (let i = 0; i < lineWords.length; i++) {
+    const words = lineWords[i];
+    if (words.length === 0) continue;
+
+    const anchorIdx: number[] = [];
+    for (let k = 0; k < words.length; k++) {
+      if (words[k].start !== null) anchorIdx.push(k);
+    }
+
+    if (anchorIdx.length === 0) {
+      const base = (lineStarts[i] ?? 0) as number;
+      for (let k = 0; k < words.length; k++) {
+        const start = base + k * WORD_STEP_MS;
+        words[k].start = start;
+        words[k].end = start + WORD_LEN_MS;
+      }
+      continue;
+    }
+
+    // Before the first anchor: step backwards.
+    const first = anchorIdx[0];
+    for (let k = first - 1; k >= 0; k--) {
+      const start = Math.max(0, (words[k + 1].start as number) - WORD_STEP_MS);
+      words[k].start = start;
+      words[k].end = start + WORD_LEN_MS;
+    }
+
+    // Between anchors: linear distribution by word count.
+    for (let a = 0; a < anchorIdx.length - 1; a++) {
+      const from = anchorIdx[a];
+      const to = anchorIdx[a + 1];
+      const gap = to - from;
+      if (gap <= 1) continue;
+      const t0 = words[from].end ?? (words[from].start as number);
+      const t1 = words[to].start as number;
+      const span = Math.max(0, t1 - t0);
+      for (let k = from + 1; k < to; k++) {
+        const share = (k - from) / gap;
+        const start = Math.round(t0 + share * span);
+        const nextStart = k + 1 < to
+          ? Math.round(t0 + ((k + 1 - from) / gap) * span)
+          : t1;
+        words[k].start = start;
+        words[k].end = Math.max(start, nextStart - 20);
+      }
+    }
+
+    // After the last anchor: step forwards.
+    const last = anchorIdx[anchorIdx.length - 1];
+    for (let k = last + 1; k < words.length; k++) {
+      const prevEnd = words[k - 1].end ?? (words[k - 1].start as number);
+      const start = prevEnd + 20;
+      words[k].start = start;
+      words[k].end = start + WORD_LEN_MS;
+    }
+  }
+}
+
+// ── 6. Formatters ────────────────────────────────────────────────────────────
 
 function formatLrc(lines: string[], starts: Array<number | null>, leadSec: number): string {
   const leadMs = Math.round(leadSec * 1000);
@@ -326,6 +440,22 @@ function formatLrc(lines: string[], starts: Array<number | null>, leadSec: numbe
     out.push(`${formatTimestamp(ms)} ${lines[i]}`);
   }
   return out.join("\n");
+}
+
+function formatWordsJson(lineWords: WordTiming[][], leadSec: number): string {
+  const leadMs = Math.round(leadSec * 1000);
+  const out = lineWords.map((words) =>
+    words.map((w) => ({
+      t: w.raw,
+      s: round2(Math.max(0, (w.start ?? 0) - leadMs) / 1000),
+      e: round2(Math.max(0, (w.end ?? (w.start ?? 0)) - leadMs) / 1000),
+    }))
+  );
+  return JSON.stringify(out);
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 function formatTimestamp(ms: number): string {

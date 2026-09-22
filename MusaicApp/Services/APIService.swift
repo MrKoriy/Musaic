@@ -958,7 +958,24 @@ struct YandexLikesImportResponse: Codable {
     let total: Int
     let cached: Int?
 }
-struct LyricsResponse: Codable { let trackId: String; let lrc: String?; let source: String? }
+
+/// Per-word timing for karaoke rendering. The server sends compact `t/s/e` keys.
+struct LyricsWord: Codable, Hashable, Sendable {
+    let text: String
+    let start: Double
+    let end: Double?
+    enum CodingKeys: String, CodingKey { case text = "t", start = "s", end = "e" }
+}
+
+struct LyricsResponse: Codable {
+    let trackId: String
+    let lrc: String?
+    let source: String?
+    /// Word timings per lyric line (karaoke), when the source provides them.
+    let words: [[LyricsWord]]?
+    /// Highlight lead in seconds for this lyrics source (server-computed).
+    let offsetSec: Double?
+}
 struct LyricsJobResponse: Codable { let trackId: String; let status: String }
 
 struct StatsOverview: Codable {

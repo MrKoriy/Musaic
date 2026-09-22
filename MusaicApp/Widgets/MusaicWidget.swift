@@ -1,3 +1,4 @@
+import AppIntents
 import WidgetKit
 import SwiftUI
 
@@ -49,6 +50,21 @@ struct NowPlayingWidgetView: View {
                     .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
+                if family == .systemMedium {
+                    VStack(spacing: 18) {
+                        widgetControlButton(
+                            command: "toggle",
+                            systemName: snapshot.isPlaying ? "pause.fill" : "play.fill",
+                            label: String(localized: "Play or pause")
+                        )
+                        widgetControlButton(
+                            command: "next",
+                            systemName: "forward.fill",
+                            label: String(localized: "Next track")
+                        )
+                    }
+                    .padding(.trailing, 6)
+                }
             }
             .containerBackground(for: .widget) {
                 LinearGradient(
@@ -74,6 +90,18 @@ struct NowPlayingWidgetView: View {
                 )
             }
         }
+    }
+
+    /// Interactive widget control — mails its command to the app process via
+    /// the App Group (the widget cannot reach the AVPlayer directly).
+    private func widgetControlButton(command: String, systemName: String, label: String) -> some View {
+        Button(intent: MusaicPlaybackIntent(command: command)) {
+            Image(systemName: systemName)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color(hex: "fbf7f1"))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(label))
     }
 
     @ViewBuilder
@@ -116,6 +144,9 @@ struct MusaicWidget: Widget {
 struct MusaicWidgetBundle: WidgetBundle {
     var body: some Widget {
         MusaicWidget()
+        #if os(iOS)
+        MusaicLiveActivityWidget()
+        #endif
     }
 }
 

@@ -163,6 +163,7 @@ struct ContentView: View {
             }
         }
         .task {
+            player.processPendingWidgetCommands()
             await LibraryStore.shared.ensureSynced(force: true)
             #if os(iOS)
             await ReleaseNotificationService.shared.checkForNewReleasesIfNeeded()
@@ -171,6 +172,7 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             Task {
+                player.processPendingWidgetCommands()
                 await LibraryStore.shared.ensureSynced(force: true)
                 #if os(iOS)
                 await ReleaseNotificationService.shared.checkForNewReleasesIfNeeded()

@@ -25,6 +25,30 @@ import { resolveAllowedLocalFile } from "../utils/stream-proxy.js";
 const router = new Hono();
 const DOWNLOADS_DIR = path.resolve(process.env.DOWNLOADS_DIR ?? "downloads");
 
+/**
+ * Highlight lead the client should apply for a lyrics source.
+ *
+ * Human-typed LRC (LRCLIB) consistently runs behind the audio, so the client
+ * highlights ~0.4s early. Our own forced alignment already bakes in a
+ * perceptual lead, raw whisper transcription needs only a small nudge.
+ */
+function offsetForSource(source: string): number {
+  if (source === "aligned") return 0;
+  if (source === "ai") return 0.15;
+  return 0.4; // lrclib & co — human-typed timestamps lag behind the vocal
+}
+
+/** Parse stored word timings JSON without letting bad rows break the response. */
+function parseWords(words: string | null | undefined): unknown[] | null {
+  if (!words) return null;
+  try {
+    const parsed = JSON.parse(words);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function getSafeTrackAudioPath(trackId: string): string | null {
   const track = getTrack(trackId) as {
     title?: string;
@@ -64,7 +88,14 @@ router.get("/:trackId", async (c) => {
   // 1. Cache hit
   const cached = getCachedLyrics(trackId);
   if (cached) {
-    return c.json({ trackId, lrc: cached.lrc, source: cached.source, cached: true });
+    return c.json({
+      trackId,
+      lrc: cached.lrc,
+      source: cached.source,
+      words: parseWords(cached.words),
+      offsetSec: offsetForSource(cached.source),
+      cached: true,
+    });
   }
 
   // 2. Resolve artist/title
@@ -100,14 +131,28 @@ async function fetchAndRespond(
 
   if (result) {
     setCachedLyrics(trackId, result.lrc, result.source);
-    return c.json({ trackId, lrc: result.lrc, source: result.source, cached: false });
+    return c.json({
+      trackId,
+      lrc: result.lrc,
+      source: result.source,
+      words: null,
+      offsetSec: offsetForSource(result.source),
+      cached: false,
+    });
   }
 
   // 3. Genius / lyrics.ovh plain-text fallback
   const plain = await fetchPlainLyrics(artist, title);
   if (plain) {
     setCachedLyrics(trackId, plain.lyrics, plain.source);
-    return c.json({ trackId, lrc: plain.lyrics, source: plain.source, cached: false });
+    return c.json({
+      trackId,
+      lrc: plain.lyrics,
+      source: plain.source,
+      words: null,
+      offsetSec: offsetForSource(plain.source),
+      cached: false,
+    });
   }
 
   return c.json({ trackId, lrc: null, source: null, cached: false });

@@ -24,7 +24,7 @@ import { execFileSync, execFile } from "child_process";
 import { getDb } from "../db/index.js";
 import { fetchLrclib } from "./lrclib.js";
 import { fetchPlainLyrics } from "./genius.js";
-import { alignLyricsWithWhisper } from "./lyrics-aligner.js";
+import { alignLyricsDetailed } from "./lyrics-aligner.js";
 import { runFfmpeg } from "../utils/ffmpeg-queue.js";
 
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
@@ -200,20 +200,22 @@ async function runPipeline(trackId: string, audioPath: string, job: PipelineJob)
       const referenceText = await fetchReferenceText(artist, title, trackInfo?.duration);
       if (referenceText) {
         console.log(`[lyrics-pipeline] Aligning LRCLIB/Genius text (${referenceText.split("\n").length} lines) to audio…`);
-        lrc = await alignLyricsWithWhisper(audioPath, referenceText, {
+        const aligned = await alignLyricsDetailed(audioPath, referenceText, {
           whisperBin: findWhisperCpp()!,
           whisperModel: findTinyWhisperModel(),
           perceptualLeadSec: 0.15,
         });
+        lrc = aligned.lrc;
         if (lrc) {
           console.log(`[lyrics-pipeline] Forced alignment succeeded (${lrc.split("\n").length} lines)`);
           // Store source = 'aligned' so clients can tell this is the high-quality path.
+          // `words` carries per-word timings for karaoke rendering.
           const db2 = getDb();
           db2.prepare(`
-            INSERT INTO lyrics_cache (track_id, lrc, source)
-            VALUES ($id, $lrc, 'aligned')
-            ON CONFLICT(track_id) DO UPDATE SET lrc = excluded.lrc, source = excluded.source, created_at = unixepoch()
-          `).run({ $id: trackId, $lrc: lrc });
+            INSERT INTO lyrics_cache (track_id, lrc, source, words)
+            VALUES ($id, $lrc, 'aligned', $words)
+            ON CONFLICT(track_id) DO UPDATE SET lrc = excluded.lrc, source = excluded.source, words = excluded.words, created_at = unixepoch()
+          `).run({ $id: trackId, $lrc: lrc, $words: aligned.wordsJson });
           job.status = "done";
           const elapsed = ((Date.now() - job.startedAt) / 1000).toFixed(1);
           console.log(`[lyrics-pipeline] Job ${trackId} completed via ALIGNED path in ${elapsed}s`);

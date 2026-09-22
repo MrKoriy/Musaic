@@ -497,6 +497,13 @@ const MIGRATIONS: Migration[] = [
         ON tracks(id) WHERE local_path IS NOT NULL AND loudness_scanned_at IS NULL;
     `,
   },
+  {
+    version: 23,
+    description: "Add word-level timings (karaoke) to lyrics_cache",
+    up: `
+      ALTER TABLE lyrics_cache ADD COLUMN words TEXT;
+    `,
+  },
 ];
 
 /**

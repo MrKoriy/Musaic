@@ -75,13 +75,13 @@ describe("lyrics routes", () => {
     try {
       const first = await lyricsApp().request(`/api/lyrics/${trackId}`);
       expect(first.status).toBe(200);
-      expect(await first.json()).toEqual({ trackId, lrc, source: "lrclib", cached: false });
+      expect(await first.json()).toEqual({ trackId, lrc, source: "lrclib", words: null, offsetSec: 0.4, cached: false });
       expect(getDb().prepare("SELECT lrc, source FROM lyrics_cache WHERE track_id = $id").get({ $id: trackId }))
         .toEqual({ lrc, source: "lrclib" });
 
       const second = await lyricsApp().request(`/api/lyrics/${trackId}`);
       expect(second.status).toBe(200);
-      expect(await second.json()).toEqual({ trackId, lrc, source: "lrclib", cached: true });
+      expect(await second.json()).toEqual({ trackId, lrc, source: "lrclib", words: null, offsetSec: 0.4, cached: true });
       expect(requests).toHaveLength(1);
     } finally {
       restoreFetch();
@@ -136,6 +136,8 @@ describe("lyrics routes", () => {
         trackId,
         lrc: "[Verse 1]\nLine & one\nLine two",
         source: "genius",
+        words: null,
+        offsetSec: 0.4,
         cached: false,
       });
       expect(getDb().prepare("SELECT source FROM lyrics_cache WHERE track_id = $id").get({ $id: trackId }))

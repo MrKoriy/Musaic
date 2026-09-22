@@ -4,9 +4,10 @@ private struct LrcLine: Identifiable {
     let id: Int
     let time: Double
     let text: String
+    var words: [LyricsWord] = []
 }
 
-private func parseLrc(_ raw: String) -> [LrcLine] {
+private func parseLrc(_ raw: String, wordLines: [[LyricsWord]]? = nil) -> [LrcLine] {
     var lines: [LrcLine] = []
     let pattern = /\[(\d{1,2}):(\d{2})\.(\d{1,3})\]\s*(.*)/
     for (idx, line) in raw.split(separator: "\n").enumerated() {
@@ -18,7 +19,9 @@ private func parseLrc(_ raw: String) -> [LrcLine] {
             let time = min * 60 + sec + ms / msDivisor
             let text = String(match.4).trimmingCharacters(in: .whitespaces)
             if !text.isEmpty {
-                lines.append(LrcLine(id: idx, time: time, text: text))
+                // Word timings arrive per lyric line, in LRC line order.
+                let words = wordLines.flatMap { $0.indices.contains(lines.count) ? $0[lines.count] : [] } ?? []
+                lines.append(LrcLine(id: idx, time: time, text: text, words: words))
             }
         }
     }
@@ -32,6 +35,7 @@ struct LyricsSheet: View {
     @State private var loading = true
     @State private var generating = false
     @State private var activeLine: Int = 0
+    @State private var activeWordIndex: Int? = nil
     @State private var loadError: String?
     @State private var tappedLineId: Int?
     @State private var userScrolledAway = false
@@ -44,10 +48,10 @@ struct LyricsSheet: View {
     private let audio = AudioPlayer.shared
     private let api = APIService.shared
 
-    /// Global constant compensation: LRC times from the server/AI pipeline
-    /// consistently run ~0.4s ahead of the audio. Highlight that many seconds
-    /// earlier so the active line matches what's actually being sung.
-    private let globalLyricsOffset: Double = 0.4
+    /// Highlight compensation in seconds, reported per source by the server:
+    /// human-typed LRCLIB timestamps lag the audio (~0.4s), while our own
+    /// forced alignment already bakes in a perceptual lead (0s).
+    @State private var lyricsOffset: Double = 0.4
 
     private var lyricsSourceLabel: String {
         if !lines.isEmpty { return "Synced" }
@@ -128,6 +132,8 @@ struct LyricsSheet: View {
                                             text: line.text,
                                             isActive: activeLine == line.id,
                                             isTapped: tappedLineId == line.id,
+                                            words: line.words,
+                                            activeWordIndex: activeLine == line.id ? activeWordIndex : nil,
                                             onTap: { tapLine(line) }
                                         )
                                     }
@@ -300,7 +306,8 @@ struct LyricsSheet: View {
         do {
             let response = try await api.getLyrics(trackId: track.id, artist: artist, title: title)
             rawLrc = response.lrc
-            lines = parseLrc(response.lrc ?? "")
+            lyricsOffset = response.offsetSec ?? 0.4
+            lines = parseLrc(response.lrc ?? "", wordLines: response.words)
             updateActiveLine()
         } catch {
             rawLrc = nil
@@ -331,6 +338,7 @@ struct LyricsSheet: View {
         rawLrc = nil
         lines = []
         activeLine = 0
+        activeWordIndex = nil
         loading = true
         generating = false
         loadError = nil
@@ -339,7 +347,7 @@ struct LyricsSheet: View {
     }
 
     private func updateActiveLine() {
-        let time = audio.currentTime + globalLyricsOffset
+        let time = audio.currentTime + lyricsOffset
         guard time.isFinite else { return }
         var best = lines.first?.id ?? 0
         for line in lines {
@@ -347,6 +355,17 @@ struct LyricsSheet: View {
             else { break }
         }
         if activeLine != best { activeLine = best }
+
+        // Karaoke: which word of the active line is being sung right now.
+        guard let line = lines.first(where: { $0.id == best }), !line.words.isEmpty else {
+            if activeWordIndex != nil { activeWordIndex = nil }
+            return
+        }
+        var word: Int? = nil
+        for (i, timed) in line.words.enumerated() {
+            if timed.start <= time { word = i } else { break }
+        }
+        if activeWordIndex != word { activeWordIndex = word }
     }
 
     private func retry() {
@@ -391,7 +410,8 @@ struct LyricsSheet: View {
         do {
             let response = try await api.getLyrics(trackId: track.id, artist: track.artist, title: track.title)
             rawLrc = response.lrc
-            lines = parseLrc(response.lrc ?? "")
+            lyricsOffset = response.offsetSec ?? 0.4
+            lines = parseLrc(response.lrc ?? "", wordLines: response.words)
             updateActiveLine()
             if let firstId = lines.first?.id {
                 if !lines.contains(where: { $0.id == activeLine }) {

@@ -772,19 +772,19 @@ export function clearPlaylistCoverData(playlistId: string): void {
 }
 
 // Lyrics cache
-export function getCachedLyrics(trackId: string): { lrc: string; source: string } | null {
+export function getCachedLyrics(trackId: string): { lrc: string; source: string; words: string | null } | null {
   const db = getDb();
-  return db.prepare("SELECT lrc, source FROM lyrics_cache WHERE track_id = $id")
-    .get({ $id: trackId }) as { lrc: string; source: string } | null;
+  return db.prepare("SELECT lrc, source, words FROM lyrics_cache WHERE track_id = $id")
+    .get({ $id: trackId }) as { lrc: string; source: string; words: string | null } | null;
 }
 
-export function setCachedLyrics(trackId: string, lrc: string, source: string): void {
+export function setCachedLyrics(trackId: string, lrc: string, source: string, words: string | null = null): void {
   const db = getDb();
   db.prepare(`
-    INSERT INTO lyrics_cache (track_id, lrc, source)
-    VALUES ($id, $lrc, $source)
-    ON CONFLICT(track_id) DO UPDATE SET lrc = excluded.lrc, source = excluded.source, created_at = unixepoch()
-  `).run({ $id: trackId, $lrc: lrc, $source: source });
+    INSERT INTO lyrics_cache (track_id, lrc, source, words)
+    VALUES ($id, $lrc, $source, $words)
+    ON CONFLICT(track_id) DO UPDATE SET lrc = excluded.lrc, source = excluded.source, words = excluded.words, created_at = unixepoch()
+  `).run({ $id: trackId, $lrc: lrc, $source: source, $words: words });
 }
 
 export function deleteCachedLyrics(trackId: string): void {
