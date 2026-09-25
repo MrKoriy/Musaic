@@ -4,22 +4,21 @@
 <!--
   Musaic Server — launchd agent for macOS auto-start on login.
 
-  Install:
-    cp server/com.musaic.server.plist ~/Library/LaunchAgents/
-    launchctl load ~/Library/LaunchAgents/com.musaic.server.plist
+  Install (from the repository root; fills in the __PLACEHOLDERS__):
+    mkdir -p ~/Library/Logs/Musaic
+    sed -e "s|__BUN__|$(command -v bun)|" \
+        -e "s|__SERVER_DIR__|$PWD/server|" \
+        -e "s|__LOG_DIR__|$HOME/Library/Logs/Musaic|" \
+        server/com.musaic.server.plist > ~/Library/LaunchAgents/com.musaic.server.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.musaic.server.plist
 
   Uninstall:
-    launchctl unload ~/Library/LaunchAgents/com.musaic.server.plist
+    launchctl bootout gui/$(id -u)/com.musaic.server
     rm ~/Library/LaunchAgents/com.musaic.server.plist
 
-  Check status:
-    launchctl list | grep musaic
-
-  View logs:
-    tail -f /tmp/musaic-server.log
-    tail -f /tmp/musaic-server-error.log
-
-  NOTE: Update WorkingDirectory and ProgramArguments to match your installation path.
+  Status / logs:
+    launchctl print gui/$(id -u)/com.musaic.server | head
+    tail -f ~/Library/Logs/Musaic/server.log ~/Library/Logs/Musaic/server-error.log
 -->
 <plist version="1.0">
 <dict>
@@ -28,14 +27,12 @@
 
   <key>ProgramArguments</key>
   <array>
-    <!-- Path to bun binary — adjust if bun is installed elsewhere -->
-    <string>/Users/leonid/.bun/bin/bun</string>
+    <string>__BUN__</string>
     <string>src/index.ts</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <!-- Adjust to match your project path -->
-  <string>/Users/leonid/Documents/coding/Vibecoded/Musaic/server</string>
+  <string>__SERVER_DIR__</string>
 
   <!-- Load environment from .env file handled by the process itself -->
   <key>EnvironmentVariables</key>
@@ -50,12 +47,9 @@
   <key>RunAtLoad</key>
   <true/>
 
-  <!-- Restart automatically if the process exits unexpectedly -->
+  <!-- Restart whenever the process exits (a crash may still exit 0) -->
   <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
+  <true/>
 
   <!-- Throttle restart attempts (don't restart more than once per 10s) -->
   <key>ThrottleInterval</key>
@@ -63,9 +57,9 @@
 
   <!-- Log output -->
   <key>StandardOutPath</key>
-  <string>/tmp/musaic-server.log</string>
+  <string>__LOG_DIR__/server.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/tmp/musaic-server-error.log</string>
+  <string>__LOG_DIR__/server-error.log</string>
 </dict>
 </plist>

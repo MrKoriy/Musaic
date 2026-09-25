@@ -4,22 +4,37 @@
  * GET  /api/lyrics/:trackId         — get cached lyrics or fetch from LRCLIB → Genius → lyrics.ovh
  * POST /api/lyrics/:trackId/generate — trigger AI pipeline (async)
  * GET  /api/lyrics/:trackId/status   — poll AI job status
+ * GET  /api/lyrics/:trackId/events   — AI job status as server-sent events
+ * PUT  /api/lyrics/:trackId/offset   — store the user's highlight offset
  * PUT  /api/lyrics/:trackId          — save manually edited lyrics
  * DELETE /api/lyrics/:trackId        — clear cached lyrics
  * POST /api/lyrics/prefetch-all      — background pre-fetch for all tracks without lyrics
  */
 
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
+import { streamSSE } from "hono/streaming";
 import { getCachedLyrics, setCachedLyrics, deleteCachedLyrics, getTrack, upsertTrack } from "../db/index.js";
 import { fetchLrclib, searchLrclib } from "../providers/lrclib.js";
 import { fetchPlainLyrics } from "../providers/genius.js";
-import { startTranscription, getJobStatus, getPipelineStatus } from "../providers/lyrics-pipeline.js";
+import {
+  getJobStatus,
+  getPipelineStatus,
+  LYRICS_GENERATE_TASK,
+  lyricsTaskKey,
+  pipelineJobFromTask,
+  startTranscription,
+  type PipelineJob,
+} from "../providers/lyrics-pipeline.js";
+import { onTaskUpdate } from "../jobs/tasks.js";
+import { requestUserId } from "../middleware/auth.js";
+import { enqueueLyricsPrefetch, tracksMissingLyrics } from "../jobs/lyrics-prefetch.js";
 import { getDb } from "../db/index.js";
 import { getSoundCloudProvider } from "../providers/soundcloud.js";
 import { getVKProvider } from "../providers/vk.js";
 import fs from "fs";
 import path from "path";
 import { Readable } from "stream";
+import { pipeline } from "stream/promises";
 import { resolveAllowedLocalFile } from "../utils/stream-proxy.js";
 
 const router = new Hono();
@@ -47,6 +62,23 @@ function parseWords(words: string | null | undefined): unknown[] | null {
   } catch {
     return null;
   }
+}
+
+const MAX_USER_OFFSET_SEC = 5;
+
+function userOffsetFor(c: Context, trackId: string): number {
+  const userId = requestUserId(c);
+  if (!userId) return 0;
+  const row = getDb().prepare(`
+    SELECT offset_sec FROM lyrics_user_offsets WHERE user_id = $user AND track_id = $track
+  `).get({ $user: userId, $track: trackId }) as { offset_sec: number } | null;
+  return row ? Number(row.offset_sec) : 0;
+}
+
+/** Clamp to ±5 s and round to 50 ms, the slider's step. */
+export function normalizeUserOffset(value: number): number {
+  const clamped = Math.max(-MAX_USER_OFFSET_SEC, Math.min(MAX_USER_OFFSET_SEC, value));
+  return Math.round(clamped * 20) / 20 || 0;
 }
 
 function getSafeTrackAudioPath(trackId: string): string | null {
@@ -94,6 +126,7 @@ router.get("/:trackId", async (c) => {
       source: cached.source,
       words: parseWords(cached.words),
       offsetSec: offsetForSource(cached.source),
+      userOffsetSec: userOffsetFor(c, trackId),
       cached: true,
     });
   }
@@ -115,7 +148,7 @@ router.get("/:trackId", async (c) => {
 });
 
 async function fetchAndRespond(
-  c: any,
+  c: Context,
   trackId: string,
   artist: string,
   title: string,
@@ -137,6 +170,7 @@ async function fetchAndRespond(
       source: result.source,
       words: null,
       offsetSec: offsetForSource(result.source),
+      userOffsetSec: userOffsetFor(c, trackId),
       cached: false,
     });
   }
@@ -151,6 +185,7 @@ async function fetchAndRespond(
       source: plain.source,
       words: null,
       offsetSec: offsetForSource(plain.source),
+      userOffsetSec: userOffsetFor(c, trackId),
       cached: false,
     });
   }
@@ -199,16 +234,15 @@ router.post("/:trackId/generate", async (c) => {
           });
           if (!res.ok) throw new Error(`Download failed: ${res.status}`);
 
-          const writeStream = fs.createWriteStream(localPath);
-          await new Promise<void>((resolve, reject) => {
-            if (!res.body) {
-              reject(new Error("No body"));
-              return;
-            }
-            Readable.fromWeb(res.body as any).pipe(writeStream);
-            writeStream.on("finish", resolve);
-            writeStream.on("error", reject);
-          });
+          if (!res.body) throw new Error("No body");
+          // Temp file + rename: a cut-off download must never pass as the track.
+          const tmpPath = `${localPath}.${process.pid}.${Date.now()}.part`;
+          try {
+            await pipeline(Readable.fromWeb(res.body as any), fs.createWriteStream(tmpPath));
+            fs.renameSync(tmpPath, localPath);
+          } finally {
+            fs.rmSync(tmpPath, { force: true });
+          }
         }
 
         upsertTrack({
@@ -236,27 +270,113 @@ router.post("/:trackId/generate", async (c) => {
   return c.json({ trackId, status: job.status, startedAt: job.startedAt });
 });
 
+function currentJobStatus(trackId: string): { status: string; error?: string; startedAt?: number; cached?: boolean } {
+  const job = getJobStatus(trackId);
+  if (job) return { status: job.status, startedAt: job.startedAt, ...(job.error ? { error: job.error } : {}) };
+  if (getCachedLyrics(trackId)) return { status: "done", cached: true };
+  return { status: "not_started" };
+}
+
+function isTerminal(status: string): boolean {
+  return status === "done" || status === "failed" || status === "not_started";
+}
+
 /**
  * GET /api/lyrics/:trackId/status — poll AI transcription job
  */
 router.get("/:trackId/status", (c) => {
   const trackId = decodeURIComponent(c.req.param("trackId"));
-  const job = getJobStatus(trackId);
+  return c.json({ trackId, ...currentJobStatus(trackId) });
+});
 
-  if (!job) {
-    const cached = getCachedLyrics(trackId);
-    if (cached) {
-      return c.json({ trackId, status: "done", cached: true });
+const SSE_HEARTBEAT_MS = 8_000; // under Bun.serve's 10 s idle timeout
+const SSE_MAX_DURATION_MS = 200_000; // client gives up after 180 s
+
+/**
+ * GET /api/lyrics/:trackId/events — the AI job status as server-sent events.
+ * Emits `event: status` with `{ status, error? }` now and on every change and
+ * closes after a terminal state, replacing the client's 2 s polling loop.
+ */
+router.get("/:trackId/events", (c) => {
+  const trackId = decodeURIComponent(c.req.param("trackId"));
+  const key = lyricsTaskKey(trackId);
+  c.header("Cache-Control", "no-cache, no-transform");
+  c.header("X-Accel-Buffering", "no");
+
+  return streamSSE(c, async (stream) => {
+    const send = (payload: { status: string; error?: string }) =>
+      stream.writeSSE({ event: "status", data: JSON.stringify({ trackId, ...payload }) });
+
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => { finish = resolve; });
+    const updates: PipelineJob[] = [];
+    let wake: (() => void) | null = null;
+
+    const unsubscribe = onTaskUpdate((task) => {
+      if (task.dedupeKey !== key || task.type !== LYRICS_GENERATE_TASK) return;
+      updates.push(pipelineJobFromTask(task));
+      wake?.();
+    });
+    const heartbeat = setInterval(() => {
+      void stream.write(": ping\n\n").catch(() => finish());
+    }, SSE_HEARTBEAT_MS);
+    const deadline = setTimeout(() => finish(), SSE_MAX_DURATION_MS);
+    stream.onAbort(() => finish());
+
+    try {
+      const initial = currentJobStatus(trackId);
+      await send(initial);
+      if (isTerminal(initial.status)) return;
+
+      let last = initial.status;
+      while (!stream.aborted) {
+        const next = updates.shift();
+        if (!next) {
+          const woke = new Promise<"update">((resolve) => { wake = () => resolve("update"); });
+          if ((await Promise.race([woke, finished.then(() => "done" as const)])) === "done") break;
+          wake = null;
+          continue;
+        }
+        if (next.status === last && next.status !== "failed") continue;
+        last = next.status;
+        await send({ status: next.status, ...(next.error ? { error: next.error } : {}) });
+        if (next.status === "done" || next.status === "failed") break;
+      }
+    } finally {
+      unsubscribe();
+      clearInterval(heartbeat);
+      clearTimeout(deadline);
     }
-    return c.json({ trackId, status: "not_started" });
-  }
-
-  return c.json({
-    trackId,
-    status: job.status,
-    startedAt: job.startedAt,
-    error: job.error,
   });
+});
+
+/**
+ * PUT /api/lyrics/:trackId/offset — the user's highlight fine-tuning.
+ * Body: { userOffsetSec: number } (clamped to ±5 s, 50 ms steps; 0 clears it)
+ */
+router.put("/:trackId/offset", async (c) => {
+  const trackId = decodeURIComponent(c.req.param("trackId"));
+  const userId = requestUserId(c);
+  if (!userId) return c.json({ error: "Not authenticated" }, 401);
+  if (!trackId || trackId.length > 256) return c.json({ error: "Invalid track ID" }, 400);
+
+  const body = await c.req.json<{ userOffsetSec?: unknown }>().catch(() => null);
+  const raw = typeof body?.userOffsetSec === "number" ? body.userOffsetSec : Number.NaN;
+  if (!Number.isFinite(raw)) return c.json({ error: "userOffsetSec must be a number" }, 400);
+
+  const offset = normalizeUserOffset(raw);
+  const db = getDb();
+  if (offset === 0) {
+    db.prepare("DELETE FROM lyrics_user_offsets WHERE user_id = $user AND track_id = $track")
+      .run({ $user: userId, $track: trackId });
+  } else {
+    db.prepare(`
+      INSERT INTO lyrics_user_offsets (user_id, track_id, offset_sec, updated_at)
+      VALUES ($user, $track, $offset, unixepoch())
+      ON CONFLICT(user_id, track_id) DO UPDATE SET offset_sec = excluded.offset_sec, updated_at = unixepoch()
+    `).run({ $user: userId, $track: trackId, $offset: offset });
+  }
+  return c.json({ ok: true, trackId, userOffsetSec: offset });
 });
 
 /**
@@ -283,76 +403,15 @@ router.delete("/:trackId", (c) => {
 
 /**
  * POST /api/lyrics/prefetch-all
- * Background pre-fetch lyrics for all local tracks that don't have cached lyrics yet.
- * Returns immediately; runs in background.
+ * Queue a durable background prefetch for local tracks without cached lyrics.
  */
 router.post("/prefetch-all", (c) => {
-  const db = getDb();
-  const tracks = db
-    .prepare(`
-      SELECT t.id, t.artist, t.title, t.duration
-      FROM tracks t
-      WHERE t.source = 'local'
-        AND NOT EXISTS (SELECT 1 FROM lyrics_cache lc WHERE lc.track_id = t.id)
-      LIMIT 200
-    `)
-    .all() as Array<{ id: string; artist: string; title: string; duration: number }>;
-
-  const total = tracks.length;
+  const total = tracksMissingLyrics().length;
   if (total === 0) {
     return c.json({ ok: true, queued: 0, message: "All local tracks already have lyrics cached" });
   }
-
-  // Fire-and-forget background prefetch
-  prefetchLyricsInBackground(tracks);
-
+  enqueueLyricsPrefetch();
   return c.json({ ok: true, queued: total, message: `Prefetching lyrics for ${total} tracks in background` });
 });
-
-async function prefetchLyricsInBackground(
-  tracks: Array<{ id: string; artist: string; title: string; duration: number }>
-): Promise<void> {
-  console.log(`[lyrics] Background prefetch started for ${tracks.length} tracks`);
-  let fetched = 0;
-  let failed = 0;
-
-  for (const track of tracks) {
-    if (!track.artist || !track.title) continue;
-
-    try {
-      // Check cache again (may have been filled since query)
-      const cached = getCachedLyrics(track.id);
-      if (cached) continue;
-
-      // Try LRCLIB first
-      let result = await fetchLrclib(track.artist, track.title, track.duration);
-      if (!result) {
-        result = await searchLrclib(`${track.artist} ${track.title}`);
-      }
-
-      if (result) {
-        setCachedLyrics(track.id, result.lrc, result.source);
-        fetched++;
-      } else {
-        // Try plain lyrics fallback
-        const plain = await fetchPlainLyrics(track.artist, track.title);
-        if (plain) {
-          setCachedLyrics(track.id, plain.lyrics, plain.source);
-          fetched++;
-        } else {
-          failed++;
-        }
-      }
-
-      // Small delay to avoid hammering APIs
-      await new Promise((r) => setTimeout(r, 300));
-    } catch (err: unknown) {
-      console.warn(`[lyrics] Prefetch failed for "${track.artist} - ${track.title}":`, err instanceof Error ? err.message : String(err));
-      failed++;
-    }
-  }
-
-  console.log(`[lyrics] Background prefetch done — fetched: ${fetched}, not found: ${failed}`);
-}
 
 export default router;

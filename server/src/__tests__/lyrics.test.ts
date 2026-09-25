@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import lyricsRoutes from "../routes/lyrics.js";
 import { getDb } from "../db/index.js";
 import { getJobStatus, startTranscription } from "../providers/lyrics-pipeline.js";
+import { drainTasksForTest, latestTask, resetTasksForTest } from "../jobs/tasks.js";
 import { setupTestDb, seedTrack, teardownTestDb } from "./setup.js";
 
 type FetchHandler = (
@@ -31,15 +32,39 @@ function requestUrl(input: Parameters<typeof fetch>[0]): string {
   return input.url;
 }
 
-function lyricsApp(): Hono {
-  const app = new Hono();
+function lyricsApp(userId?: string): Hono {
+  const app = new Hono<{ Variables: { userId: string } }>();
+  if (userId) {
+    app.use("*", async (c, next) => {
+      c.set("userId", userId);
+      await next();
+    });
+  }
   app.route("/api/lyrics", lyricsRoutes);
-  return app;
+  return app as unknown as Hono;
+}
+
+async function readSSE(response: Response): Promise<Array<{ event: string; data: Record<string, unknown> }>> {
+  const text = await response.text();
+  const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+  for (const block of text.split("\n\n")) {
+    const lines = block.split("\n");
+    const event = lines.find((l) => l.startsWith("event:"))?.slice(6).trim() ?? "message";
+    const data = lines.find((l) => l.startsWith("data:"))?.slice(5).trim();
+    if (data) events.push({ event, data: JSON.parse(data) });
+  }
+  return events;
 }
 
 describe("lyrics routes", () => {
-  beforeEach(setupTestDb);
-  afterEach(teardownTestDb);
+  beforeEach(() => {
+    setupTestDb();
+    resetTasksForTest();
+  });
+  afterEach(() => {
+    resetTasksForTest();
+    teardownTestDb();
+  });
 
   it("fetches lyrics once, caches them, and serves the cached response", async () => {
     const trackId = seedTrack({
@@ -75,13 +100,13 @@ describe("lyrics routes", () => {
     try {
       const first = await lyricsApp().request(`/api/lyrics/${trackId}`);
       expect(first.status).toBe(200);
-      expect(await first.json()).toEqual({ trackId, lrc, source: "lrclib", words: null, offsetSec: 0.4, cached: false });
+      expect(await first.json()).toEqual({ trackId, lrc, source: "lrclib", words: null, offsetSec: 0.4, userOffsetSec: 0, cached: false });
       expect(getDb().prepare("SELECT lrc, source FROM lyrics_cache WHERE track_id = $id").get({ $id: trackId }))
         .toEqual({ lrc, source: "lrclib" });
 
       const second = await lyricsApp().request(`/api/lyrics/${trackId}`);
       expect(second.status).toBe(200);
-      expect(await second.json()).toEqual({ trackId, lrc, source: "lrclib", words: null, offsetSec: 0.4, cached: true });
+      expect(await second.json()).toEqual({ trackId, lrc, source: "lrclib", words: null, offsetSec: 0.4, userOffsetSec: 0, cached: true });
       expect(requests).toHaveLength(1);
     } finally {
       restoreFetch();
@@ -138,6 +163,7 @@ describe("lyrics routes", () => {
         source: "genius",
         words: null,
         offsetSec: 0.4,
+        userOffsetSec: 0,
         cached: false,
       });
       expect(getDb().prepare("SELECT source FROM lyrics_cache WHERE track_id = $id").get({ $id: trackId }))
@@ -227,12 +253,13 @@ describe("lyrics routes", () => {
   it("reports a failed transcription job and rejects unsafe generation targets", async () => {
     const trackId = "pipeline-missing-audio";
     const job = startTranscription(trackId, "/definitely/not/a/real/audio.mp3");
-    expect(job).toEqual(expect.objectContaining({ trackId, status: "running" }));
+    expect(job).toEqual(expect.objectContaining({ trackId, status: "pending" }));
+    // Re-requesting while queued joins the same durable task.
+    startTranscription(trackId, "/definitely/not/a/real/audio.mp3");
 
-    for (let attempt = 0; attempt < 50; attempt++) {
-      if (getJobStatus(trackId)?.status === "failed") break;
-      await new Promise((resolve) => setTimeout(resolve, 2));
-    }
+    await drainTasksForTest();
+    // A missing file is permanent: one attempt, no retry.
+    expect(latestTask(`lyrics:${trackId}`)).toEqual(expect.objectContaining({ status: "failed", attempts: 1 }));
     expect(getJobStatus(trackId)).toEqual(expect.objectContaining({
       trackId,
       status: "failed",
@@ -251,5 +278,89 @@ describe("lyrics routes", () => {
     const missing = await lyricsApp().request("/api/lyrics/not-in-db/generate", { method: "POST" });
     expect(missing.status).toBe(400);
     expect(await missing.json()).toEqual({ error: "Could not download track for lyrics generation." });
+  });
+});
+
+describe("lyrics offsets, events and durable prefetch", () => {
+  beforeEach(() => {
+    setupTestDb();
+    resetTasksForTest();
+  });
+  afterEach(() => {
+    resetTasksForTest();
+    teardownTestDb();
+  });
+
+  it("stores a clamped per-user offset and returns it with the lyrics", async () => {
+    const trackId = seedTrack({ id: "offset-track" });
+    getDb().prepare("INSERT INTO lyrics_cache (track_id, lrc, source) VALUES ($id, '[00:01.00] Hi', 'lrclib')").run({ $id: trackId });
+    const put = (app: Hono, body: unknown) => app.request(`/api/lyrics/${trackId}/offset`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    expect((await put(lyricsApp(), { userOffsetSec: 1 })).status).toBe(401);
+    expect((await put(lyricsApp("u1"), { userOffsetSec: "fast" })).status).toBe(400);
+
+    const saved = await put(lyricsApp("u1"), { userOffsetSec: 7.23 });
+    expect(await saved.json()).toEqual({ ok: true, trackId, userOffsetSec: 5 });
+    const nudged = await put(lyricsApp("u1"), { userOffsetSec: -0.337 });
+    expect(await nudged.json()).toEqual({ ok: true, trackId, userOffsetSec: -0.35 });
+
+    const mine = await (await lyricsApp("u1").request(`/api/lyrics/${trackId}`)).json() as { userOffsetSec: number };
+    expect(mine.userOffsetSec).toBe(-0.35);
+    const theirs = await (await lyricsApp("u2").request(`/api/lyrics/${trackId}`)).json() as { userOffsetSec: number };
+    expect(theirs.userOffsetSec).toBe(0);
+
+    await put(lyricsApp("u1"), { userOffsetSec: 0 });
+    expect(getDb().prepare("SELECT COUNT(*) AS n FROM lyrics_user_offsets").get()).toEqual({ n: 0 });
+  });
+
+  it("streams the current status and closes for finished or unknown jobs", async () => {
+    const trackId = seedTrack({ id: "events-idle-track" });
+    const idle = await lyricsApp("u1").request(`/api/lyrics/${trackId}/events`);
+    expect(idle.headers.get("content-type")).toContain("text/event-stream");
+    expect(await readSSE(idle)).toEqual([{ event: "status", data: { trackId, status: "not_started" } }]);
+
+    getDb().prepare("INSERT INTO lyrics_cache (track_id, lrc, source) VALUES ($id, '[00:01.00] Hi', 'ai')").run({ $id: trackId });
+    const cached = await lyricsApp("u1").request(`/api/lyrics/${trackId}/events`);
+    expect(await readSSE(cached)).toEqual([{ event: "status", data: { trackId, status: "done", cached: true } }]);
+  });
+
+  it("pushes job transitions until the job reaches a terminal state", async () => {
+    const trackId = seedTrack({ id: "events-live-track" });
+    startTranscription(trackId, "/definitely/not/a/real/audio.mp3");
+
+    const response = await lyricsApp("u1").request(`/api/lyrics/${trackId}/events`);
+    const events = readSSE(response);
+    await drainTasksForTest();
+    const statuses = (await events).map((e) => e.data.status);
+    expect(statuses[0]).toBe("pending");
+    expect(statuses.at(-1)).toBe("failed");
+    expect(statuses).toContain("running");
+    expect((await events).at(-1)?.data.error).toBe("Audio file not found: /definitely/not/a/real/audio.mp3");
+  });
+
+  it("runs prefetch-all as a single durable task", async () => {
+    const trackId = seedTrack({ id: "prefetch-track", artist: "Prefetch Artist", title: "Prefetch Song" });
+    const lrc = "[00:01.00] Prefetched";
+    const restoreFetch = installFetchMock(() => jsonResponse({ id: 1, syncedLyrics: lrc, plainLyrics: "Prefetched" }));
+    try {
+      const first = await lyricsApp("u1").request("/api/lyrics/prefetch-all", { method: "POST" });
+      expect(await first.json()).toEqual(expect.objectContaining({ ok: true, queued: 1 }));
+      await lyricsApp("u1").request("/api/lyrics/prefetch-all", { method: "POST" });
+      const queued = getDb().prepare("SELECT COUNT(*) AS n FROM background_tasks WHERE type = 'lyrics.prefetch'").get();
+      expect(queued).toEqual({ n: 1 });
+
+      await drainTasksForTest();
+      expect(latestTask("lyrics-prefetch:all")).toEqual(expect.objectContaining({
+        status: "done",
+        result: { fetched: 1, missed: 0 },
+      }));
+      expect(getDb().prepare("SELECT lrc FROM lyrics_cache WHERE track_id = $id").get({ $id: trackId })).toEqual({ lrc });
+    } finally {
+      restoreFetch();
+    }
   });
 });

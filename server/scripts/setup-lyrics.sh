@@ -59,7 +59,6 @@ log "Using Python: $PYTHON ($($PYTHON --version))"
 log "Creating virtualenv at $VENV_DIR..."
 "$PYTHON" -m venv "$VENV_DIR"
 
-VENV_PYTHON="$VENV_DIR/bin/python"
 VENV_PIP="$VENV_DIR/bin/pip"
 
 log "Upgrading pip..."

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Restore a Musaic database backup.
-# Usage: restore-db.sh /opt/musaic-server/backups/musaic-2026-09-06.db
+# Usage: restore-db.sh [--verify] /opt/musaic-server/backups/musaic-2026-09-06.db
+#
+# --verify is a restore drill: copies the backup into a temp file, runs
+# PRAGMA integrity_check and prints table row counts without touching the
+# running server.
 #
 # Stops the server, swaps the database (stale WAL/SHM files are removed —
 # they must never outlive their database), restarts, and health-checks.
@@ -8,10 +12,15 @@
 
 set -Eeuo pipefail
 
+verify_only=0
+if [[ "${1:-}" == "--verify" ]]; then
+  verify_only=1
+  shift
+fi
 backup_path="${1:-}"
 
 if [[ -z "$backup_path" ]]; then
-  echo "Usage: $0 <backup-file.db>" >&2
+  echo "Usage: $0 [--verify] <backup-file.db>" >&2
   exit 2
 fi
 
@@ -53,6 +62,35 @@ then
   exit 1
 fi
 
+if ((verify_only)); then
+  drill="$(mktemp -t musaic-restore-drill.XXXXXX.db)"
+  trap 'rm -f -- "$drill"' EXIT
+  cp -- "$backup_path" "$drill"
+  python3 - "$drill" <<'PY'
+import sqlite3
+import sys
+
+db = sqlite3.connect(sys.argv[1])
+try:
+    result = db.execute("PRAGMA integrity_check").fetchone()[0]
+    if result != "ok":
+        print(f"integrity_check: {result}", file=sys.stderr)
+        sys.exit(1)
+    version = db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+    print(f"integrity_check: ok, schema version v{version}")
+    for (name,) in db.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN "
+        "('users', 'tracks', 'liked_tracks', 'playlists', 'listening_history')"
+    ):
+        count = db.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+        print(f"  {name}: {count} rows")
+finally:
+    db.close()
+PY
+  echo "Restore drill passed: $backup_path"
+  exit 0
+fi
+
 restore_failed() {
   local status=$?
   if ((status != 0)) && [[ -f "$backup_dir/pre-restore.db" ]]; then
@@ -90,7 +128,7 @@ else
   health_url="http://127.0.0.1:${port}/health"
 fi
 
-for attempt in {1..15}; do
+for _ in {1..15}; do
   if [[ "$health_url" == https://* ]]; then
     health="$(curl --insecure --fail --silent --show-error --max-time 2 "$health_url" 2>/dev/null || true)"
   else

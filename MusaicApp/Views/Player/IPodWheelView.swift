@@ -6,35 +6,69 @@ import UIKit
 /// Classic iPod click-wheel overlay for the Now Playing screen.
 ///
 /// Layout mirrors the 4th-generation iPod: MENU at the top, next/previous on
-/// the sides, play/pause at the bottom, select in the center. Dragging around
-/// the ring scrubs the track — a full 360° turn seeks 6 seconds, with a
-/// haptic tick every 15° like the original wheel.
+/// the sides, play/pause at the bottom, select in the center. MENU cycles the
+/// wheel's mode like the original: scrub → volume → shuffle/repeat. A haptic
+/// detent fires every 15° of rotation.
 struct IPodWheelView: View {
     @Binding var isPresented: Bool
 
     private let player = PlayerStore.shared
     private let audio = AudioPlayer.shared
 
+    private enum WheelMode: CaseIterable {
+        case scrub, volume, playbackModes
+
+        var next: WheelMode {
+            switch self {
+            case .scrub: return .volume
+            case .volume: return .playbackModes
+            case .playbackModes: return .scrub
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .scrub: return String(localized: "Scrub")
+            case .volume: return String(localized: "Volume")
+            case .playbackModes: return String(localized: "Shuffle & Repeat")
+            }
+        }
+    }
+
+    private enum ModeOption: CaseIterable {
+        case shuffle, repeatMode
+    }
+
+    @State private var mode: WheelMode = .scrub
     @State private var wheelRotation: Double = 0
     @State private var lastDragAngle: Double?
-    @State private var pendingSeekFraction: Double?
-    @State private var lastHapticDetent = 0
+    /// Scrub target during a drag; seeded from the live position when the
+    /// drag starts and committed when it ends.
+    @State private var scrubFraction: Double?
+    @State private var detentAccumulator: Double = 0
+    @State private var optionAccumulator: Double = 0
+    @State private var highlightedOption: ModeOption = .shuffle
+    @State private var modeChangeCount = 0
 
     #if os(iOS)
     @State private var haptic = UIImpactFeedbackGenerator(style: .light)
     #endif
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Degrees of rotation for one second of seek: a full 360° turn scrubs
-    /// 6 seconds — the classic-feel ratio of the original click wheel.
+    /// Base scrub ratio: 60° of rotation = 1 s (a slow full turn = 6 s, the
+    /// classic feel). Faster spins accelerate up to 5×.
     private let degreesPerSecond: Double = 60
+    /// Volume: a full turn sweeps the whole range.
+    private let degreesPerFullVolume: Double = 360
+    private let detentDegrees: Double = 15
+    private let optionStepDegrees: Double = 45
 
     private var ringOuter: CGFloat { 300 }
     private var ringInner: CGFloat { 132 }
 
     var body: some View {
-        VStack(spacing: 22) {
-            scrubHint
+        VStack(spacing: 18) {
+            header
 
             ZStack {
                 wheelSurface
@@ -42,12 +76,111 @@ struct IPodWheelView: View {
             .frame(width: ringOuter, height: ringOuter)
         }
         .padding(.vertical, 20)
+        .sensoryFeedback(.selection, trigger: modeChangeCount)
         .onAppear {
-            pendingSeekFraction = audio.duration > 0 ? audio.currentTime / audio.duration : nil
             #if os(iOS)
             haptic.prepare()
             #endif
         }
+        .accessibilityAction(named: Text(String(localized: "Next wheel mode"))) { cycleMode() }
+        .accessibilityAction(named: Text(String(localized: "Close wheel"))) { close() }
+    }
+
+    // MARK: - Header (mode + readout)
+
+    private var header: some View {
+        VStack(spacing: 6) {
+            HStack {
+                Button(action: close) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color.textSecondary)
+                        .frame(width: 32, height: 32)
+                        .background(Color.white.opacity(0.08), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(String(localized: "Close wheel")))
+
+                Spacer()
+
+                Text(mode.title.uppercased())
+                    .font(.system(size: 11, weight: .bold))
+                    .tracking(2)
+                    .foregroundStyle(Color.accentStrong)
+                    .contentTransition(.opacity)
+
+                Spacer()
+
+                Color.clear.frame(width: 32, height: 32)
+            }
+            .padding(.horizontal, 24)
+
+            readout
+                .frame(height: 48)
+        }
+    }
+
+    @ViewBuilder
+    private var readout: some View {
+        switch mode {
+        case .scrub:
+            if let fraction = scrubFraction, audio.duration > 0 {
+                Text("\(timeString(fraction * audio.duration)) / \(timeString(audio.duration))")
+                    .font(.system(size: 26, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Color.accentStrong)
+                    .contentTransition(.numericText())
+            } else {
+                // Separate view: only it follows the live position.
+                WheelLiveTime()
+            }
+        case .volume:
+            VStack(spacing: 6) {
+                Text("\(Int((player.volume * 100).rounded()))%")
+                    .font(.system(size: 26, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Color.accentStrong)
+                    .contentTransition(.numericText())
+                ProgressView(value: Double(player.volume))
+                    .progressViewStyle(.linear)
+                    .tint(Color.accentStrong)
+                    .frame(width: 160)
+            }
+        case .playbackModes:
+            HStack(spacing: 10) {
+                optionChip(
+                    title: player.isShuffled ? String(localized: "Shuffle On") : String(localized: "Shuffle Off"),
+                    systemImage: "shuffle",
+                    highlighted: highlightedOption == .shuffle
+                )
+                optionChip(
+                    title: repeatTitle,
+                    systemImage: player.repeatMode == .track ? "repeat.1" : "repeat",
+                    highlighted: highlightedOption == .repeatMode
+                )
+            }
+        }
+    }
+
+    private var repeatTitle: String {
+        switch player.repeatMode {
+        case .off: return String(localized: "Repeat Off")
+        case .queue: return String(localized: "Repeat All")
+        case .track: return String(localized: "Repeat One")
+        }
+    }
+
+    private func optionChip(title: String, systemImage: String, highlighted: Bool) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage)
+            Text(title)
+        }
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(highlighted ? Color.bgPrimary : Color.textPrimary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            Capsule().fill(highlighted ? Color.accentStrong : Color.white.opacity(0.08))
+        )
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: highlighted)
     }
 
     // MARK: - Wheel
@@ -66,28 +199,17 @@ struct IPodWheelView: View {
                 .rotationEffect(.degrees(reduceMotion ? 0 : wheelRotation))
 
             // Center select button
-            Button {
-                player.togglePlayPause()
-            } label: {
+            Button(action: selectPressed) {
                 Circle()
                     .fill(Color.white.opacity(0.09))
                     .overlay(
                         Circle().strokeBorder(Color.white.opacity(0.13), lineWidth: 1)
                     )
                     .frame(width: ringInner - 14, height: ringInner - 14)
-                    .overlay(
-                        VStack(spacing: 4) {
-                            Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
-                                .font(.system(size: 30, weight: .medium))
-                                .foregroundStyle(Color.textPrimary)
-                            Text(audio.isPlaying ? String(localized: "Pause") : String(localized: "Play"))
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(Color.textSecondary)
-                        }
-                    )
+                    .overlay(centerLabel)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(Text(String(localized: "Play or pause")))
+            .accessibilityLabel(Text(mode == .playbackModes ? String(localized: "Select") : String(localized: "Play or pause")))
 
             // Edge zones (MENU / prev / next / play-pause)
             edgeButton(
@@ -116,11 +238,8 @@ struct IPodWheelView: View {
             .accessibilityLabel(Text(String(localized: "Play or pause")))
             .position(x: ringOuter / 2, y: ringOuter / 2 + 74)
 
-            // MENU — exit the wheel
-            Button {
-                commitPendingSeek()
-                isPresented = false
-            } label: {
+            // MENU — cycles the wheel mode, like the original.
+            Button(action: cycleMode) {
                 Text("MENU")
                     .font(.system(size: 14, weight: .bold))
                     .tracking(1.5)
@@ -128,29 +247,33 @@ struct IPodWheelView: View {
                     .frame(width: 64, height: 40)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(Text(String(localized: "Close wheel")))
+            .accessibilityLabel(Text(String(localized: "Menu")))
+            .accessibilityHint(Text(String(localized: "Switches between scrub, volume and shuffle/repeat")))
             .position(x: ringOuter / 2, y: ringOuter / 2 - 74)
         }
         .contentShape(Circle())
-        .gesture(scrubGesture)
+        .gesture(wheelGesture)
     }
 
-    private var isScrubbing: Bool { lastDragAngle != nil }
-
-    private var scrubHint: some View {
-        VStack(spacing: 6) {
-            if let fraction = pendingSeekFraction, audio.duration > 0, isScrubbing {
-                Text("\(timeString(fraction * audio.duration)) / \(timeString(audio.duration))")
-                    .font(.system(size: 26, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Color.accentStrong)
-                    .contentTransition(.numericText())
+    @ViewBuilder
+    private var centerLabel: some View {
+        VStack(spacing: 4) {
+            if mode == .playbackModes {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 26, weight: .medium))
+                    .foregroundStyle(Color.textPrimary)
+                Text(String(localized: "Select"))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.textSecondary)
             } else {
-                Text(String(localized: "Spin the wheel to scrub"))
-                    .font(.system(size: 12, weight: .medium))
+                Image(systemName: player.isPlaybackIntended ? "pause.fill" : "play.fill")
+                    .font(.system(size: 30, weight: .medium))
+                    .foregroundStyle(Color.textPrimary)
+                Text(player.isPlaybackIntended ? String(localized: "Pause") : String(localized: "Play"))
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Color.textSecondary)
             }
         }
-        .frame(height: 44)
     }
 
     private func edgeButton(systemName: String, label: String, action: @escaping () -> Void) -> some View {
@@ -165,22 +288,55 @@ struct IPodWheelView: View {
         .accessibilityLabel(Text(label))
     }
 
-    // MARK: - Scrub gesture
+    // MARK: - Actions
 
-    private var scrubGesture: some Gesture {
+    private func cycleMode() {
+        commitScrubIfNeeded()
+        lastDragAngle = nil
+        detentAccumulator = 0
+        optionAccumulator = 0
+        if reduceMotion {
+            mode = mode.next
+        } else {
+            withAnimation(.easeOut(duration: 0.2)) { mode = mode.next }
+        }
+        modeChangeCount += 1
+    }
+
+    private func selectPressed() {
+        guard mode == .playbackModes else {
+            player.togglePlayPause()
+            return
+        }
+        switch highlightedOption {
+        case .shuffle: player.toggleShuffle()
+        case .repeatMode: player.toggleRepeat()
+        }
+        modeChangeCount += 1
+    }
+
+    private func close() {
+        commitScrubIfNeeded()
+        isPresented = false
+    }
+
+    // MARK: - Wheel gesture
+
+    private var wheelGesture: some Gesture {
         DragGesture(minimumDistance: 4)
             .onChanged { value in
                 let center = CGPoint(x: ringOuter / 2, y: ringOuter / 2)
                 let vector = CGPoint(x: value.location.x - center.x, y: value.location.y - center.y)
                 let distance = hypot(vector.x, vector.y)
-                // Only the ring area drives the scrub (not the center button).
+                // Only the ring area drives the wheel (not the center button).
                 guard distance > (ringInner - 14) / 2, distance < ringOuter / 2 else { return }
 
                 let angle = atan2(vector.y, vector.x) * 180 / .pi
                 guard let last = lastDragAngle else {
                     lastDragAngle = angle
-                    if pendingSeekFraction == nil, audio.duration > 0 {
-                        pendingSeekFraction = audio.currentTime / audio.duration
+                    if mode == .scrub {
+                        // Always start from where playback is right now.
+                        scrubFraction = liveFraction
                     }
                     return
                 }
@@ -190,39 +346,83 @@ struct IPodWheelView: View {
                 if delta < -180 { delta += 360 }
                 lastDragAngle = angle
                 wheelRotation += delta
+                tickDetents(delta)
 
-                guard audio.duration > 0, var fraction = pendingSeekFraction else { return }
-                // 60° of rotation = 1 second of seek (a full turn = 6s).
-                fraction += (delta / degreesPerSecond) / audio.duration
-                fraction = min(max(fraction, 0), 1)
-                pendingSeekFraction = fraction
-
-                // Haptic detent every 15° like the original wheel.
-                let detent = Int(wheelRotation / 15)
-                if detent != lastHapticDetent {
-                    lastHapticDetent = detent
-                    #if os(iOS)
-                    haptic.impactOccurred()
-                    #endif
+                switch mode {
+                case .scrub:
+                    let duration = audio.duration
+                    guard duration > 0, let fraction = scrubFraction ?? liveFraction else { return }
+                    let acceleration = 1 + min(4, abs(delta) / 6)
+                    let seconds = delta / degreesPerSecond * acceleration
+                    scrubFraction = min(max(fraction + seconds / duration, 0), 1)
+                case .volume:
+                    player.setVolume(player.volume + Float(delta / degreesPerFullVolume))
+                case .playbackModes:
+                    optionAccumulator += delta
+                    if abs(optionAccumulator) >= optionStepDegrees {
+                        optionAccumulator = 0
+                        highlightedOption = highlightedOption == .shuffle ? .repeatMode : .shuffle
+                        modeChangeCount += 1
+                    }
                 }
             }
             .onEnded { _ in
-                commitPendingSeek()
+                commitScrubIfNeeded()
                 lastDragAngle = nil
+                detentAccumulator = 0
             }
     }
 
-    private func commitPendingSeek() {
-        defer { pendingSeekFraction = audio.duration > 0 ? audio.currentTime / audio.duration : nil }
-        guard let fraction = pendingSeekFraction, audio.duration > 0 else { return }
+    /// Current position as a 0...1 fraction, read live (never cached).
+    private var liveFraction: Double? {
+        let duration = audio.duration > 0 ? audio.duration : (player.currentTrack?.duration ?? 0)
+        guard duration > 0 else { return nil }
+        return min(max(audio.livePlaybackTime() / duration, 0), 1)
+    }
+
+    private func tickDetents(_ delta: Double) {
+        detentAccumulator += delta
+        guard abs(detentAccumulator) >= detentDegrees else { return }
+        detentAccumulator = detentAccumulator.truncatingRemainder(dividingBy: detentDegrees)
+        #if os(iOS)
+        haptic.impactOccurred()
+        haptic.prepare()
+        #endif
+    }
+
+    private func commitScrubIfNeeded() {
+        guard let fraction = scrubFraction else { return }
+        scrubFraction = nil
         player.seekTo(fraction)
     }
 
     private func timeString(_ interval: TimeInterval) -> String {
-        let seconds = Int(interval.rounded())
+        let seconds = Int(max(0, interval).rounded())
         if seconds >= 3600 {
             return String(format: "%d:%02d:%02d", seconds / 3600, (seconds % 3600) / 60, seconds % 60)
         }
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+}
+
+/// Live elapsed / total readout, isolated so position ticks don't redraw the
+/// whole wheel.
+private struct WheelLiveTime: View {
+    private let audio = AudioPlayer.shared
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Text(audio.duration > 0 ? "\(format(audio.currentTime)) / \(format(audio.duration))" : "--:--")
+                .font(.system(size: 20, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Color.textPrimary.opacity(0.85))
+            Text(String(localized: "Spin the wheel to scrub"))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.textSecondary)
+        }
+    }
+
+    private func format(_ interval: TimeInterval) -> String {
+        let seconds = Int(max(0, interval))
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 }

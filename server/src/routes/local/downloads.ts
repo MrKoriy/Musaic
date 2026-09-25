@@ -1,12 +1,11 @@
 import { Hono } from "hono";
 import fs from "fs";
 import path from "path";
-import { createReadStream } from "fs";
 import crypto from "crypto";
 import { getDb } from "../../db/index.js";
 import { getLocalProvider } from "../../providers/local.js";
 import { FfmpegQueueFullError, runFfmpeg } from "../../utils/ffmpeg-queue.js";
-import { resolveAllowedLocalFile } from "../../utils/stream-proxy.js";
+import { resolveAllowedLocalFile, serveLocalFile } from "../../utils/stream-proxy.js";
 
 const cacheLocks = new Map<string, Promise<void>>();
 
@@ -83,49 +82,8 @@ async function fetchUpstreamAudio(source: string, trackId: string, bitrate = 320
 }
 
 function serveFileWithRange(filePath: string, rangeHeader: string | null): Response {
-  const stat = fs.statSync(filePath);
-  const fileSize = stat.size;
-  const ext = path.extname(filePath).toLowerCase();
-  const mime = MIME_TYPES[ext] ?? "audio/mpeg";
-
-  if (rangeHeader) {
-    const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
-    if (match) {
-      const start = parseInt(match[1]!, 10);
-      const end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
-      const chunkSize = end - start + 1;
-
-      const stream = createReadStream(filePath, { start, end });
-      return new Response(stream as unknown as ReadableStream, {
-        status: 206,
-        headers: new Headers({
-          "Content-Type": mime,
-          "Content-Range": `bytes ${start}-${end}/${fileSize}`,
-          "Content-Length": String(chunkSize),
-          "Accept-Ranges": "bytes",
-          "Cache-Control": "no-cache",
-        }),
-      });
-    }
-  }
-
-  const stream = createReadStream(filePath);
-  return new Response(stream as unknown as ReadableStream, {
-    status: 200,
-    headers: new Headers({
-      "Content-Type": mime,
-      "Content-Length": String(fileSize),
-      "Accept-Ranges": "bytes",
-      "Cache-Control": "no-cache",
-    }),
-  });
+  return serveLocalFile(filePath, rangeHeader, "no-cache");
 }
-
-const MIME_TYPES: Record<string, string> = {
-  ".mp3": "audio/mpeg", ".flac": "audio/flac", ".m4a": "audio/mp4",
-  ".wav": "audio/wav", ".ogg": "audio/ogg", ".opus": "audio/opus",
-  ".aiff": "audio/aiff", ".aif": "audio/aiff",
-};
 
 export const downloadsRouter = new Hono();
 

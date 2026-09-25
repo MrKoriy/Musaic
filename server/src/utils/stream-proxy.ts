@@ -21,7 +21,15 @@ export class StreamProxyError extends Error {
   }
 }
 
-function localFileResponse(filePath: string, range: string | undefined): Response {
+/**
+ * Serve a file from disk with single-range support (RFC 7233 `bytes=a-b`,
+ * `bytes=a-`, `bytes=-n`). The one Range parser for every file route.
+ */
+export function serveLocalFile(
+  filePath: string,
+  range: string | null | undefined,
+  cacheControl = "private, no-store",
+): Response {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(filePath);
@@ -34,7 +42,7 @@ function localFileResponse(filePath: string, range: string | undefined): Respons
   const baseHeaders = {
     "Content-Type": contentType,
     "Accept-Ranges": "bytes",
-    "Cache-Control": "private, no-store",
+    "Cache-Control": cacheControl,
   };
   if (!range) {
     return new Response(createReadStream(filePath) as unknown as ReadableStream, {
@@ -139,7 +147,7 @@ export async function streamTrack(options: {
   if (options.source === "local") {
     const filePath = resolveAllowedLocalFile(getLocalProvider().getFilePath(options.trackId) ?? "");
     if (!filePath) throw new StreamProxyError(404, "Local track file not found");
-    return localFileResponse(filePath, options.range);
+    return serveLocalFile(filePath, options.range);
   }
 
   const upstream = await fetchProviderStream(options.source, options.trackId, bitrate, options.range);

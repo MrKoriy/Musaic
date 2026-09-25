@@ -26,6 +26,14 @@ import { fetchLrclib } from "./lrclib.js";
 import { fetchPlainLyrics } from "./genius.js";
 import { alignLyricsDetailed } from "./lyrics-aligner.js";
 import { runFfmpeg } from "../utils/ffmpeg-queue.js";
+import {
+  enqueueTask,
+  latestTask,
+  listActiveTasks,
+  PermanentTaskError,
+  registerTaskHandler,
+  type TaskRecord,
+} from "../jobs/tasks.js";
 
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const AUDIO_MODEL = "google/gemini-3.1-flash-lite-preview";
@@ -35,34 +43,60 @@ let _whisperBin: string | null | undefined;
 let _whisperModel: string | null | undefined;
 let _ffmpegAvailable: boolean | undefined;
 
-interface PipelineJob {
+export interface PipelineJob {
   trackId: string;
   status: "pending" | "running" | "done" | "failed";
   startedAt: number;
   error?: string;
 }
 
-const jobs = new Map<string, PipelineJob>();
+export const LYRICS_GENERATE_TASK = "lyrics.generate";
 
-// Clean up completed/failed jobs older than 10 min; cap at 200 entries
-setInterval(() => {
-  const cutoff = Date.now() - 600_000;
-  for (const [id, job] of jobs) {
-    if ((job.status === "done" || job.status === "failed") && job.startedAt < cutoff) {
-      jobs.delete(id);
-    }
-  }
-  // Hard cap: remove oldest entries if map grows too large
-  if (jobs.size > 200) {
-    const sorted = [...jobs.entries()].sort((a, b) => a[1].startedAt - b[1].startedAt);
-    for (let i = 0; i < sorted.length - 200; i++) {
-      jobs.delete(sorted[i][0]);
-    }
-  }
-}, 60_000);
+// Finished jobs are reported for a while; older ones read as "not started" so
+// the client may regenerate (the cached lyrics answer everything else).
+const FINISHED_STATUS_TTL_SECONDS = 10 * 60;
+
+interface GeneratePayload {
+  trackId: string;
+  audioPath: string;
+}
+
+export function lyricsTaskKey(trackId: string): string {
+  return `lyrics:${trackId}`;
+}
+
+export function pipelineJobFromTask(task: TaskRecord): PipelineJob {
+  const payload = (task.payload ?? {}) as Partial<GeneratePayload>;
+  // A queued task with attempts is waiting for its retry: still in progress.
+  const status: PipelineJob["status"] =
+    task.status === "queued" ? (task.attempts > 0 ? "running" : "pending") : task.status;
+  return {
+    trackId: payload.trackId ?? task.dedupeKey?.replace(/^lyrics:/, "") ?? "",
+    status,
+    startedAt: task.createdAt * 1000,
+    ...(status === "failed" && task.lastError ? { error: task.lastError } : {}),
+  };
+}
 
 export function getJobStatus(trackId: string): PipelineJob | null {
-  return jobs.get(trackId) ?? null;
+  const task = latestTask(lyricsTaskKey(trackId));
+  if (!task || task.type !== LYRICS_GENERATE_TASK) return null;
+  const finished = task.status === "done" || task.status === "failed";
+  if (finished && Math.floor(Date.now() / 1000) - task.updatedAt > FINISHED_STATUS_TTL_SECONDS) return null;
+  return pipelineJobFromTask(task);
+}
+
+/** Idempotent; called at startup so queued jobs resume, and before enqueueing. */
+export function registerLyricsGenerateHandler(): void {
+  registerTaskHandler(
+    LYRICS_GENERATE_TASK,
+    async (payload: GeneratePayload) => {
+      await runPipeline(payload.trackId, payload.audioPath, Date.now());
+      return { trackId: payload.trackId };
+    },
+    // whisper is CPU-bound; one job at a time keeps playback responsive.
+    { concurrency: 1, leaseSeconds: 300 },
+  );
 }
 
 /** Detect which local whisper binary is available (result cached for process lifetime) */
@@ -147,34 +181,29 @@ export async function getPipelineStatus(): Promise<{ ready: boolean; method?: st
 }
 
 export function listJobs(): PipelineJob[] {
-  return Array.from(jobs.values());
+  return listActiveTasks(LYRICS_GENERATE_TASK).map(pipelineJobFromTask);
 }
 
+/**
+ * Queue AI generation on the durable task queue, so a restart mid-transcription
+ * resumes the job instead of losing it.
+ */
 export function startTranscription(trackId: string, audioPath: string): PipelineJob {
-  const existing = jobs.get(trackId);
-  if (existing && (existing.status === "running" || existing.status === "done")) {
-    return existing;
-  }
-
-  const job: PipelineJob = {
-    trackId,
-    status: "running",
-    startedAt: Date.now(),
-  };
-  jobs.set(trackId, job);
-
-  runPipeline(trackId, audioPath, job).catch((err: unknown) => {
-    job.status = "failed";
-    job.error = err instanceof Error ? err.message : String(err);
-    console.error(`[lyrics-pipeline] Job ${trackId} failed:`, job.error);
-  });
-
-  return job;
+  registerLyricsGenerateHandler();
+  const task = enqueueTask(
+    LYRICS_GENERATE_TASK,
+    { trackId, audioPath } satisfies GeneratePayload,
+    { dedupeKey: lyricsTaskKey(trackId), maxAttempts: 2 },
+  );
+  return pipelineJobFromTask(task);
 }
 
-async function runPipeline(trackId: string, audioPath: string, job: PipelineJob): Promise<void> {
+async function runPipeline(trackId: string, audioPath: string, startedAt: number): Promise<void> {
   if (!fs.existsSync(audioPath)) {
-    throw new Error(`Audio file not found: ${audioPath}`);
+    throw new PermanentTaskError(`Audio file not found: ${audioPath}`);
+  }
+  if (!isWhisperCppReady() && !process.env.OPENROUTER_API_KEY) {
+    throw new PermanentTaskError("No transcription method available. Install whisper.cpp or set OPENROUTER_API_KEY.");
   }
 
   console.log(`[lyrics-pipeline] Starting job for ${trackId} (audio: ${audioPath})`);
@@ -216,8 +245,7 @@ async function runPipeline(trackId: string, audioPath: string, job: PipelineJob)
             VALUES ($id, $lrc, 'aligned', $words)
             ON CONFLICT(track_id) DO UPDATE SET lrc = excluded.lrc, source = excluded.source, words = excluded.words, created_at = unixepoch()
           `).run({ $id: trackId, $lrc: lrc, $words: aligned.wordsJson });
-          job.status = "done";
-          const elapsed = ((Date.now() - job.startedAt) / 1000).toFixed(1);
+          const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
           console.log(`[lyrics-pipeline] Job ${trackId} completed via ALIGNED path in ${elapsed}s`);
           return;
         }
@@ -254,15 +282,14 @@ async function runPipeline(trackId: string, audioPath: string, job: PipelineJob)
     );
   }
 
-  // Cache in DB
+  // Cache in DB; drop word timings left over from an earlier aligned result.
   db.prepare(`
-    INSERT INTO lyrics_cache (track_id, lrc, source)
-    VALUES ($id, $lrc, 'ai')
-    ON CONFLICT(track_id) DO UPDATE SET lrc = excluded.lrc, source = excluded.source, created_at = unixepoch()
+    INSERT INTO lyrics_cache (track_id, lrc, source, words)
+    VALUES ($id, $lrc, 'ai', NULL)
+    ON CONFLICT(track_id) DO UPDATE SET lrc = excluded.lrc, source = excluded.source, words = NULL, created_at = unixepoch()
   `).run({ $id: trackId, $lrc: lrc });
 
-  job.status = "done";
-  const elapsed = ((Date.now() - job.startedAt) / 1000).toFixed(1);
+  const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
   console.log(`[lyrics-pipeline] Job ${trackId} completed in ${elapsed}s (${lrc.split("\n").length} lines)`);
 }
 

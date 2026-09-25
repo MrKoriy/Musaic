@@ -6,9 +6,6 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 server_dir="$script_dir/server"
 remote_host="${MUSAIC_DEPLOY_HOST:-root@94.103.1.126}"
 remote_dir="/opt/musaic-server"
-service_name="musaic-server.service"
-legacy_service_name="musaic.service"
-sidecar_service_name="musaic-sidecar.service"
 action="${1:-deploy}"
 backup_path="${2:-}"
 
@@ -324,6 +321,16 @@ if ! health_gate; then
   journalctl -u "$service_name" -n 30 --no-pager >&2 || true
   restore_previous_release
   exit 1
+fi
+
+if systemctl is-enabled --quiet "$sidecar_service_name" 2>/dev/null; then
+  sleep 2
+  if ! systemctl is-active --quiet "$sidecar_service_name"; then
+    echo "Sidecar failed to start; rolling back to the previous release." >&2
+    journalctl -u "$sidecar_service_name" -n 30 --no-pager >&2 || true
+    restore_previous_release
+    exit 1
+  fi
 fi
 
 prune_releases

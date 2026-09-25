@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Build and publish
@@ -25,10 +29,13 @@ jobs:
 
       - name: Build macOS app (Release, unsigned)
         working-directory: MusaicApp
+        env:
+          TAG: ${{ github.ref_name }}
         run: >-
           xcodegen generate &&
           xcodebuild -project Musaic.xcodeproj -scheme MusaicMac -configuration Release
           -destination 'platform=macOS' -derivedDataPath "$RUNNER_TEMP/derived"
+          MARKETING_VERSION="${TAG#v}" CURRENT_PROJECT_VERSION="${{ github.run_number }}"
           CODE_SIGNING_ALLOWED=NO build
 
       - name: Package macOS app
@@ -40,7 +47,7 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version-file: server/.bun-version
 
       - name: Package server bundle
         working-directory: server
@@ -48,6 +55,8 @@ jobs:
           bun install --frozen-lockfile
           bun run build
           tar -czf "../musaic-server-${{ github.ref_name }}.tar.gz" -C dist server.js
+          tar -czf "../musaic-sidecar-${{ github.ref_name }}.tar.gz" \
+            --exclude='.venv' --exclude='__pycache__' --exclude='tests' -C sidecar .
 
       - name: Create GitHub Release
         env:
@@ -58,3 +67,4 @@ jobs:
           --generate-notes
           "musaic-macos-${{ github.ref_name }}.zip"
           "musaic-server-${{ github.ref_name }}.tar.gz"
+          "musaic-sidecar-${{ github.ref_name }}.tar.gz"

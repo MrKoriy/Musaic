@@ -6,17 +6,15 @@ private func normalizedLibraryValue(_ value: String?) -> String {
     value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 }
 
-private func likedArtistName(for track: Track) -> String? {
-    let artist = normalizedLibraryValue(track.artist)
-    return artist.isEmpty ? nil : artist
-}
-
-private func likedAlbumTitle(for track: Track) -> String {
-    let album = normalizedLibraryValue(track.album)
-    if !album.isEmpty { return album }
-
-    let title = normalizedLibraryValue(track.title)
-    return title.isEmpty ? "Untitled Single" : title
+/// On-disk library state (Application Support/…/library.json).
+struct LibrarySnapshot: Codable, Sendable {
+    var likedTrackOrder: [String] = []
+    var likedTracks: [Track] = []
+    /// Local likes/unlikes the server hasn't confirmed yet.
+    var pendingLikedTrackIds: [String] = []
+    var pendingUnlikedTrackIds: [String] = []
+    var lastServerSyncAt: Date?
+    var syncedUserId: String?
 }
 
 @Observable
@@ -24,56 +22,150 @@ private func likedAlbumTitle(for track: Track) -> String {
 final class LibraryStore {
     static let shared = LibraryStore()
 
-    private let likedIdsKey = "liked_track_ids"
-    private let likedOrderKey = "liked_track_order"
-    private let likedTracksKey = "liked_tracks"
-    private let pendingUnlikedIdsKey = "pending_unliked_track_ids"
-    private let legacyLikedIdsMigratedKey = "legacy_mmkv_liked_track_ids_migrated"
-    private let api = APIService.shared
-    private let decoder = JSONDecoder()
-    private let encoder = JSONEncoder()
-    private let hydrationTTL: TimeInterval = 120
+    /// Server likes are re-read at most this often unless something changed locally.
+    private static let syncInterval: TimeInterval = 10 * 60
 
-    private var hydrationTask: Task<[Track], Never>?
-    private var hydrationTaskID: UUID?
-    private var lastHydratedFingerprint: String?
-    private var lastHydratedAt: Date?
-    private var rebuildTask: Task<Void, Never>?
-
-    var likedTrackIds: Set<String> = []
-    /// Ordered list of liked track IDs — newest first (preserves insertion order)
-    var likedTrackOrder: [String] = []
-    var likedTracks: [Track] = []
-    private var pendingUnlikedTrackIds = Set<String>()
+    private(set) var likedTrackIds: Set<String> = []
+    /// Liked track IDs, newest first.
+    private(set) var likedTrackOrder: [String] = []
+    private(set) var likedTracks: [Track] = []
     private(set) var displayedLikedTracks: [Track] = []
     private(set) var likedAlbums: [Album] = []
     private(set) var likedArtists: [Artist] = []
 
-    private var syncedUserId: String?
-    private var syncedFingerprint: String?
+    @ObservationIgnored private var pendingLikedTrackIds = Set<String>()
+    @ObservationIgnored private var pendingUnlikedTrackIds = Set<String>()
+    @ObservationIgnored private var lastServerSyncAt: Date?
+    @ObservationIgnored private var syncedUserId: String?
+    @ObservationIgnored private var syncTask: Task<Bool, Never>?
+    @ObservationIgnored private var hydrationTask: Task<Void, Never>?
+    @ObservationIgnored private var rebuildTask: Task<Void, Never>?
+    @ObservationIgnored private var likeWorkers: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var desiredLikeState: [String: LikeIntent] = [:]
+    @ObservationIgnored private let store = JSONFileStore<LibrarySnapshot>(fileName: "library.json")
+    private let api = APIService.shared
+
+    private struct LikeIntent {
+        let liked: Bool
+        let track: Track
+    }
 
     private init() {
-        loadLiked()
-        Task { @MainActor in
-            await hydrateLikedTracksIfNeeded()
+        loadPersistedState()
+        Task { await hydrateLikedTracksIfNeeded() }
+    }
+
+    // MARK: - Sync
+
+    /// Syncs likes when something changed locally, the account changed, the
+    /// last sync is stale, or `force` is set. Cheap to call on every foreground.
+    func ensureSynced(force: Bool = false) async {
+        guard SettingsStore.shared.isLoggedIn else { return }
+        let userId = SettingsStore.shared.authUserId
+        let hasPendingChanges = !pendingLikedTrackIds.isEmpty || !pendingUnlikedTrackIds.isEmpty
+        let isStale = lastServerSyncAt.map { Date().timeIntervalSince($0) > Self.syncInterval } ?? true
+        guard force || hasPendingChanges || isStale || syncedUserId != userId else { return }
+        guard await syncLikesWithServer() else { return }
+        await hydrateLikedTracksIfNeeded()
+    }
+
+    /// Uploads only unconfirmed local changes (or just reads the server list
+    /// when there are none) and adopts the server's ordered like list.
+    @discardableResult
+    func syncLikesWithServer() async -> Bool {
+        if let syncTask { return await syncTask.value }
+        let task = Task { await performSync() }
+        syncTask = task
+        let succeeded = await task.value
+        syncTask = nil
+        return succeeded
+    }
+
+    private func performSync() async -> Bool {
+        guard SettingsStore.shared.isLoggedIn else { return false }
+        let sentLikes = pendingLikedTrackIds
+        let sentRemovals = pendingUnlikedTrackIds
+        do {
+            let serverIds: [String]
+            if sentLikes.isEmpty && sentRemovals.isEmpty {
+                serverIds = try await api.getServerLikes()
+            } else {
+                let orderedLikes = likedTrackOrder.filter { sentLikes.contains($0) }
+                let tracksByID = trackIndex()
+                serverIds = try await api.syncLikes(
+                    trackIds: orderedLikes,
+                    tracks: orderedLikes.compactMap { tracksByID[$0] },
+                    removedTrackIds: Array(sentRemovals)
+                )
+            }
+            // A logout/account switch cancels the sync; never resurrect old likes.
+            guard !Task.isCancelled, SettingsStore.shared.isLoggedIn else { return false }
+            // Only the intents that were sent are confirmed; taps made while
+            // the request was in flight stay pending.
+            pendingLikedTrackIds.subtract(sentLikes)
+            pendingUnlikedTrackIds.subtract(sentRemovals)
+            applyServerLikes(serverIds)
+            lastServerSyncAt = Date()
+            syncedUserId = SettingsStore.shared.authUserId
+            persist()
+            return true
+        } catch {
+            #if DEBUG
+            if !error.isCancellation { print("[LibraryStore] Likes sync failed: \(error)") }
+            #endif
+            return false
         }
     }
 
-    /// Call from view .task to ensure sync happens after login
-    @MainActor
-    func ensureSynced(force: Bool = false) async {
-        guard SettingsStore.shared.isLoggedIn else {
-            syncedUserId = nil
-            syncedFingerprint = nil
-            return
+    /// Adopts the server order, overlaying local intents that are still pending.
+    private func applyServerLikes(_ serverIds: [String]) {
+        var seen = Set<String>()
+        var ids = serverIds.filter { seen.insert($0).inserted }
+        let pendingLikes = likedTrackOrder.filter { pendingLikedTrackIds.contains($0) && !seen.contains($0) }
+        ids.insert(contentsOf: pendingLikes, at: 0)
+        seen.formUnion(pendingLikes)
+        if !pendingUnlikedTrackIds.isEmpty {
+            ids.removeAll { pendingUnlikedTrackIds.contains($0) }
+            seen.subtract(pendingUnlikedTrackIds)
         }
-        let currentUserId = SettingsStore.shared.authUserId ?? SettingsStore.shared.authToken ?? "authenticated"
-        let currentFingerprint = hydrationFingerprint()
-        guard force || syncedUserId != currentUserId || syncedFingerprint != currentFingerprint else { return }
-        guard await syncLikesWithServer() else { return }
-        syncedUserId = currentUserId
-        syncedFingerprint = hydrationFingerprint()
-        await hydrateLikedTracksIfNeeded(force: true)
+        guard ids != likedTrackOrder else { return }
+        likedTrackOrder = ids
+        likedTrackIds = seen
+        let tracksByID = trackIndex()
+        likedTracks = ids.compactMap { tracksByID[$0] }
+        rebuildDerivedCollections()
+    }
+
+    /// Fetches metadata for liked IDs we have no track for; `force` refreshes all.
+    func hydrateLikedTracksIfNeeded(force: Bool = false) async {
+        if let hydrationTask {
+            await hydrationTask.value
+            if !force { return }
+        }
+        let known = Set(likedTracks.map(\.id))
+        let targetIDs = force ? likedTrackOrder : likedTrackOrder.filter { !known.contains($0) }
+        guard !targetIDs.isEmpty, SettingsStore.shared.isLoggedIn else { return }
+
+        let task = Task {
+            do {
+                let serverTracks = try await api.getTracks(ids: targetIDs)
+                mergeHydratedTracks(serverTracks.map(api.toAppTrack))
+            } catch {
+                // Keep the local cache when the refresh fails.
+            }
+        }
+        hydrationTask = task
+        await task.value
+        hydrationTask = nil
+    }
+
+    private func mergeHydratedTracks(_ hydrated: [Track]) {
+        guard !hydrated.isEmpty else { return }
+        var tracksByID = trackIndex()
+        for track in hydrated { tracksByID[track.id] = track }
+        likedTracks = likedTrackOrder.compactMap { tracksByID[$0] }
+        rebuildDerivedCollections()
+        persist()
     }
 
     // MARK: - Liked
@@ -91,51 +183,85 @@ final class LibraryStore {
     }
 
     func clearLocalLikes() {
+        likeWorkers.values.forEach { $0.cancel() }
+        likeWorkers.removeAll()
+        desiredLikeState.removeAll()
+        syncTask?.cancel()
+        hydrationTask?.cancel()
         likedTrackIds.removeAll()
         likedTrackOrder.removeAll()
         likedTracks.removeAll()
+        pendingLikedTrackIds.removeAll()
         pendingUnlikedTrackIds.removeAll()
+        lastServerSyncAt = nil
         syncedUserId = nil
-        syncedFingerprint = nil
-        markHydrationDirty()
         rebuildDerivedCollections()
-        saveLiked()
+        persist()
+        store.flush()
     }
 
     func toggleLike(track: Track) {
         let normalizedTrack = api.normalizedTrack(track)
-        let action: String
-        let isNowLiked: Bool
+        let id = normalizedTrack.id
+        let isNowLiked = !likedTrackIds.contains(id)
 
-        if likedTrackIds.contains(normalizedTrack.id) {
-            likedTrackIds.remove(normalizedTrack.id)
-            likedTrackOrder.removeAll { $0 == normalizedTrack.id }
-            likedTracks.removeAll { $0.id == normalizedTrack.id }
-            pendingUnlikedTrackIds.insert(normalizedTrack.id)
-            action = "unlike"
-            isNowLiked = false
+        likedTrackOrder.removeAll { $0 == id }
+        likedTracks.removeAll { $0.id == id }
+        if isNowLiked {
+            likedTrackIds.insert(id)
+            likedTrackOrder.insert(id, at: 0)
+            likedTracks.insert(normalizedTrack, at: 0)
+            pendingUnlikedTrackIds.remove(id)
+            pendingLikedTrackIds.insert(id)
         } else {
-            likedTrackIds.insert(normalizedTrack.id)
-            pendingUnlikedTrackIds.remove(normalizedTrack.id)
-            likedTrackOrder.insert(normalizedTrack.id, at: 0) // newest first
-            if let existingIndex = likedTracks.firstIndex(where: { $0.id == normalizedTrack.id }) {
-                likedTracks[existingIndex] = normalizedTrack
-            } else {
-                likedTracks.insert(normalizedTrack, at: 0)
-            }
-            action = "like"
-            isNowLiked = true
+            likedTrackIds.remove(id)
+            pendingLikedTrackIds.remove(id)
+            pendingUnlikedTrackIds.insert(id)
         }
-        normalizeLikedState()
         rebuildDerivedCollections()
-        markHydrationDirty()
-        markLikesSyncDirty()
-        saveLiked()
+        persist()
+        logLikeEvent(for: normalizedTrack, liked: isNowLiked)
+        enqueueLikeRequest(LikeIntent(liked: isNowLiked, track: normalizedTrack))
+    }
+
+    /// One request in flight per track; rapid taps collapse so the latest
+    /// intent is what the server ends up with.
+    private func enqueueLikeRequest(_ intent: LikeIntent) {
+        let id = intent.track.id
+        desiredLikeState[id] = intent
+        guard likeWorkers[id] == nil else { return }
+        likeWorkers[id] = Task { await runLikeWorker(trackId: id) }
+    }
+
+    private func runLikeWorker(trackId: String) async {
+        defer { likeWorkers[trackId] = nil }
+        while let intent = desiredLikeState[trackId], !Task.isCancelled {
+            do {
+                try await api.setLikeOnServer(track: intent.track, liked: intent.liked)
+            } catch {
+                // The intent stays in the pending sets; the next sync retries it.
+                desiredLikeState[trackId] = nil
+                return
+            }
+            if let latest = desiredLikeState[trackId], latest.liked != intent.liked {
+                continue
+            }
+            desiredLikeState[trackId] = nil
+            if intent.liked {
+                pendingLikedTrackIds.remove(trackId)
+            } else {
+                pendingUnlikedTrackIds.remove(trackId)
+            }
+            persist()
+        }
+    }
+
+    private func logLikeEvent(for track: Track, liked: Bool) {
+        let playbackContext = PlayerStore.shared.analyticsContext(for: track.id)
         Task {
-            let playbackContext = PlayerStore.shared.analyticsContext(for: normalizedTrack.id)
             await api.logPlay(
-                trackId: normalizedTrack.id,
-                action: action,
+                trackId: track.id,
+                action: liked ? "like" : "unlike",
                 eventId: UUID().uuidString,
                 sessionId: playbackContext?.sessionId,
                 requestId: playbackContext?.requestId,
@@ -143,191 +269,103 @@ final class LibraryStore {
                 isOrganic: playbackContext == nil,
                 position: playbackContext?.position
             )
-            do {
-                try await api.setLikeOnServer(track: normalizedTrack, liked: isNowLiked)
-                if !isNowLiked {
-                    await MainActor.run {
-                        self.pendingUnlikedTrackIds.remove(normalizedTrack.id)
-                        self.saveLiked()
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    self.markLikesSyncDirty()
-                }
-            }
         }
-    }
-
-    /// Sync liked tracks with server — merges local + server likes
-    @MainActor
-    @discardableResult
-    func syncLikesWithServer() async -> Bool {
-        guard SettingsStore.shared.isLoggedIn else { return false }
-        do {
-            let pendingRemovals = pendingUnlikedTrackIds
-            // Upload local likes to server, get back merged set
-            let orderToSync = likedTrackOrder.isEmpty ? Array(likedTrackIds) : likedTrackOrder
-            let serverIds = try await api.syncLikes(
-                trackIds: orderToSync,
-                tracks: likedTracks,
-                removedTrackIds: Array(pendingRemovals)
-            )
-            pendingUnlikedTrackIds.subtract(pendingRemovals)
-            saveLiked()
-
-            // Server returns liked IDs in date-added order (liked_at DESC).
-            // Rebuild local state from that ordered list, not Set iteration order.
-            let orderedServerIds = serverIds
-            let merged = Set(orderedServerIds)
-            if merged != likedTrackIds || orderedServerIds != likedTrackOrder {
-                likedTrackIds = merged
-                likedTrackOrder = orderedServerIds
-                normalizeLikedState()
-                rebuildDerivedCollections()
-                saveLiked()
-                markHydrationDirty()
-                await hydrateLikedTracksIfNeeded(force: true)
-            }
-            return true
-        } catch {
-            print("[LibraryStore] Likes sync failed: \(error)")
-            return false
-        }
-    }
-
-    @MainActor
-    func hydrateLikedTracksIfNeeded(force: Bool = false) async {
-        likedTracks = likedTracks.map(api.normalizedTrack)
-        normalizeLikedState()
-        rebuildDerivedCollections()
-
-        let fingerprint = hydrationFingerprint()
-        guard shouldHydrate(force: force, fingerprint: fingerprint) else { return }
-
-        if let hydrationTask {
-            likedTracks = mergeHydratedTracks(await hydrationTask.value)
-            normalizeLikedState()
-            rebuildDerivedCollections()
-            saveLiked()
-            return
-        }
-
-        let orderedIDs = likedTrackOrder
-        let cachedTracks = likedTracks
-        let taskID = UUID()
-        let task = Task<[Track], Never> { [api] in
-            var mergedTracks = cachedTracks.map(api.normalizedTrack)
-
-            if !orderedIDs.isEmpty {
-                do {
-                    let serverTracks = try await api.getTracks(ids: orderedIDs)
-                    let restoredTracks = serverTracks.map(api.toAppTrack)
-                    if !restoredTracks.isEmpty {
-                        var tracksByID = Dictionary(uniqueKeysWithValues: mergedTracks.map { ($0.id, $0) })
-                        for track in restoredTracks {
-                            tracksByID[track.id] = track
-                        }
-                        mergedTracks = orderedIDs.compactMap { tracksByID[$0] }
-                    }
-                } catch {
-                    // Keep the local cache even if the server-side refresh fails.
-                }
-            }
-
-            return mergedTracks
-        }
-
-        hydrationTaskID = taskID
-        hydrationTask = task
-
-        likedTracks = mergeHydratedTracks(await task.value)
-        if hydrationTaskID == taskID {
-            hydrationTask = nil
-            hydrationTaskID = nil
-        }
-
-        lastHydratedFingerprint = fingerprint
-        lastHydratedAt = Date()
-        normalizeLikedState()
-        rebuildDerivedCollections()
-        saveLiked()
     }
 
     // MARK: - Persistence
 
-    private func loadLiked() {
-        if let data = UserDefaults.standard.data(forKey: likedIdsKey),
-           let ids = try? decoder.decode([String].self, from: data) {
-            likedTrackIds = Set(ids)
-        }
-        if let data = UserDefaults.standard.data(forKey: likedOrderKey),
-           let order = try? decoder.decode([String].self, from: data) {
-            likedTrackOrder = order
-        }
-        // Migrate: if order is empty but ids exist, build order from tracks array
-        if likedTrackOrder.isEmpty && !likedTrackIds.isEmpty {
-            likedTrackOrder = Array(likedTrackIds)
-        }
-        if let data = UserDefaults.standard.data(forKey: likedTracksKey),
-           let tracks = try? decoder.decode([Track].self, from: data) {
-            likedTracks = tracks
-        }
-        if let data = UserDefaults.standard.data(forKey: pendingUnlikedIdsKey),
-           let ids = try? decoder.decode([String].self, from: data) {
-            pendingUnlikedTrackIds = Set(ids)
+    /// Writes pending state to disk immediately (call when backgrounding).
+    func flushPendingWrites() {
+        store.flush()
+    }
+
+    private func persist() {
+        store.save(LibrarySnapshot(
+            likedTrackOrder: likedTrackOrder,
+            likedTracks: likedTracks,
+            pendingLikedTrackIds: Array(pendingLikedTrackIds),
+            pendingUnlikedTrackIds: Array(pendingUnlikedTrackIds),
+            lastServerSyncAt: lastServerSyncAt,
+            syncedUserId: syncedUserId
+        ))
+    }
+
+    private func loadPersistedState() {
+        let snapshot: LibrarySnapshot
+        var needsSave = false
+        if let stored = store.load() {
+            snapshot = stored
+        } else {
+            snapshot = migrateFromUserDefaults()
+            needsSave = true
         }
 
-        let migratedLegacyLikes = migrateLegacyMMKVLikedIdsIfNeeded()
-        likedTracks = likedTracks.map(api.normalizedTrack)
+        likedTrackOrder = snapshot.likedTrackOrder
+        likedTrackIds = Set(snapshot.likedTrackOrder)
+        likedTracks = snapshot.likedTracks.map(api.normalizedTrack)
+        pendingLikedTrackIds = Set(snapshot.pendingLikedTrackIds)
+        pendingUnlikedTrackIds = Set(snapshot.pendingUnlikedTrackIds)
+        lastServerSyncAt = snapshot.lastServerSyncAt
+        syncedUserId = snapshot.syncedUserId
+
+        if migrateLegacyMMKVLikedIdsIfNeeded() { needsSave = true }
         normalizeLikedState()
         rebuildDerivedCollections()
-        if migratedLegacyLikes {
-            markLikesSyncDirty()
-            saveLiked()
-        }
+        if needsSave { persist() }
     }
 
-    private func saveLiked() {
-        if let data = try? encoder.encode(Array(likedTrackIds)) {
-            UserDefaults.standard.set(data, forKey: likedIdsKey)
+    /// One-time move of the old UserDefaults blobs into the snapshot file.
+    /// Every local like is marked pending so nothing liked offline is lost.
+    private func migrateFromUserDefaults() -> LibrarySnapshot {
+        let defaults = UserDefaults.standard
+        let decoder = JSONDecoder()
+        func decoded<T: Decodable>(_ type: T.Type, _ key: String) -> T? {
+            defaults.data(forKey: key).flatMap { try? decoder.decode(type, from: $0) }
         }
-        if let data = try? encoder.encode(likedTrackOrder) {
-            UserDefaults.standard.set(data, forKey: likedOrderKey)
+
+        let ids = decoded([String].self, "liked_track_ids") ?? []
+        var order = decoded([String].self, "liked_track_order") ?? []
+        if order.isEmpty { order = ids }
+        let tracks = decoded([Track].self, "liked_tracks") ?? []
+        let pendingUnliked = decoded([String].self, "pending_unliked_track_ids") ?? []
+
+        for key in ["liked_track_ids", "liked_track_order", "liked_tracks", "pending_unliked_track_ids"] {
+            defaults.removeObject(forKey: key)
         }
-        if let data = try? encoder.encode(likedTracks) {
-            UserDefaults.standard.set(data, forKey: likedTracksKey)
-        }
-        if let data = try? encoder.encode(Array(pendingUnlikedTrackIds)) {
-            UserDefaults.standard.set(data, forKey: pendingUnlikedIdsKey)
-        }
+        return LibrarySnapshot(
+            likedTrackOrder: order,
+            likedTracks: tracks,
+            pendingLikedTrackIds: order,
+            pendingUnlikedTrackIds: pendingUnliked
+        )
     }
 
+    /// O(n): keeps order, ID set and track list consistent and duplicate-free.
     private func normalizeLikedState() {
-        // Keep order in sync with ids
-        likedTrackOrder = likedTrackOrder.filter { likedTrackIds.contains($0) }
-        // Add any ids missing from order (e.g. from server sync)
-        for id in likedTrackIds where !likedTrackOrder.contains(id) {
-            likedTrackOrder.append(id)
+        var seen = Set<String>()
+        var order = likedTrackOrder.filter { likedTrackIds.contains($0) && seen.insert($0).inserted }
+        for id in likedTrackIds where !seen.contains(id) {
+            order.append(id)
         }
+        likedTrackOrder = order
+        let tracksByID = trackIndex()
+        likedTracks = order.compactMap { tracksByID[$0] }
+    }
 
-        if likedTrackIds.isEmpty {
-            likedTracks = []
-            return
-        }
-
-        // Reorder likedTracks to match likedTrackOrder
-        let trackById = Dictionary(likedTracks.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-        likedTracks = likedTrackOrder.compactMap { trackById[$0] }
+    private func trackIndex() -> [String: Track] {
+        Dictionary(likedTracks.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
     }
 
     private func rebuildDerivedCollections() {
         displayedLikedTracks = likedTracks
 
-        // Debounce: cancel pending rebuild and schedule new one after 150ms
+        // Debounced: bursts of changes (sync, hydration, rapid likes) collapse
+        // into one album/artist regrouping 150 ms after the last change.
         rebuildTask?.cancel()
-        let tracks = displayedLikedTracks
+        let tracks = likedTracks
         rebuildTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
             let (albums, artists) = await Task.detached(priority: .userInitiated) {
                 (Self.computeAlbums(from: tracks), Self.computeArtists(from: tracks))
             }.value
@@ -337,30 +375,25 @@ final class LibraryStore {
         }
     }
 
+    private nonisolated static func albumTitle(for track: Track) -> String {
+        let album = normalizedLibraryValue(track.album)
+        if !album.isEmpty { return album }
+        let title = normalizedLibraryValue(track.title)
+        return title.isEmpty ? String(localized: "Untitled Single") : title
+    }
+
     private nonisolated static func computeAlbums(from tracks: [Track]) -> [Album] {
         let grouped = Dictionary(grouping: tracks) { track in
             let artist = normalizedLibraryValue(track.artist)
-            let album = {
-                let a = normalizedLibraryValue(track.album)
-                if !a.isEmpty { return a }
-                let t = normalizedLibraryValue(track.title)
-                return t.isEmpty ? "Untitled Single" : t
-            }()
-            return "\(track.source.rawValue)|\(artist.lowercased())|\(album.lowercased())"
+            return "\(track.source.rawValue)|\(artist.lowercased())|\(albumTitle(for: track).lowercased())"
         }
         return grouped.values
             .compactMap { tracks in
                 guard let first = tracks.first else { return nil }
                 let artist = normalizedLibraryValue(first.artist)
                 guard !artist.isEmpty else { return nil }
-                let album = {
-                    let a = normalizedLibraryValue(first.album)
-                    if !a.isEmpty { return a }
-                    let t = normalizedLibraryValue(first.title)
-                    return t.isEmpty ? "Untitled Single" : t
-                }()
                 return Album(
-                    album: album,
+                    album: albumTitle(for: first),
                     artist: artist,
                     trackCount: tracks.count,
                     coverUrl: tracks.compactMap(\.artwork).first,
@@ -385,16 +418,10 @@ final class LibraryStore {
                 guard let first = tracks.first else { return nil }
                 let artist = normalizedLibraryValue(first.artist)
                 guard !artist.isEmpty else { return nil }
-                let albumCount = Set(tracks.map { track in
-                    let a = normalizedLibraryValue(track.album)
-                    if !a.isEmpty { return a }
-                    let t = normalizedLibraryValue(track.title)
-                    return t.isEmpty ? "Untitled Single" : t
-                }).count
                 return Artist(
                     artist: artist,
                     trackCount: tracks.count,
-                    albumCount: albumCount,
+                    albumCount: Set(tracks.map(albumTitle(for:))).count,
                     coverUrl: tracks.compactMap(\.artwork).first
                 )
             }
@@ -406,40 +433,13 @@ final class LibraryStore {
             }
     }
 
-    private func hydrationFingerprint() -> String {
-        likedTrackIds.sorted().joined(separator: "|")
-    }
-
-    private func mergeHydratedTracks(_ hydratedTracks: [Track]) -> [Track] {
-        var tracksByID = Dictionary(uniqueKeysWithValues: likedTracks.map { ($0.id, $0) })
-        for track in hydratedTracks {
-            tracksByID[track.id] = track
-        }
-        return likedTrackOrder.compactMap { tracksByID[$0] }
-    }
-
-    private func shouldHydrate(force: Bool, fingerprint: String) -> Bool {
-        if force { return !likedTrackIds.isEmpty }
-        if likedTrackIds.isEmpty { return false }
-        if displayedLikedTracks.count != likedTrackIds.count { return true }
-        if lastHydratedFingerprint != fingerprint { return true }
-        guard let lastHydratedAt else { return true }
-        return Date().timeIntervalSince(lastHydratedAt) > hydrationTTL
-    }
-
-    private func markHydrationDirty() {
-        lastHydratedFingerprint = nil
-        lastHydratedAt = nil
-    }
-
-    private func markLikesSyncDirty() {
-        syncedFingerprint = nil
-    }
+    // MARK: - Legacy migration
 
     private func migrateLegacyMMKVLikedIdsIfNeeded() -> Bool {
         let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: legacyLikedIdsMigratedKey) else { return false }
-        defer { defaults.set(true, forKey: legacyLikedIdsMigratedKey) }
+        let migratedKey = "legacy_mmkv_liked_track_ids_migrated"
+        guard !defaults.bool(forKey: migratedKey) else { return false }
+        defer { defaults.set(true, forKey: migratedKey) }
 
         guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
             return false
@@ -457,6 +457,7 @@ final class LibraryStore {
             guard !trimmed.isEmpty, !likedTrackIds.contains(trimmed) else { continue }
             likedTrackIds.insert(trimmed)
             likedTrackOrder.append(trimmed)
+            pendingLikedTrackIds.insert(trimmed)
             changed = true
         }
         return changed

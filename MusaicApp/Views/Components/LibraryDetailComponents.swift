@@ -5,6 +5,7 @@ struct ArtistDetailBanner: View {
     let artistName: String
     let albumCount: Int
     let trackCount: Int
+    var subtitle: String? = nil
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -54,9 +55,10 @@ struct ArtistDetailBanner: View {
                     .multilineTextAlignment(.center)
                     .shadow(color: .black.opacity(0.5), radius: 4, y: 2)
 
-                Text("\(albumCount) albums • \(trackCount) tracks")
+                Text([subtitle, String(localized: "\(albumCount) albums • \(trackCount) tracks")].compactMap { $0 }.joined(separator: " • "))
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Color.white.opacity(0.75))
+                    .lineLimit(1)
             }
             .padding(.bottom, 20)
         }

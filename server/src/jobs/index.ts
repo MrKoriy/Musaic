@@ -11,8 +11,16 @@ import { runReleaseDetectionJob } from "./release-detection.js";
 import { runDownloadsEvictionJob } from "./downloads-eviction.js";
 import { runLoudnessScanJob } from "./loudness-scan.js";
 import { runDbIntegrityJob } from "./db-integrity.js";
+import { registerLyricsPrefetchHandler } from "./lyrics-prefetch.js";
+import { registerLyricsGenerateHandler } from "../providers/lyrics-pipeline.js";
 
 let registered = false;
+
+/** Durable task handlers; registered before the worker starts so queued work resumes. */
+export function registerTaskHandlers(): void {
+  registerLyricsGenerateHandler();
+  registerLyricsPrefetchHandler();
+}
 
 export function registerRecommendationJobs(): void {
   if (registered) return;

@@ -22,7 +22,7 @@ struct ImportPlaylistView: View {
                         Text("Import Playlist")
                             .font(.system(size: 28, weight: .bold, design: .rounded))
                             .foregroundStyle(Color.textPrimary)
-                        Text("Paste a link from Yandex Music. Tracks will be matched on SoundCloud and VK.")
+                        Text(String(localized: "Paste a link from Yandex Music. Tracks are matched in your library and enabled sources."))
                             .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(Color.textSecondary)
                     }
@@ -86,7 +86,7 @@ struct ImportPlaylistView: View {
                                 if loading {
                                     ProgressView().tint(Color.bgPrimary).scaleEffect(0.8)
                                 }
-                                Text(loading ? "Searching..." : "Find Tracks")
+                                Text(loading ? String(localized: "Searching…") : String(localized: "Find Tracks"))
                                     .font(.system(size: 14, weight: .bold))
                             }
                             .foregroundStyle(Color.bgPrimary)
@@ -114,7 +114,7 @@ struct ImportPlaylistView: View {
                         HStack(spacing: 8) {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundStyle(.green)
-                            Text("Saved as \"\(savedName)\"")
+                            Text(String(localized: "Saved as \"\(savedName)\""))
                                 .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(Color.textPrimary)
                         }
@@ -140,10 +140,10 @@ struct ImportPlaylistView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(result.title ?? "Imported Playlist")
+                    Text(result.title ?? String(localized: "Imported Playlist"))
                         .font(.system(size: 20, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.textPrimary)
-                    Text("\(result.matchedCount ?? 0)/\(result.totalTracks ?? 0) tracks found")
+                    Text(String(localized: "\(result.matchedCount ?? 0)/\(result.totalTracks ?? 0) tracks found"))
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle((result.matchedCount ?? 0) > 0 ? .green : Color.textSecondary)
                 }
@@ -156,7 +156,7 @@ struct ImportPlaylistView: View {
                             if saving {
                                 ProgressView().tint(Color.bgPrimary).scaleEffect(0.7)
                             }
-                            Text(saving ? "Saving..." : "Save Playlist")
+                            Text(saving ? String(localized: "Saving…") : String(localized: "Save Playlist"))
                                 .font(.system(size: 13, weight: .bold))
                         }
                         .foregroundStyle(Color.bgPrimary)
@@ -170,16 +170,15 @@ struct ImportPlaylistView: View {
             .padding(.horizontal, 18)
 
             LazyVStack(spacing: 8) {
-                ForEach(result.matches.indices, id: \.self) { idx in
-                    let match = result.matches[idx]
-                    ImportTrackRow(match: match)
+                ForEach(result.identifiedMatches) { item in
+                    ImportTrackRow(match: item.match)
                 }
             }
         }
     }
 
-    @MainActor
     private func importPlaylist() async {
+        let link = url.trimmingCharacters(in: .whitespacesAndNewlines)
         loading = true
         error = nil
         importResult = nil
@@ -187,123 +186,39 @@ struct ImportPlaylistView: View {
         defer { loading = false }
 
         do {
-            struct Body: Codable { let url: String }
-            guard let urlObj = URL(string: "\(api.serverURL)/api/import/playlist") else {
-                self.error = "Invalid server URL"
-                return
-            }
-            var request = URLRequest(url: urlObj)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            if let token = SettingsStore.shared.authToken {
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            }
-            request.httpBody = try? JSONEncoder().encode(Body(url: url))
-            request.timeoutInterval = 300
-
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode) else {
-                self.error = "No response"
-                return
-            }
-
-            let result = try JSONDecoder().decode(ImportResult.self, from: data)
-            if let errMsg = result.error {
-                self.error = errMsg
+            let result = try await api.importPlaylist(url: link)
+            if let message = result.error {
+                error = message
             } else {
                 importResult = result
-                playlistName = result.title ?? "Imported Playlist"
+                playlistName = result.title ?? String(localized: "Imported Playlist")
             }
+        } catch where error.isCancellation {
+            return
         } catch {
-            self.error = "Failed: \(error.localizedDescription)"
+            self.error = error.localizedDescription
         }
     }
 
-    @MainActor
     private func saveAsPlaylist(_ result: ImportResult) async {
-        saving = true
-        defer { saving = false }
-
         let matchedIds = result.matches
             .filter { $0.confidence != "none" }
             .compactMap { $0.match?.id }
-
         guard !matchedIds.isEmpty else { return }
 
+        saving = true
+        defer { saving = false }
         do {
-            struct SaveBody: Codable { let name: String; let trackIds: [String] }
-            guard let urlObj = URL(string: "\(api.serverURL)/api/import/save") else {
-                self.error = "Invalid server URL"
-                return
-            }
-            var request = URLRequest(url: urlObj)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            if let token = SettingsStore.shared.authToken {
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            }
-            request.httpBody = try? JSONEncoder().encode(SaveBody(name: playlistName, trackIds: matchedIds))
-
-            let (data, _) = try await URLSession.shared.data(for: request)
-            let resp = try JSONDecoder().decode(SaveResponse.self, from: data)
-            if resp.ok == true {
+            let response = try await api.saveImportedPlaylist(name: playlistName, trackIds: matchedIds)
+            if response.ok == true {
                 savedName = playlistName
+            } else {
+                error = String(localized: "The server didn't save the playlist.")
             }
+        } catch where error.isCancellation {
+            return
         } catch {
-            self.error = "Save failed: \(error.localizedDescription)"
+            self.error = String(localized: "Save failed: \(error.localizedDescription)")
         }
     }
-}
-
-// MARK: - Response Models
-
-struct ImportResult: Codable {
-    let source: String?
-    let title: String?
-    let totalTracks: Int?
-    let matchedCount: Int?
-    let matches: [ImportMatch]
-    let error: String?
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        source = try c.decodeIfPresent(String.self, forKey: .source)
-        title = try c.decodeIfPresent(String.self, forKey: .title)
-        totalTracks = try c.decodeIfPresent(Int.self, forKey: .totalTracks)
-        matchedCount = try c.decodeIfPresent(Int.self, forKey: .matchedCount)
-        matches = (try? c.decode([ImportMatch].self, forKey: .matches)) ?? []
-        error = try c.decodeIfPresent(String.self, forKey: .error)
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case source, title, totalTracks, matchedCount, matches, error
-    }
-}
-
-struct ImportMatch: Codable {
-    let title: String
-    let artist: String
-    let album: String?
-    let durationSec: Int?
-    let confidence: String
-    let match: ImportMatchTrack?
-    let matchSource: String?
-}
-
-struct ImportMatchTrack: Codable {
-    let id: String
-    let title: String
-    let artist: String
-    let source: String?
-
-    enum CodingKeys: String, CodingKey {
-        case id, title, artist, source
-    }
-}
-
-struct SaveResponse: Codable {
-    let ok: Bool?
-    let id: String?
-    let trackCount: Int?
 }

@@ -1,120 +1,217 @@
 import SwiftUI
 
+/// What an artist page was opened for: a library artist (name only) or a
+/// search result (with provider IDs).
+enum ArtistProfileSubject: Hashable {
+    case library(Artist)
+    case search(SearchArtist)
+
+    var name: String {
+        switch self {
+        case .library(let artist): return artist.artist
+        case .search(let artist): return artist.artist
+        }
+    }
+
+    var coverUrl: String? {
+        switch self {
+        case .library(let artist): return artist.coverUrl
+        case .search(let artist): return artist.coverUrl
+        }
+    }
+
+    var id: String {
+        switch self {
+        case .library(let artist): return "library:\(artist.id)"
+        case .search(let artist): return "search:\(artist.id)"
+        }
+    }
+}
+
 struct ArtistDetailView: View {
     let artist: Artist
     @Binding var showNowPlaying: Bool
 
-    /// Server-hydrated discography (VK + SoundCloud + local cache). Replaces the
-    /// previous "liked-tracks-only" view so Popular Tracks and Albums reflect the
-    /// real artist catalog, not just what the user has hearted.
+    var body: some View {
+        ArtistProfileScreen(subject: .library(artist), showNowPlaying: $showNowPlaying)
+    }
+}
+
+struct ArtistSourceOption: Identifiable, Equatable {
+    let id: String
+    let label: String
+}
+
+struct ArtistAlbumGroup: Identifiable {
+    let id: String
+    let title: String
+    let artist: String
+    let coverUrl: String?
+    let source: String?
+    let tracks: [Track]
+}
+
+/// Everything the artist page renders, derived once per data/filter change
+/// instead of on every body evaluation.
+struct ArtistPageModel {
+    var allTracks: [Track] = []
+    var sourceOptions = [ArtistSourceOption(id: "all", label: artistSourceDisplayName("all"))]
+    var visibleTracks: [Track] = []
+    var popularTracks: [Track] = []
+    var albums: [ArtistAlbumGroup] = []
+
+    static func build(
+        artistName: String,
+        serverTracks: [Track],
+        fallbackTracks: [Track],
+        serverAlbums: [Album],
+        availableSources: [String],
+        selectedSource: String,
+        likedIds: Set<String>
+    ) -> ArtistPageModel {
+        let base = serverTracks.isEmpty ? fallbackTracks : serverTracks
+        var model = ArtistPageModel()
+        model.allTracks = base.sorted(by: artistTrackSort)
+        let deduplicated = artistDisplayTracks(model.allTracks)
+
+        var countBySource: [String: Int] = [:]
+        for track in model.allTracks { countBySource[track.source.rawValue, default: 0] += 1 }
+        var seenSources = Set<String>()
+        let sources = (availableSources.isEmpty ? Array(countBySource.keys) : availableSources)
+            .filter { seenSources.insert($0).inserted }
+            .sorted { artistSourceRank($0) < artistSourceRank($1) }
+        model.sourceOptions = [ArtistSourceOption(id: "all", label: label(for: "all", count: deduplicated.count))]
+            + sources.map { ArtistSourceOption(id: $0, label: label(for: $0, count: countBySource[$0] ?? 0)) }
+
+        model.visibleTracks = selectedSource == "all"
+            ? deduplicated
+            : model.allTracks.filter { $0.source.rawValue == selectedSource }
+
+        // Server order approximates popularity; liked tracks float to the top.
+        let visibleIDs = Set(model.visibleTracks.map(\.id))
+        let ranked = base.filter { visibleIDs.contains($0.id) }
+        var seenTitles = Set<String>()
+        let unique = ranked.filter { seenTitles.insert("\(normalizedArtistText($0.artist))|\(normalizedArtistText($0.title))").inserted }
+        model.popularTracks = unique.filter { likedIds.contains($0.id) } + unique.filter { !likedIds.contains($0.id) }
+
+        model.albums = albumGroups(
+            artistName: artistName,
+            tracks: model.visibleTracks,
+            serverAlbums: serverAlbums,
+            selectedSource: selectedSource
+        )
+        return model
+    }
+
+    private static func label(for source: String, count: Int) -> String {
+        count > 0 ? "\(artistSourceDisplayName(source)) \(count)" : artistSourceDisplayName(source)
+    }
+
+    /// O(n) grouping of tracks by album title, enriched with server album
+    /// metadata (covers, albums whose tracks aren't loaded yet).
+    private static func albumGroups(
+        artistName: String,
+        tracks: [Track],
+        serverAlbums: [Album],
+        selectedSource: String
+    ) -> [ArtistAlbumGroup] {
+        var tracksByAlbum: [String: [Track]] = [:]
+        var titleByKey: [String: String] = [:]
+        for track in tracks {
+            let title = normalizedLibraryText(track.album)
+            guard !title.isEmpty else { continue }
+            let key = normalizedArtistText(title)
+            tracksByAlbum[key, default: []].append(track)
+            if titleByKey[key] == nil { titleByKey[key] = title }
+        }
+
+        var metaByKey: [String: Album] = [:]
+        for album in serverAlbums
+        where selectedSource == "all" || album.source == selectedSource || album.source == "mixed" {
+            let key = normalizedArtistText(album.album)
+            guard !key.isEmpty, metaByKey[key] == nil else { continue }
+            metaByKey[key] = album
+            if titleByKey[key] == nil { titleByKey[key] = album.album }
+        }
+
+        return titleByKey.map { key, title in
+            let albumTracks = tracksByAlbum[key] ?? []
+            let meta = metaByKey[key]
+            let trackSources = Set(albumTracks.map(\.source.rawValue))
+            let source = trackSources.count > 1 ? "mixed" : (trackSources.first ?? meta?.source)
+            return ArtistAlbumGroup(
+                id: key,
+                title: title,
+                artist: meta?.artist ?? artistName,
+                coverUrl: meta?.coverUrl ?? albumTracks.first?.artwork,
+                source: source,
+                tracks: albumTracks
+            )
+        }
+        .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+}
+
+struct ArtistProfileScreen: View {
+    let subject: ArtistProfileSubject
+    @Binding var showNowPlaying: Bool
+
     @State private var profileArtist: SearchArtist?
-    @State private var profileTracks: [Track] = []
-    @State private var profileAlbums: [Album] = []
+    @State private var serverTracks: [Track] = []
+    @State private var serverAlbums: [Album] = []
     @State private var availableSources: [String] = []
     @State private var selectedSource = "all"
-    @State private var loadingProfile = true
-    @State private var profileError: String?
+    @State private var loading = true
+    @State private var hasLoaded = false
+    @State private var loadError: String?
     @State private var sourceErrors: [String: String] = [:]
     @State private var playlistPickerTrack: Track?
+    @State private var model = ArtistPageModel()
 
+    private static let popularLimit = 10
     private let api = APIService.shared
     private let player = PlayerStore.shared
     private let library = LibraryStore.shared
     private let settings = SettingsStore.shared
 
-    private var enabledSources: [String] {
-        ["local"]
-            + (settings.sourceSoundcloud ? ["soundcloud"] : [])
-            + (settings.sourceVK ? ["vk"] : [])
-    }
-
-    /// Server tracks first; fall back to liked-only if the server returned nothing
-    /// (e.g. an offline-only library artist).
-    private var allTracks: [Track] {
-        if !profileTracks.isEmpty { return profileTracks.sorted(by: artistTrackSort) }
-        return library.displayedLikedTracks
-            .filter { trackBelongs(to: artist, track: $0) }
-            .sorted(by: artistTrackSort)
-    }
-
-    private var sourceOptions: [String] {
-        let sources = availableSources.isEmpty
-            ? Array(Set(allTracks.map { $0.source.rawValue })).sorted { artistSourceRank($0) < artistSourceRank($1) }
-            : availableSources.sorted { artistSourceRank($0) < artistSourceRank($1) }
-        return sources.isEmpty ? ["all"] : ["all"] + sources
-    }
-
-    private var filteredTracks: [Track] {
-        selectedSource == "all"
-            ? artistDisplayTracks(allTracks)
-            : allTracks.filter { $0.source.rawValue == selectedSource }.sorted(by: artistTrackSort)
-    }
-
-    /// Top tracks ordered by liked-status first (familiar hits the user already
-    /// approved), then alphabetical for stable display. With server data this
-    /// surfaces real popular tracks instead of a slice of the liked list.
-    private var popularTracks: [Track] {
-        let scored = filteredTracks.map { ($0, library.isLiked($0.id) ? 0 : 1) }
-        let sorted = scored.sorted { lhs, rhs in
-            if lhs.1 != rhs.1 { return lhs.1 < rhs.1 }
-            return lhs.0.title.localizedCaseInsensitiveCompare(rhs.0.title) == .orderedAscending
-        }
-        return Array(sorted.prefix(5).map(\.0))
-    }
-
-    /// Album groups: prefer server-returned albums when available, falling back
-    /// to grouping the displayed tracks by album title.
-    private var albumGroups: [(album: String, coverUrl: String?, source: String?, tracks: [Track])] {
-        let visibleTracks = filteredTracks
-        var seen = Set<String>()
-        var groups: [(album: String, coverUrl: String?, source: String?, tracks: [Track])] = []
-        for track in visibleTracks {
-            let albumTitle = libraryAlbumTitle(for: track)
-            let key = normalizedArtistText(albumTitle)
-            if !seen.contains(key) {
-                seen.insert(key)
-                let albumTracks = visibleTracks.filter { libraryAlbumTitle(for: $0) == albumTitle }
-                let albumMeta = profileAlbums.first {
-                    normalizedArtistText($0.album) == normalizedArtistText(albumTitle)
-                        && (selectedSource == "all" || $0.source == selectedSource || $0.source == "mixed")
-                }
-                let sources = Set(albumTracks.map { $0.source.rawValue })
-                let source = sources.count > 1 ? "mixed" : albumTracks.first?.source.rawValue
-                groups.append((
-                    album: albumTitle,
-                    coverUrl: albumMeta?.coverUrl ?? albumTracks.first?.artwork,
-                    source: source,
-                    tracks: albumTracks
-                ))
-            }
-        }
-        return groups.sorted { $0.album.localizedCaseInsensitiveCompare($1.album) == .orderedAscending }
-    }
-
     private var bannerArtworkURL: String? {
-        profileArtist?.coverUrl ?? artist.coverUrl ?? filteredTracks.first?.artwork ?? allTracks.first?.artwork
+        api.artworkURL(for: profileArtist?.coverUrl ?? subject.coverUrl)
+            ?? model.visibleTracks.first?.artwork
+            ?? model.allTracks.first?.artwork
+    }
+
+    private var bannerSubtitle: String? {
+        guard case .search(let artist) = subject else { return nil }
+        let display = profileArtist ?? artist
+        if let subtitle = display.subtitle, !subtitle.isEmpty { return subtitle }
+        return display.sourceLabel
     }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
                 ArtistDetailBanner(
-                    artworkURL: api.artworkURL(for: bannerArtworkURL),
-                    artistName: artist.artist,
-                    albumCount: albumGroups.count,
-                    trackCount: filteredTracks.count
+                    artworkURL: bannerArtworkURL,
+                    artistName: profileArtist?.artist ?? subject.name,
+                    albumCount: model.albums.count,
+                    trackCount: model.visibleTracks.count,
+                    subtitle: bannerSubtitle
                 )
 
                 VStack(spacing: 24) {
-                    if loadingProfile && allTracks.isEmpty {
+                    if loading && model.allTracks.isEmpty {
                         ProgressView()
                             .tint(Color.textPrimary)
                             .padding(.top, 40)
-                    } else if allTracks.isEmpty {
-                        ContentUnavailableView("No Tracks", systemImage: "person.fill.questionmark", description: Text(profileError ?? "No tracks were found for this artist."))
-                            .padding(.top, 40)
+                    } else if model.allTracks.isEmpty {
+                        ContentUnavailableView(
+                            String(localized: "No Tracks"),
+                            systemImage: "person.fill.questionmark",
+                            description: Text(loadError ?? String(localized: "No tracks were found for this artist."))
+                        )
+                        .padding(.top, 40)
                     } else {
-                        artistSourceFilter
+                        sourceFilter
                             .padding(.top, 18)
 
                         if !sourceErrors.isEmpty {
@@ -122,109 +219,14 @@ struct ArtistDetailView: View {
                                 .padding(.horizontal, 18)
                         }
 
-                        artistQueueButtons(for: filteredTracks)
+                        PlayShuffleButtons(tracks: model.visibleTracks) { showNowPlaying = true }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 18)
 
-                        if !popularTracks.isEmpty {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("Popular Tracks")
-                                    .font(.system(size: 18, weight: .bold, design: .rounded))
-                                    .foregroundStyle(Color.textPrimary)
-                                    .padding(.horizontal, 18)
+                        popularSection
 
-                                LazyVStack(spacing: 10) {
-                                    ForEach(Array(popularTracks.enumerated()), id: \.element.id) { idx, track in
-                                        TrackRow(
-                                            track: track,
-                                            index: idx + 1,
-                                            isCurrent: player.currentTrack?.id == track.id,
-                                            isLiked: library.isLiked(track.id),
-                                            onTap: {
-                                                let startIdx = filteredTracks.firstIndex(where: { $0.id == track.id }) ?? 0
-                                                if player.setQueue(filteredTracks, startAt: startIdx) {
-                                                    showNowPlaying = true
-                                                }
-                                            },
-                                            onLike: { library.toggleLike(track: track) },
-                                            onAddToQueue: { player.addToQueue(track) },
-                                            onAddToPlaylist: { playlistPickerTrack = track }
-                                        )
-                                    }
-                                }
-
-                                if filteredTracks.count > popularTracks.count {
-                                    NavigationLink {
-                                        ArtistAllTracksView(
-                                            artistName: artist.artist,
-                                            tracks: filteredTracks,
-                                            showNowPlaying: $showNowPlaying
-                                        )
-                                    } label: {
-                                        HStack(spacing: 8) {
-                                            Text("Все песни (\(filteredTracks.count))")
-                                                .font(.system(size: 14, weight: .semibold))
-                                                .foregroundStyle(Color.textPrimary)
-                                            Image(systemName: "chevron.right")
-                                                .font(.system(size: 12, weight: .bold))
-                                                .foregroundStyle(Color.textSecondary)
-                                        }
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 12)
-                                        .frame(maxWidth: .infinity)
-                                        .glassCard(cornerRadius: 18, intensity: 0.08)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .padding(.horizontal, 18)
-                                    .padding(.top, 4)
-                                }
-                            }
-                        }
-
-                        if !albumGroups.isEmpty {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("Albums")
-                                    .font(.system(size: 18, weight: .bold, design: .rounded))
-                                    .foregroundStyle(Color.textPrimary)
-                                    .padding(.horizontal, 18)
-
-                                LazyVGrid(columns: [.init(.flexible()), .init(.flexible())], spacing: 14) {
-                                    ForEach(albumGroups, id: \.album) { group in
-                                        NavigationLink {
-                                            AlbumDetailView(
-                                                albumTitle: group.album,
-                                                artistName: artist.artist,
-                                                coverUrl: group.coverUrl,
-                                                source: group.source,
-                                                preloadedTracks: group.tracks,
-                                                showNowPlaying: $showNowPlaying
-                                            )
-                                        } label: {
-                                            VStack(alignment: .leading, spacing: 10) {
-                                                ArtworkTile(urlString: api.artworkURL(for: group.coverUrl), icon: "opticaldisc")
-                                                    .aspectRatio(1, contentMode: .fit)
-                                                VStack(alignment: .leading, spacing: 4) {
-                                                    Text(group.album)
-                                                        .font(.system(size: 13, weight: .semibold))
-                                                        .foregroundStyle(Color.textPrimary)
-                                                        .lineLimit(2)
-                                                        .multilineTextAlignment(.leading)
-                                                        .fixedSize(horizontal: false, vertical: true)
-                                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                                    Text("\(artistSourceDisplayName(group.source)) • \(group.tracks.count) tracks")
-                                                        .font(.system(size: 11, weight: .medium))
-                                                        .foregroundStyle(Color.textSecondary)
-                                                        .lineLimit(1)
-                                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                                }
-                                                .padding(.horizontal, 12)
-                                                .padding(.bottom, 12)
-                                            }
-                                            .glassCard(cornerRadius: 22, intensity: 0.10)
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-                                }
-                                .padding(.horizontal, 18)
-                            }
+                        if !model.albums.isEmpty {
+                            albumsSection
                         }
                     }
                 }
@@ -232,34 +234,143 @@ struct ArtistDetailView: View {
             }
         }
         .background(AppBackdrop())
-        .navigationTitle(artist.artist)
+        .navigationTitle(profileArtist?.artist ?? subject.name)
         .navigationBarTitleDisplayModeCompat()
-        .task {
-            await library.hydrateLikedTracksIfNeeded()
-            await loadServerProfile()
+        .task(id: subject.id) {
+            guard !hasLoaded else { return }
+            await load()
         }
+        .onChange(of: selectedSource) { rebuildModel() }
+        .onChange(of: library.likedTrackIds) { rebuildModel() }
         .sheet(item: $playlistPickerTrack) { track in
             PlaylistPickerView(track: track)
         }
     }
 
-    private var artistSourceFilter: some View {
+    private var sourceFilter: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
-                ForEach(sourceOptions, id: \.self) { source in
+                ForEach(model.sourceOptions) { option in
                     Button {
-                        selectedSource = source
+                        selectedSource = option.id
                     } label: {
                         HStack(spacing: 7) {
-                            Image(systemName: artistSourceIcon(source))
+                            Image(systemName: artistSourceIcon(option.id))
                                 .font(.system(size: 12, weight: .semibold))
-                            Text(sourceFilterLabel(source))
+                            Text(option.label)
                                 .font(.system(size: 13, weight: .semibold))
                         }
                         .foregroundStyle(Color.textPrimary)
                         .padding(.horizontal, 15)
                         .padding(.vertical, 10)
-                        .liquidChipSurface(selected: selectedSource == source)
+                        .liquidChipSurface(selected: selectedSource == option.id)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(selectedSource == option.id ? .isSelected : [])
+                }
+            }
+            .padding(.horizontal, 18)
+        }
+    }
+
+    @ViewBuilder
+    private var popularSection: some View {
+        let popular = Array(model.popularTracks.prefix(Self.popularLimit))
+        if !popular.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(String(localized: "Popular Tracks"))
+                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.textPrimary)
+                    .padding(.horizontal, 18)
+
+                LazyVStack(spacing: 10) {
+                    ForEach(popular.listItems) { item in
+                        TrackRow(
+                            track: item.track,
+                            index: item.index + 1,
+                            isCurrent: player.currentTrack?.id == item.track.id,
+                            isLiked: library.isLiked(item.track.id),
+                            onTap: {
+                                if player.setQueue(model.popularTracks, startAt: item.index) {
+                                    showNowPlaying = true
+                                }
+                            },
+                            onLike: { library.toggleLike(track: item.track) },
+                            onAddToQueue: { player.addToQueue(item.track) },
+                            onAddToPlaylist: { playlistPickerTrack = item.track }
+                        )
+                    }
+                }
+
+                if model.visibleTracks.count > popular.count {
+                    NavigationLink {
+                        ArtistAllTracksView(
+                            artistName: subject.name,
+                            tracks: model.visibleTracks,
+                            showNowPlaying: $showNowPlaying
+                        )
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text(String(localized: "All songs (\(model.visibleTracks.count))"))
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Color.textPrimary)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(Color.textSecondary)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: .infinity)
+                        .glassCard(cornerRadius: 18, intensity: 0.08)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 4)
+                }
+            }
+        }
+    }
+
+    private var albumsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(String(localized: "Albums"))
+                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .foregroundStyle(Color.textPrimary)
+                .padding(.horizontal, 18)
+
+            LazyVGrid(columns: [.init(.flexible()), .init(.flexible())], spacing: 14) {
+                ForEach(model.albums) { group in
+                    NavigationLink {
+                        AlbumDetailView(
+                            albumTitle: group.title,
+                            artistName: group.artist,
+                            coverUrl: group.coverUrl,
+                            source: group.source == "mixed" ? nil : group.source,
+                            preloadedTracks: group.tracks,
+                            showNowPlaying: $showNowPlaying
+                        )
+                    } label: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ArtworkTile(urlString: api.artworkURL(for: group.coverUrl), icon: "opticaldisc")
+                                .aspectRatio(1, contentMode: .fit)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(group.title)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(Color.textPrimary)
+                                    .lineLimit(2)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Text(albumCaption(group))
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(Color.textSecondary)
+                                    .lineLimit(1)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.bottom, 12)
+                        }
+                        .glassCard(cornerRadius: 22, intensity: 0.10)
                     }
                     .buttonStyle(.plain)
                 }
@@ -268,82 +379,66 @@ struct ArtistDetailView: View {
         }
     }
 
-    private func artistQueueButtons(for tracks: [Track]) -> some View {
-        HStack(spacing: 12) {
-            Button {
-                if player.setQueue(tracks, startAt: 0) {
-                    showNowPlaying = true
-                }
-            } label: {
-                Label(String(localized: "Play All"), systemImage: "play.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.textPrimary)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 13)
-                    .background(
-                        Capsule()
-                            .fill(Color.clear)
-                            .liquidProminentSurface(cornerRadius: 999, accent: Color(hex: "d9b17b"))
-                    )
-            }
-            .buttonStyle(.plain)
-            .disabled(tracks.isEmpty)
-            .opacity(tracks.isEmpty ? 0.45 : 1)
-
-            Button {
-                var shuffled = tracks
-                shuffled.shuffle()
-                if player.setQueue(shuffled, startAt: 0) {
-                    showNowPlaying = true
-                }
-            } label: {
-                Label(String(localized: "Shuffle"), systemImage: "shuffle")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.textPrimary)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 13)
-                    .glassCard(cornerRadius: 22, intensity: 0.08)
-            }
-            .buttonStyle(.plain)
-            .disabled(tracks.isEmpty)
-            .opacity(tracks.isEmpty ? 0.45 : 1)
-        }
-        .padding(.horizontal, 18)
+    private func albumCaption(_ group: ArtistAlbumGroup) -> String {
+        let source = artistSourceDisplayName(group.source)
+        return group.tracks.isEmpty ? source : "\(source) • " + String(localized: "\(group.tracks.count) tracks")
     }
 
-    private func sourceFilterLabel(_ source: String) -> String {
-        let count = source == "all"
-            ? artistDisplayTracks(allTracks).count
-            : allTracks.filter { $0.source.rawValue == source }.count
-        return count > 0 ? "\(artistSourceDisplayName(source)) \(count)" : artistSourceDisplayName(source)
+    // MARK: - Data
+
+    /// Library artists fall back to the liked subset when the server has nothing.
+    private var fallbackTracks: [Track] {
+        guard case .library(let artist) = subject else { return [] }
+        return library.displayedLikedTracks.filter { trackBelongs(to: artist, track: $0) }
     }
 
-    /// Pull the artist's full discography from the server. This is what makes
-    /// Popular Tracks reflect actual popular songs (VK/SC catalog) rather than
-    /// just the user's liked subset.
-    @MainActor
-    private func loadServerProfile() async {
-        loadingProfile = true
-        profileError = nil
+    private func rebuildModel() {
+        model = ArtistPageModel.build(
+            artistName: subject.name,
+            serverTracks: serverTracks,
+            fallbackTracks: fallbackTracks,
+            serverAlbums: serverAlbums,
+            availableSources: availableSources,
+            selectedSource: selectedSource,
+            likedIds: library.likedTrackIds
+        )
+    }
+
+    private func load() async {
+        loading = true
+        loadError = nil
         sourceErrors = [:]
-        defer { loadingProfile = false }
+        defer { loading = false }
+        // Seed the page from liked tracks while the server profile loads.
+        if case .library = subject {
+            await library.hydrateLikedTracksIfNeeded()
+            rebuildModel()
+        }
+
         do {
-            let response = try await api.getArtistProfile(artistName: artist.artist, sources: enabledSources.joined(separator: ","))
-            profileArtist = response.artist
-            profileTracks = response.tracks.map(api.toAppTrack)
-            profileAlbums = response.albums
-            availableSources = response.availableSources ?? Array(Set(profileTracks.map { $0.source.rawValue }))
-            sourceErrors = response.errors ?? [:]
-            if !sourceOptions.contains(selectedSource) {
-                selectedSource = "all"
+            let sources = settings.enabledSourcesParam
+            let response: ArtistProfileResponse
+            switch subject {
+            case .library(let artist):
+                response = try await api.getArtistProfile(artistName: artist.artist, sources: sources)
+            case .search(let artist):
+                response = try await api.getArtistProfile(artist: artist, sources: sources)
             }
+            profileArtist = response.artist
+            serverTracks = response.tracks.map(api.toAppTrack)
+            serverAlbums = response.albums
+            availableSources = response.availableSources ?? []
+            sourceErrors = response.errors ?? [:]
+            hasLoaded = true
+        } catch where error.isCancellation {
+            return
         } catch {
-            profileError = error.localizedDescription
-            profileArtist = nil
-            profileTracks = []
-            profileAlbums = []
-            availableSources = []
-            sourceErrors = [:]
+            loadError = error.localizedDescription
+            hasLoaded = true
+        }
+        rebuildModel()
+        if !model.sourceOptions.contains(where: { $0.id == selectedSource }) {
+            selectedSource = "all"
         }
     }
 }

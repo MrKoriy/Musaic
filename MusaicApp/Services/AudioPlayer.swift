@@ -19,49 +19,65 @@ enum PlaybackState: Equatable, Sendable {
 final class AudioPlayer {
     static let shared = AudioPlayer()
 
-    private var player: AVPlayer?
-    private var currentTrackID: String?
-    private var currentURLString: String?
-    private var timeObserver: Any?
-    private var statusObserver: NSKeyValueObservation?
-    private var bufferEmptyObserver: NSKeyValueObservation?
-    private var keepUpObserver: NSKeyValueObservation?
-    private var timeControlObserver: NSKeyValueObservation?
-    private var endObserver: NSObjectProtocol?
-    private var stalledObserver: NSObjectProtocol?
-    private var failedObserver: NSObjectProtocol?
-    private var interruptionObserver: NSObjectProtocol?
-    private var routeChangeObserver: NSObjectProtocol?
-    private var trackEndAction: (() -> Void)?
-    private var lastNowPlayingElapsedSecond = -1
-    private var lastNowPlayingDuration: TimeInterval = 0
+    @ObservationIgnored private var player: AVPlayer?
+    @ObservationIgnored private var currentTrackID: String?
+    @ObservationIgnored private var currentURLString: String?
+    @ObservationIgnored private var timeObserver: Any?
+    @ObservationIgnored private weak var timeObserverOwner: AVPlayer?
+    @ObservationIgnored private var statusObserver: NSKeyValueObservation?
+    @ObservationIgnored private var bufferEmptyObserver: NSKeyValueObservation?
+    @ObservationIgnored private var keepUpObserver: NSKeyValueObservation?
+    @ObservationIgnored private var timeControlObserver: NSKeyValueObservation?
+    @ObservationIgnored private var endObserver: NSObjectProtocol?
+    @ObservationIgnored private var stalledObserver: NSObjectProtocol?
+    @ObservationIgnored private var failedObserver: NSObjectProtocol?
+    @ObservationIgnored private var sessionObservers: [NSObjectProtocol] = []
+    @ObservationIgnored private var trackEndAction: (() -> Void)?
+    @ObservationIgnored private var lastNowPlayingElapsedSecond = -1
+    @ObservationIgnored private var lastNowPlayingDuration: TimeInterval = 0
+    @ObservationIgnored private var seekGeneration = 0
+    @ObservationIgnored private var wasPlayingBeforeInterruption = false
+    /// Start offset for a freshly loaded item (restored queue); applied once
+    /// the item is ready so playback doesn't blip from 0.
+    @ObservationIgnored private var pendingStartTime: TimeInterval?
+    @ObservationIgnored private var audioSessionConfigured = false
+
+    /// True while the user wants audio (playing, loading or buffering).
     private var wantsPlayback = false
-    private var seekGeneration = 0
-    private var wasPlayingBeforeInterruption = false
 
     // Stalls are retried only for the current item. A new track, restart, or
     // explicit resume starts a fresh retry budget.
     private let maxStallRetries = 2
-    private var stallRetryCount = 0
-    private var stallRetryTask: Task<Void, Never>?
+    @ObservationIgnored private var stallRetryCount = 0
+    @ObservationIgnored private var stallRetryTask: Task<Void, Never>?
 
-    // Crossfade
-    private var crossfadePlayer: AVPlayer?
-    private var crossfadePlayerStatusObserver: NSKeyValueObservation?
-    private var crossfadeStarted = false
-    private var crossfadeNextURLString: String?
-    private var crossfadeTimer: Timer?
+    // Next-track preload + crossfade. The next item is loaded well before the
+    // end (paused, silent) so the transition starts instantly; the fade itself
+    // begins `crossfadeSec` before the end, triggered by a boundary observer.
+    @ObservationIgnored private var nextURLString: String?
+    @ObservationIgnored private var nextPlayer: AVPlayer?
+    @ObservationIgnored private var nextPlayerStatusObserver: NSKeyValueObservation?
+    @ObservationIgnored private var crossfadeStarted = false
+    @ObservationIgnored private var crossfadeProgress: Double = 0
+    @ObservationIgnored private var crossfadeTask: Task<Void, Never>?
+    @ObservationIgnored private var boundaryObserver: Any?
+    @ObservationIgnored private weak var boundaryObserverOwner: AVPlayer?
+    /// Seconds before the crossfade point at which the next item is preloaded.
+    static let preloadLeadTime: TimeInterval = 12
+    /// Overlap used for "gapless" when crossfade is off.
+    static let gaplessBridgeDuration: TimeInterval = 0.25
     // Driven by SettingsStore via applyPlaybackSettings(); 0s ("Off") disables it.
     var crossfadeSec: TimeInterval = 5.0
     var crossfadeEnabled = true
 
-    // Loudness normalization (ReplayGain-style). Base volume per track; fades
-    // and sleep-timer ramps multiply on top of it. AVPlayer volume is capped at
-    // 1.0, so louder-than-target tracks are attenuated while quieter ones play
-    // untouched (no boosting into clipping).
+    // Loudness normalization (ReplayGain-style). Base volume per track; fades,
+    // the user volume and sleep-timer ramps multiply on top of it. AVPlayer
+    // volume is capped at 1.0, so louder-than-target tracks are attenuated
+    // while quieter ones play untouched (no boosting into clipping).
     static let loudnessTargetLufs: Double = -16
-    private var currentTrackBaseVolume: Float = 1
-    private var nextTrackBaseVolume: Float = 1
+    @ObservationIgnored private var currentTrackBaseVolume: Float = 1
+    @ObservationIgnored private var nextTrackBaseVolume: Float = 1
+    @ObservationIgnored private var sleepFadeFactor: Float = 1
 
     static func normalizationVolume(forLoudness lufs: Double?) -> Float {
         guard SettingsStore.shared.normalization, let lufs, lufs.isFinite else { return 1 }
@@ -70,9 +86,17 @@ final class AudioPlayer {
         return Float(min(max(linear, 0.1), 1.0))
     }
 
+    /// In-app volume (0...1) on top of the system volume; driven by the iPod
+    /// wheel and the watch crown. Persisted across launches.
+    private(set) var userVolume: Float = 1
+    private static let userVolumeKey = "player_user_volume"
+
     // State
     private(set) var playbackState: PlaybackState = .idle
     var isPlaying: Bool { playbackState == .playing }
+    /// True when playback is playing or about to (loading / buffering after a
+    /// play request). Use for play/pause affordances.
+    var isPlaybackIntended: Bool { wantsPlayback }
     var progress: Double = 0  // 0...1
     var currentTime: TimeInterval = 0
     var duration: TimeInterval = 0
@@ -85,13 +109,38 @@ final class AudioPlayer {
         }
     }
     var lastErrorMessage: String?
+    /// Whether an item is loaded into the engine (false after launch until the
+    /// restored track is first played).
+    var hasLoadedItem: Bool { player?.currentItem != nil }
 
     // Sleep timer - checked on each periodic time tick (fires during background audio).
     var sleepDeadline: Date?
     let sleepFadeDuration: TimeInterval = 8.0
 
+    // Callbacks - set by PlayerStore.
+    @ObservationIgnored var onRemoteNext: (@MainActor () -> Void)?
+    @ObservationIgnored var onRemotePrevious: (@MainActor () -> Void)?
+    /// Lock screen / AirPods / CarPlay play, pause, toggle and scrub. Routed
+    /// through PlayerStore so every surface republishes the same way.
+    @ObservationIgnored var onRemotePlay: (@MainActor () -> Void)?
+    @ObservationIgnored var onRemotePause: (@MainActor () -> Void)?
+    @ObservationIgnored var onRemoteTogglePlayPause: (@MainActor () -> Void)?
+    @ObservationIgnored var onRemoteSeek: (@MainActor (Double) -> Void)?
+    @ObservationIgnored var onPlaybackProgress: (@MainActor (TimeInterval) -> Void)?
+    @ObservationIgnored var onPlaybackPaused: (@MainActor () -> Void)?
+    @ObservationIgnored var onPlaybackResumed: (@MainActor () -> Void)?
+    @ObservationIgnored var onPlaybackFailed: (@MainActor () -> Void)?
+    /// Fired only when `playbackState` actually changes.
+    @ObservationIgnored var onPlaybackStateChange: (@MainActor (PlaybackState) -> Void)?
+    /// Fired after a seek lands, with the new position in seconds.
+    @ObservationIgnored var onPlaybackSeeked: (@MainActor (TimeInterval) -> Void)?
+
     private init() {
-        setupAudioSession()
+        if let stored = UserDefaults.standard.object(forKey: Self.userVolumeKey) as? NSNumber {
+            userVolume = min(max(stored.floatValue, 0), 1)
+        }
+        // The session is configured and activated lazily on the first play so
+        // launching Musaic never interrupts other apps' audio.
         setupAudioSessionObservers()
         setupRemoteCommands()
         applyPlaybackSettings()
@@ -99,8 +148,8 @@ final class AudioPlayer {
 
     /// Re-read Crossfade / Gapless from SettingsStore and apply to the engine.
     /// - Crossfade > 0  -> real crossfade of that length.
-    /// - Crossfade Off + Gapless on -> a short 0.4s bridge approximates gapless
-    ///   using the existing next-track pre-load (no AVAudioEngine rewrite).
+    /// - Crossfade Off + Gapless on -> the preloaded next item starts a quarter
+    ///   second before the end (boundary-timed), bridging the gap.
     /// - Crossfade Off + Gapless off -> hard cut between tracks.
     /// Call this whenever the user changes those settings.
     func applyPlaybackSettings() {
@@ -111,89 +160,142 @@ final class AudioPlayer {
             crossfadeSec = configured
         } else if settings.gapless {
             crossfadeEnabled = true
-            crossfadeSec = 0.4
+            crossfadeSec = Self.gaplessBridgeDuration
         } else {
             crossfadeEnabled = false
             crossfadeSec = 0
         }
+        if !crossfadeEnabled {
+            teardownNextPlayer()
+        }
+        installCrossfadeBoundary()
     }
 
-    private func setupAudioSession() {
+    // MARK: - Audio session
+
+    @discardableResult
+    private func activateAudioSession() -> Bool {
         #if os(iOS)
+        let session = AVAudioSession.sharedInstance()
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.allowBluetoothA2DP])
-            try AVAudioSession.sharedInstance().setActive(true)
+            if !audioSessionConfigured {
+                try session.setCategory(.playback, mode: .default)
+                audioSessionConfigured = true
+            }
+            try session.setActive(true)
+            return true
         } catch {
-            print("[AudioPlayer] Audio session error: \(error)")
+            print("[AudioPlayer] Audio session activation failed: \(error)")
+            return false
         }
+        #else
+        return true
+        #endif
+    }
+
+    private func deactivateAudioSession() {
+        #if os(iOS)
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         #endif
     }
 
     private func setupAudioSessionObservers() {
         #if os(iOS)
         let center = NotificationCenter.default
-        interruptionObserver = center.addObserver(
+        let session = AVAudioSession.sharedInstance()
+        sessionObservers.append(center.addObserver(
             forName: AVAudioSession.interruptionNotification,
-            object: AVAudioSession.sharedInstance(),
+            object: session,
             queue: .main
         ) { [weak self] notification in
             guard let info = notification.userInfo,
                   let rawType = info[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
-            let rawOptions = (info[AVAudioSessionInterruptionOptionKey] as? UInt).map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
+            let rawOptions = (info[AVAudioSessionInterruptionOptionKey] as? UInt) ?? 0
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                switch type {
-                case .began:
-                    self.wasPlayingBeforeInterruption = self.wantsPlayback || self.isPlaying
-                    self.player?.pause()
-                    self.transition(to: .paused)
-                case .ended:
-                    guard self.wasPlayingBeforeInterruption else { return }
-                    self.wasPlayingBeforeInterruption = false
-                    if rawOptions.contains(.shouldResume) { self.resume() }
-                @unknown default:
-                    break
-                }
+                self?.handleInterruption(type, options: AVAudioSession.InterruptionOptions(rawValue: rawOptions))
             }
-        }
-        routeChangeObserver = center.addObserver(
+        })
+        sessionObservers.append(center.addObserver(
             forName: AVAudioSession.routeChangeNotification,
-            object: AVAudioSession.sharedInstance(),
+            object: session,
             queue: .main
         ) { [weak self] notification in
             guard let reasonValue = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
                   let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                if reason == .oldDeviceUnavailable {
-                    self.pause()
-                }
+                // Headphones unplugged / AirPods removed: pause like the system player.
+                guard let self, reason == .oldDeviceUnavailable, self.wantsPlayback else { return }
+                self.pause()
             }
-        }
+        })
+        sessionObservers.append(center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: session,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.audioSessionConfigured = false
+                if self.wantsPlayback { self.activateAudioSession() }
+            }
+        })
         #endif
     }
 
+    #if os(iOS)
+    private func handleInterruption(_ type: AVAudioSession.InterruptionType, options: AVAudioSession.InterruptionOptions) {
+        switch type {
+        case .began:
+            let wasActive = wantsPlayback || isPlaying
+            wasPlayingBeforeInterruption = wasActive
+            guard wasActive else { return }
+            // Clearing wantsPlayback keeps the KVO observers from reporting
+            // "buffering" while the call holds the audio hardware.
+            wantsPlayback = false
+            stallRetryTask?.cancel()
+            stallRetryTask = nil
+            cancelCrossfade(keepPreload: true)
+            player?.pause()
+            transition(to: player?.currentItem == nil ? .idle : .paused)
+            syncNowPlayingProgressIfNeeded(force: true)
+            onPlaybackPaused?()
+        case .ended:
+            guard wasPlayingBeforeInterruption else { return }
+            wasPlayingBeforeInterruption = false
+            if options.contains(.shouldResume) {
+                resume()
+            }
+        @unknown default:
+            break
+        }
+    }
+    #endif
+
     // MARK: - Playback
 
-    func play(track: Track, restartIfSame: Bool = false) {
+    /// Plays `track`. `startAt` (seconds) resumes a restored position.
+    func play(track: Track, restartIfSame: Bool = false, startAt: TimeInterval = 0) {
         // Prefer local file if downloaded for offline playback.
-        if let localURL = DownloadManager.shared.localFileURL(for: track.id) {
-            play(trackID: track.id, url: localURL.absoluteString, restartIfSame: restartIfSame, loudnessLufs: track.loudnessLufs)
-        } else {
-            play(trackID: track.id, url: track.url, restartIfSame: restartIfSame, loudnessLufs: track.loudnessLufs)
-        }
+        let url = DownloadManager.shared.localFileURL(for: track.id)?.absoluteString ?? track.url
+        play(trackID: track.id, url: url, restartIfSame: restartIfSame, loudnessLufs: track.loudnessLufs, startAt: startAt)
     }
 
     func play(url: String) {
         play(trackID: nil, url: url, restartIfSame: true)
     }
 
-    private func play(trackID: String?, url: String, restartIfSame: Bool, loudnessLufs: Double? = nil) {
+    private func play(
+        trackID: String?,
+        url: String,
+        restartIfSame: Bool,
+        loudnessLufs: Double? = nil,
+        startAt: TimeInterval = 0
+    ) {
         let normalizedURL = Self.normalizedPlaybackURLString(url) ?? url
 
         guard let audioURL = URL(string: normalizedURL) else {
-            registerPlaybackFailure(nil, fallback: "Invalid audio URL.")
+            registerPlaybackFailure(nil, fallback: String(localized: "Invalid audio URL."))
             return
         }
 
@@ -202,44 +304,49 @@ final class AudioPlayer {
            player.currentItem?.status != .failed,
            currentURLString == normalizedURL,
            trackID == nil || currentTrackID == trackID {
-            if playbackState != .playing {
+            if !wantsPlayback {
                 resume()
             } else {
-                transition(to: .playing, clearError: true)
+                transition(to: player.timeControlStatus == .playing ? .playing : playbackState, clearError: true)
             }
             return
         }
 
-        // If crossfade already loaded this URL, promote the fade player instead of a cold start.
-        if let fadePlayer = crossfadePlayer,
-           crossfadeNextURLString == normalizedURL {
-            promoteCrossfadePlayer(fadePlayer, trackID: trackID, urlString: normalizedURL)
+        // A preloaded (or already fading-in) next item: promote it instead of
+        // a cold start.
+        if nextPlayer != nil, nextURLString == normalizedURL {
+            promoteNextPlayer(trackID: trackID, urlString: normalizedURL)
             return
         }
 
-        setupAudioSession()
+        activateAudioSession()
         cleanup()
         currentTrackID = trackID
         currentURLString = normalizedURL
-        currentTrackBaseVolume = loudnessLufs.map { Self.normalizationVolume(forLoudness: $0) } ?? currentTrackBaseVolume
+        // No loudness data means unity gain, never the previous track's gain.
+        currentTrackBaseVolume = Self.normalizationVolume(forLoudness: loudnessLufs)
+        let start = startAt.isFinite ? max(0, startAt) : 0
+        currentTime = start
         progress = 0
-        currentTime = 0
-        duration = 0
+        setDuration(0)
         lastNowPlayingElapsedSecond = -1
         lastNowPlayingDuration = 0
         wantsPlayback = true
+        wasPlayingBeforeInterruption = false
         stallRetryCount = 0
-        lastErrorMessage = nil
+        pendingStartTime = start > 0.5 ? start : nil
         transition(to: .loading, clearError: true)
 
         let item = makePlayerItem(for: audioURL)
         let player = AVPlayer(playerItem: item)
         player.automaticallyWaitsToMinimizeStalling = true
-        player.volume = currentTrackBaseVolume
         self.player = player
+        applyVolumes()
         attachObservers(player: player, item: item)
 
-        player.play()
+        if pendingStartTime == nil {
+            player.play()
+        }
     }
 
     func togglePlayPause() {
@@ -248,7 +355,7 @@ final class AudioPlayer {
             play(trackID: currentTrackID, url: currentURLString, restartIfSame: true)
             return
         }
-        if isPlaying {
+        if wantsPlayback {
             pause()
         } else {
             resume()
@@ -258,18 +365,12 @@ final class AudioPlayer {
     func pause() {
         let wasPlaying = isPlaying || wantsPlayback
         wantsPlayback = false
+        wasPlayingBeforeInterruption = false
         stallRetryTask?.cancel()
         stallRetryTask = nil
+        cancelCrossfade(keepPreload: true)
         player?.pause()
-        crossfadePlayer?.pause()
-        crossfadeTimer?.invalidate()
-        crossfadeTimer = nil
-        crossfadeStarted = false
-        if player?.currentItem == nil {
-            transition(to: .idle)
-        } else {
-            transition(to: .paused)
-        }
+        transition(to: player?.currentItem == nil ? .idle : .paused)
         syncNowPlayingProgressIfNeeded(force: true)
         if wasPlaying { onPlaybackPaused?() }
     }
@@ -282,47 +383,67 @@ final class AudioPlayer {
         }
 
         let wasPlaying = isPlaying || wantsPlayback
-        setupAudioSession()
+        activateAudioSession()
         lastErrorMessage = nil
         stallRetryTask?.cancel()
         stallRetryTask = nil
         stallRetryCount = 0
-        cancelVolumeFade()
-        player.volume = currentTrackBaseVolume
+        sleepFadeFactor = 1
         wantsPlayback = true
-        transition(to: .loading, clearError: true)
-        player.play()
+        applyVolumes()
+        if player.timeControlStatus != .playing {
+            transition(to: .loading, clearError: true)
+        }
+        if let start = pendingStartTime {
+            // Not started yet: the ready handler seeks + plays, or do it now.
+            if player.currentItem?.status == .readyToPlay {
+                startFromPendingPosition(player: player, start: start)
+            }
+        } else {
+            player.play()
+        }
         syncNowPlayingProgressIfNeeded(force: true)
         if !wasPlaying { onPlaybackResumed?() }
     }
 
-    // MARK: - Sleep timer (ticked from the periodic time observer)
-
-    /// Pause both the main and crossfade players immediately (used by sleep timer
-    /// to guarantee audio actually stops, even if a crossfade is in progress).
+    /// Pause both the main and next players immediately (sleep timer).
     func pauseAll() {
-        let wasPlaying = isPlaying || wantsPlayback
-        wantsPlayback = false
-        stallRetryTask?.cancel()
-        stallRetryTask = nil
-        player?.pause()
-        crossfadePlayer?.pause()
-        crossfadeTimer?.invalidate()
-        crossfadeTimer = nil
-        crossfadeStarted = false
-        if player?.currentItem == nil {
-            transition(to: .idle)
-        } else {
-            transition(to: .paused)
-        }
-        syncNowPlayingProgressIfNeeded(force: true)
-        if wasPlaying { onPlaybackPaused?() }
+        pause()
+        nextPlayer?.pause()
     }
 
     /// Reset any sleep-timer-induced volume fade.
     func cancelVolumeFade() {
-        player?.volume = currentTrackBaseVolume
-        crossfadePlayer?.volume = nextTrackBaseVolume
+        sleepFadeFactor = 1
+        applyVolumes()
+    }
+
+    /// Sets the in-app volume (0...1).
+    func setUserVolume(_ value: Float) {
+        let clamped = min(max(value, 0), 1)
+        guard abs(clamped - userVolume) > 0.0005 else { return }
+        userVolume = clamped
+        UserDefaults.standard.set(clamped, forKey: Self.userVolumeKey)
+        applyVolumes()
+    }
+
+    /// Accurate position read straight from AVPlayer (the observable
+    /// `currentTime` only advances every 0.25 s). Use for karaoke timing.
+    func livePlaybackTime() -> TimeInterval {
+        if let pendingStartTime { return pendingStartTime }
+        guard let player else { return currentTime }
+        let seconds = player.currentTime().seconds
+        return seconds.isFinite ? max(0, seconds) : currentTime
+    }
+
+    /// Shows a restored position before any item is loaded (launch restore).
+    func presentRestoredPosition(_ position: TimeInterval, duration restoredDuration: TimeInterval) {
+        guard player == nil else { return }
+        let safeDuration = restoredDuration.isFinite ? max(0, restoredDuration) : 0
+        let safePosition = position.isFinite ? max(0, position) : 0
+        currentTime = safePosition
+        setDuration(safeDuration)
+        progress = safeDuration > 0 ? min(max(safePosition / safeDuration, 0), 1) : 0
     }
 
     private func tickSleepTimer() {
@@ -331,24 +452,20 @@ final class AudioPlayer {
 
         if remaining <= 0 {
             pauseAll()
-            player?.volume = currentTrackBaseVolume
-            crossfadePlayer?.volume = nextTrackBaseVolume
+            sleepFadeFactor = 1
+            applyVolumes()
             sleepDeadline = nil
             // Mirror the cleared state on the PlayerStore so the UI refreshes.
-            Task { @MainActor in
-                PlayerStore.shared.clearSleepTimer(silent: true)
-            }
+            PlayerStore.shared.clearSleepTimer(silent: true)
             return
         }
 
-        if remaining <= sleepFadeDuration {
-            let factor = max(0, min(1, remaining / sleepFadeDuration))
-            player?.volume = Float(factor) * currentTrackBaseVolume
-            crossfadePlayer?.volume = Float(factor) * nextTrackBaseVolume
-        } else {
-            // Keep volume at the track's base level in case user re-armed.
-            if let p = player, p.volume < currentTrackBaseVolume - 0.001 { p.volume = currentTrackBaseVolume }
-            if let cp = crossfadePlayer, cp.volume < nextTrackBaseVolume - 0.001 { cp.volume = nextTrackBaseVolume }
+        let factor: Float = remaining <= sleepFadeDuration
+            ? Float(max(0, min(1, remaining / sleepFadeDuration)))
+            : 1
+        if abs(factor - sleepFadeFactor) > 0.001 {
+            sleepFadeFactor = factor
+            applyVolumes()
         }
     }
 
@@ -364,29 +481,33 @@ final class AudioPlayer {
         stallRetryTask?.cancel()
         stallRetryTask = nil
         stallRetryCount = 0
+        pendingStartTime = nil
+        cancelCrossfade(keepPreload: true)
         progress = 0
         currentTime = 0
         transition(to: shouldPlay ? .buffering : .paused)
 
-        let target = CMTime(seconds: 0, preferredTimescale: 600)
-        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak player] _ in
+        seekGeneration += 1
+        let generation = seekGeneration
+        player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak player] _ in
             Task { @MainActor [weak self, weak player] in
-                guard let self, let player, self.player === player else { return }
+                guard let self, let player, self.player === player, self.seekGeneration == generation else { return }
                 if self.wantsPlayback {
                     player.play()
-                    self.transition(to: .loading)
+                    if player.timeControlStatus != .playing { self.transition(to: .loading) }
                 } else {
                     self.transition(to: .paused)
                 }
                 self.lastNowPlayingElapsedSecond = -1
                 self.syncNowPlayingProgressIfNeeded(force: true)
+                self.onPlaybackSeeked?(0)
             }
         }
     }
 
     func seek(to fraction: Double) {
         guard let player else { return }
-        guard fraction.isFinite, !fraction.isNaN else { return }
+        guard fraction.isFinite else { return }
         let safeFraction = max(0, min(1, fraction))
 
         // Resolve duration: AVPlayer -> item -> track metadata.
@@ -396,24 +517,32 @@ final class AudioPlayer {
         guard dur > 0 else { return }
 
         let targetSeconds = safeFraction * dur
+        cancelCrossfade(keepPreload: true)
 
         // Update UI immediately.
         progress = safeFraction
         currentTime = targetSeconds
-        if dur > duration { duration = dur }
+        if dur > duration { setDuration(dur) }
+
+        if pendingStartTime != nil {
+            // Item not started yet: move the pending start instead.
+            pendingStartTime = targetSeconds
+            onPlaybackSeeked?(targetSeconds)
+            return
+        }
 
         let target = CMTime(seconds: targetSeconds, preferredTimescale: 600)
         seekGeneration += 1
         let generation = seekGeneration
-        let shouldResume = wantsPlayback || isPlaying
         player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak player] finished in
             Task { @MainActor [weak self, weak player] in
                 guard let self, let player, self.player === player, finished,
                       self.seekGeneration == generation else { return }
                 self.currentTime = targetSeconds
                 self.progress = safeFraction
-                if shouldResume && !self.isPlaying { player.play() }
+                if self.wantsPlayback && player.timeControlStatus != .playing { player.play() }
                 self.syncNowPlayingProgressIfNeeded(force: true)
+                self.onPlaybackSeeked?(targetSeconds)
             }
         }
         lastNowPlayingElapsedSecond = -1
@@ -422,16 +551,36 @@ final class AudioPlayer {
 
     func stop() {
         cleanup()
+        teardownNextPlayer()
+        nextURLString = nil
         currentTrackID = nil
         currentURLString = nil
         wantsPlayback = false
+        wasPlayingBeforeInterruption = false
         progress = 0
         currentTime = 0
-        duration = 0
+        setDuration(0)
         lastNowPlayingElapsedSecond = -1
         lastNowPlayingDuration = 0
         lastErrorMessage = nil
         transition(to: .idle, clearError: true)
+        deactivateAudioSession()
+    }
+
+    // MARK: - Volume
+
+    /// Single place that derives both players' volumes from base loudness,
+    /// user volume, sleep fade and crossfade progress (equal-power curve).
+    private func applyVolumes() {
+        let common = userVolume * sleepFadeFactor
+        if crossfadeStarted {
+            let angle = crossfadeProgress * .pi / 2
+            player?.volume = Float(cos(angle)) * currentTrackBaseVolume * common
+            nextPlayer?.volume = Float(sin(angle)) * nextTrackBaseVolume * common
+        } else {
+            player?.volume = currentTrackBaseVolume * common
+            nextPlayer?.volume = 0
+        }
     }
 
     // MARK: - Observer and retry management
@@ -445,7 +594,7 @@ final class AudioPlayer {
 
         // A URL-only player item cannot carry the bearer token. Supplying the
         // request headers through AVURLAsset keeps proxy streams authenticated,
-        // including preloaded crossfade items.
+        // including preloaded next items.
         let asset = AVURLAsset(url: url, options: options)
         let item = AVPlayerItem(asset: asset)
         item.preferredForwardBufferDuration = 8
@@ -458,11 +607,16 @@ final class AudioPlayer {
                 guard let self, let player, self.player === player, self.isCurrentItem(item) else { return }
                 switch item.status {
                 case .readyToPlay:
-                    self.duration = self.resolvedDuration(for: item)
-                    self.updatePlaybackState(for: player, item: item)
-                    if item.status == .readyToPlay { self.lastErrorMessage = nil }
+                    self.setDuration(self.resolvedDuration(for: item))
+                    if self.lastErrorMessage != nil { self.lastErrorMessage = nil }
+                    self.installCrossfadeBoundary()
+                    if let start = self.pendingStartTime, self.wantsPlayback {
+                        self.startFromPendingPosition(player: player, start: start)
+                    } else {
+                        self.updatePlaybackState(for: player, item: item)
+                    }
                 case .failed:
-                    self.registerPlaybackFailure(item.error ?? player.currentItem?.error, fallback: "Couldn't load the stream.")
+                    self.registerPlaybackFailure(item.error ?? player.currentItem?.error, fallback: String(localized: "Couldn't load the stream."))
                 case .unknown:
                     if self.wantsPlayback { self.transition(to: .loading) }
                 @unknown default:
@@ -500,37 +654,10 @@ final class AudioPlayer {
         ) { [weak self, weak player] time in
             Task { @MainActor [weak self, weak player] in
                 guard let self, let player, self.player === player else { return }
-                let seconds = time.seconds
-                guard seconds.isFinite else { return }
-
-                self.currentTime = max(0, seconds)
-                self.onPlaybackProgress?(self.currentTime)
-                var dur = self.resolvedDuration(for: player.currentItem)
-                if dur <= 0 { dur = PlayerStore.shared.currentTrack?.duration ?? 0 }
-                if dur > 0 {
-                    self.duration = dur
-                    self.progress = min(max(self.currentTime / dur, 0), 1)
-                    self.syncNowPlayingProgressIfNeeded()
-                }
-
-                // Crossfade: pre-load next track when approaching end.
-                if self.crossfadeEnabled,
-                   !self.crossfadeStarted,
-                   let nextURLStr = self.crossfadeNextURLString,
-                   dur > self.crossfadeSec * 1.5,
-                   seconds > 0 {
-                    let remaining = dur - seconds
-                    if remaining > 0, remaining <= self.crossfadeSec {
-                        self.crossfadeStarted = true
-                        self.beginCrossfade(to: nextURLStr, over: remaining)
-                    }
-                }
-
-                // Sleep timer: check every tick; handles fade-out + pause reliably
-                // even when app is backgrounded while audio plays.
-                self.tickSleepTimer()
+                self.handlePeriodicTick(player: player, seconds: time.seconds)
             }
         }
+        timeObserverOwner = player
 
         stalledObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemPlaybackStalled,
@@ -551,11 +678,50 @@ final class AudioPlayer {
             let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
             Task { @MainActor [weak self] in
                 guard let self, self.isCurrentItem(item) else { return }
-                self.registerPlaybackFailure(error, fallback: "Playback stopped unexpectedly.")
+                self.registerPlaybackFailure(error, fallback: String(localized: "Playback stopped unexpectedly."))
             }
         }
 
         installEndObserver(for: item)
+    }
+
+    private func handlePeriodicTick(player: AVPlayer, seconds: Double) {
+        guard seconds.isFinite, pendingStartTime == nil else { return }
+
+        currentTime = max(0, seconds)
+        onPlaybackProgress?(currentTime)
+        var dur = resolvedDuration(for: player.currentItem)
+        if dur <= 0 { dur = PlayerStore.shared.currentTrack?.duration ?? 0 }
+        if dur > 0 {
+            setDuration(dur)
+            progress = min(max(currentTime / dur, 0), 1)
+            syncNowPlayingProgressIfNeeded()
+            advanceTransitionIfNeeded(position: seconds, duration: dur)
+        }
+
+        // Sleep timer: check every tick; handles fade-out + pause reliably
+        // even when app is backgrounded while audio plays.
+        tickSleepTimer()
+    }
+
+    private func startFromPendingPosition(player: AVPlayer, start: TimeInterval) {
+        pendingStartTime = nil
+        let target = CMTime(seconds: start, preferredTimescale: 600)
+        seekGeneration += 1
+        let generation = seekGeneration
+        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak player] _ in
+            Task { @MainActor [weak self, weak player] in
+                guard let self, let player, self.player === player, self.seekGeneration == generation else { return }
+                self.currentTime = start
+                if self.wantsPlayback {
+                    player.play()
+                }
+                if let item = player.currentItem {
+                    self.updatePlaybackState(for: player, item: item)
+                }
+                self.syncNowPlayingProgressIfNeeded(force: true)
+            }
+        }
     }
 
     private func updatePlaybackState(for player: AVPlayer, item: AVPlayerItem) {
@@ -587,7 +753,7 @@ final class AudioPlayer {
         guard stallRetryTask == nil else { return }
 
         guard stallRetryCount < maxStallRetries else {
-            registerPlaybackFailure(item.error, fallback: "Playback stalled after two retries.")
+            registerPlaybackFailure(item.error, fallback: String(localized: "Playback stalled after two retries."))
             return
         }
 
@@ -609,13 +775,15 @@ final class AudioPlayer {
     }
 
     private func removePlayerObservers() {
-        if let timeObserver, let player {
-            player.removeTimeObserver(timeObserver)
+        if let timeObserver, let owner = timeObserverOwner {
+            owner.removeTimeObserver(timeObserver)
         }
+        removeCrossfadeBoundary()
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         if let stalledObserver { NotificationCenter.default.removeObserver(stalledObserver) }
         if let failedObserver { NotificationCenter.default.removeObserver(failedObserver) }
         timeObserver = nil
+        timeObserverOwner = nil
         statusObserver = nil
         bufferEmptyObserver = nil
         keepUpObserver = nil
@@ -625,145 +793,212 @@ final class AudioPlayer {
         failedObserver = nil
     }
 
+    /// Tears down the main player. The preloaded next item survives unless
+    /// it's the one being replaced.
     private func cleanup() {
         stallRetryTask?.cancel()
         stallRetryTask = nil
+        pendingStartTime = nil
+        cancelCrossfade(keepPreload: false)
         removePlayerObservers()
         player?.pause()
         player = nil
-        trackEndAction = nil
-        cleanupCrossfade()
     }
 
-    private func cleanupCrossfade() {
-        crossfadeTimer?.invalidate()
-        crossfadeTimer = nil
-        crossfadePlayerStatusObserver = nil
-        crossfadePlayer?.pause()
-        crossfadePlayer = nil
-        crossfadeStarted = false
-        crossfadeNextURLString = nil
-    }
+    // MARK: - Next-track preload & crossfade
 
-    // MARK: - Crossfade
-
-    /// Tell the player what track comes next so it can crossfade into it.
+    /// Tell the player what track comes next so it can preload and crossfade
+    /// into it. Pass nil to disable the transition (repeat-one, queue end).
     func setCrossfadeNextURL(_ urlString: String?, loudnessLufs: Double? = nil) {
-        guard crossfadeNextURLString != urlString else { return }
-        cleanupCrossfade()
-        crossfadeNextURLString = urlString
-        nextTrackBaseVolume = Self.normalizationVolume(forLoudness: loudnessLufs)
+        let normalized = urlString.map { Self.normalizedPlaybackURLString($0) ?? $0 }
+        guard nextURLString != normalized else { return }
+        teardownNextPlayer()
+        nextURLString = normalized
+        nextTrackBaseVolume = normalized == nil ? 1 : Self.normalizationVolume(forLoudness: loudnessLufs)
+        installCrossfadeBoundary()
+        if let player, let item = player.currentItem {
+            // Queue edits near the end must still preload / fade in time.
+            let position = player.currentTime().seconds
+            let dur = resolvedDuration(for: item)
+            if position.isFinite, dur > 0 {
+                advanceTransitionIfNeeded(position: position, duration: dur)
+            }
+        }
     }
 
-    private func beginCrossfade(to urlString: String, over remaining: TimeInterval) {
-        let normalized = Self.normalizedPlaybackURLString(urlString) ?? urlString
-        guard let url = URL(string: normalized) else { return }
+    /// Preloads the next item inside the lead window and starts the fade in
+    /// the last `crossfadeSec` seconds. Called from the periodic tick and the
+    /// boundary observer (which gives the precise start for short bridges).
+    private func advanceTransitionIfNeeded(position: TimeInterval, duration dur: TimeInterval) {
+        guard crossfadeEnabled, crossfadeSec > 0, nextURLString != nil,
+              wantsPlayback, let player, player.rate > 0,
+              dur > crossfadeSec * 1.5, position > 0 else { return }
+        let remaining = dur - position
+        guard remaining > 0 else { return }
+        if nextPlayer == nil, remaining <= crossfadeSec + Self.preloadLeadTime {
+            preloadNextItem()
+        }
+        if !crossfadeStarted, remaining <= crossfadeSec + 0.02 {
+            startCrossfade(remaining: remaining)
+        }
+    }
 
+    private func preloadNextItem() {
+        guard nextPlayer == nil, let urlString = nextURLString, let url = URL(string: urlString) else { return }
         let item = makePlayerItem(for: url)
         let fadePlayer = AVPlayer(playerItem: item)
+        fadePlayer.automaticallyWaitsToMinimizeStalling = true
         fadePlayer.volume = 0
-        crossfadePlayer = fadePlayer
-
-        // Wait until the fade player is ready before starting the volume ramp.
-        // Re-derive the remaining time at ready-to-play so buffering does not
-        // make the ramp use a stale duration.
-        crossfadePlayerStatusObserver = item.observe(\.status, options: [.initial, .new]) { [weak self, weak fadePlayer] item, _ in
+        nextPlayer = fadePlayer
+        nextPlayerStatusObserver = item.observe(\.status, options: [.new]) { [weak self, weak fadePlayer] item, _ in
             Task { @MainActor [weak self, weak fadePlayer] in
-                guard let self, let fadePlayer, self.crossfadePlayer === fadePlayer else { return }
-                guard item.status == .readyToPlay else { return }
-                self.crossfadePlayerStatusObserver = nil
-                fadePlayer.play()
-
-                let liveRemaining: TimeInterval
-                if let outgoing = self.player, let outgoingItem = outgoing.currentItem {
-                    let dur = self.resolvedDuration(for: outgoingItem)
-                    let pos = outgoing.currentTime().seconds
-                    if dur > 0, pos.isFinite, pos >= 0 {
-                        liveRemaining = max(0.5, dur - pos)
-                    } else {
-                        liveRemaining = remaining
-                    }
-                } else {
-                    liveRemaining = remaining
-                }
-                self.rampCrossfadeVolumes(fadePlayer: fadePlayer, over: min(liveRemaining, self.crossfadeSec))
+                guard let self, let fadePlayer, self.nextPlayer === fadePlayer, item.status == .failed else { return }
+                // A broken next stream must not eat the tail of this track;
+                // the regular track-end path will surface the error.
+                self.teardownNextPlayer()
             }
         }
-
-        fadePlayer.play() // Start buffering immediately, even before readyToPlay.
     }
 
-    private func rampCrossfadeVolumes(fadePlayer: AVPlayer, over duration: TimeInterval) {
-        guard duration > 0 else {
-            player?.volume = 0
-            fadePlayer.volume = nextTrackBaseVolume
-            return
-        }
+    private func startCrossfade(remaining: TimeInterval) {
+        if nextPlayer == nil { preloadNextItem() }
+        guard let fadePlayer = nextPlayer else { return }
+        crossfadeStarted = true
+        crossfadeProgress = 0
+        applyVolumes()
+        fadePlayer.play()
 
-        let fps: TimeInterval = 30
-        let totalSteps = max(1, Int(duration * fps))
-        let stepInterval = duration / Double(totalSteps)
-        let startTime = Date()
-
-        crossfadeTimer?.invalidate()
-        let timer = Timer(timeInterval: stepInterval, repeats: true) { [weak self, weak fadePlayer] timer in
-            guard self != nil, fadePlayer != nil else {
-                timer.invalidate()
-                return
+        let fadeLength = max(0.05, min(remaining, crossfadeSec))
+        crossfadeTask?.cancel()
+        crossfadeTask = Task { @MainActor [weak self, weak fadePlayer] in
+            // Don't fade the outgoing track into silence while the incoming
+            // one is still spinning up.
+            let waitStarted = Date()
+            while let fadePlayer, fadePlayer.timeControlStatus != .playing,
+                  Date().timeIntervalSince(waitStarted) < fadeLength {
+                try? await Task.sleep(for: .milliseconds(20))
+                if Task.isCancelled { return }
             }
-            let elapsed = Date().timeIntervalSince(startTime)
-            let fadeProgress = min(Float(elapsed / duration), 1.0)
-            Task { @MainActor [weak self, weak fadePlayer] in
-                guard let self, let fadePlayer else { return }
-                self.player?.volume = (1.0 - fadeProgress) * self.currentTrackBaseVolume
-                fadePlayer.volume = fadeProgress * self.nextTrackBaseVolume
-
-                if fadeProgress >= 1.0 {
-                    self.crossfadeTimer?.invalidate()
-                    self.crossfadeTimer = nil
-                    self.player?.volume = 0
-                }
+            let rampStarted = Date()
+            while !Task.isCancelled {
+                guard let self, self.crossfadeStarted else { return }
+                let elapsed = Date().timeIntervalSince(rampStarted)
+                self.crossfadeProgress = min(1, elapsed / fadeLength)
+                self.applyVolumes()
+                if self.crossfadeProgress >= 1 { return }
+                try? await Task.sleep(for: .milliseconds(30))
             }
         }
-        crossfadeTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
     }
 
-    private func promoteCrossfadePlayer(_ fadePlayer: AVPlayer, trackID: String?, urlString: String) {
+    /// Stops an in-flight fade and restores the main player's volume. With
+    /// `keepPreload` the incoming item is rewound and kept ready.
+    private func cancelCrossfade(keepPreload: Bool) {
+        crossfadeTask?.cancel()
+        crossfadeTask = nil
+        if crossfadeStarted {
+            crossfadeStarted = false
+            crossfadeProgress = 0
+            if keepPreload, let fadePlayer = nextPlayer {
+                fadePlayer.pause()
+                fadePlayer.seek(to: .zero)
+            }
+        }
+        if !keepPreload {
+            teardownNextPlayer()
+        }
+        applyVolumes()
+    }
+
+    private func teardownNextPlayer() {
+        crossfadeTask?.cancel()
+        crossfadeTask = nil
+        nextPlayerStatusObserver = nil
+        nextPlayer?.pause()
+        nextPlayer = nil
+        crossfadeStarted = false
+        crossfadeProgress = 0
+        applyVolumes()
+    }
+
+    private func installCrossfadeBoundary() {
+        removeCrossfadeBoundary()
+        guard crossfadeEnabled, crossfadeSec > 0, nextURLString != nil,
+              let player, let item = player.currentItem else { return }
+        let dur = resolvedDuration(for: item)
+        guard dur > crossfadeSec * 1.5 else { return }
+        let fadeAt = max(0, dur - crossfadeSec)
+        let preloadAt = max(0, fadeAt - Self.preloadLeadTime)
+        let times = [preloadAt, fadeAt].map { NSValue(time: CMTime(seconds: $0, preferredTimescale: 600)) }
+        boundaryObserver = player.addBoundaryTimeObserver(forTimes: times, queue: .main) { [weak self, weak player] in
+            Task { @MainActor [weak self, weak player] in
+                guard let self, let player, self.player === player, let item = player.currentItem else { return }
+                let position = player.currentTime().seconds
+                let dur = self.resolvedDuration(for: item)
+                guard position.isFinite, dur > 0 else { return }
+                self.advanceTransitionIfNeeded(position: position, duration: dur)
+            }
+        }
+        boundaryObserverOwner = player
+    }
+
+    private func removeCrossfadeBoundary() {
+        if let boundaryObserver, let owner = boundaryObserverOwner {
+            owner.removeTimeObserver(boundaryObserver)
+        }
+        boundaryObserver = nil
+        boundaryObserverOwner = nil
+    }
+
+    private func promoteNextPlayer(trackID: String?, urlString: String) {
+        guard let fadePlayer = nextPlayer else { return }
         removePlayerObservers()
         player?.pause()
 
-        crossfadeTimer?.invalidate()
-        crossfadeTimer = nil
-        crossfadePlayerStatusObserver = nil
+        crossfadeTask?.cancel()
+        crossfadeTask = nil
+        nextPlayerStatusObserver = nil
 
         currentTrackBaseVolume = nextTrackBaseVolume
         nextTrackBaseVolume = 1
-        fadePlayer.volume = currentTrackBaseVolume
         player = fadePlayer
-        crossfadePlayer = nil
+        nextPlayer = nil
         crossfadeStarted = false
-        crossfadeNextURLString = nil
+        crossfadeProgress = 0
+        nextURLString = nil
         currentTrackID = trackID
         currentURLString = urlString
         lastErrorMessage = nil
+        pendingStartTime = nil
         wantsPlayback = true
         stallRetryCount = 0
+        stallRetryTask?.cancel()
+        stallRetryTask = nil
+        lastNowPlayingElapsedSecond = -1
+        activateAudioSession()
+        applyVolumes()
 
         if let item = fadePlayer.currentItem {
-            let d = resolvedDuration(for: item)
-            if d > 0 { duration = d }
+            setDuration(resolvedDuration(for: item))
             let t = fadePlayer.currentTime().seconds
             if t.isFinite, t >= 0 {
                 currentTime = t
-                if duration > 0 { progress = min(max(t / duration, 0), 1) }
+                progress = duration > 0 ? min(max(t / duration, 0), 1) : 0
+            } else {
+                currentTime = 0
+                progress = 0
             }
             attachObservers(player: fadePlayer, item: item)
+            // A preloaded-but-silent item (manual skip) still has to start.
+            if fadePlayer.timeControlStatus != .playing { fadePlayer.play() }
             updatePlaybackState(for: fadePlayer, item: item)
+            syncNowPlayingProgressIfNeeded(force: true)
         } else {
-            registerPlaybackFailure(nil, fallback: "Could not promote crossfade player.")
+            registerPlaybackFailure(nil, fallback: String(localized: "Could not promote the next track."))
         }
     }
+
+    // MARK: - Helpers
 
     private func resolvedDuration(for item: AVPlayerItem?) -> TimeInterval {
         guard let item else { return 0 }
@@ -771,14 +1006,22 @@ final class AudioPlayer {
         return (seconds.isFinite && seconds > 0) ? seconds : 0
     }
 
+    /// Observable setters fire on every assignment; only write real changes
+    /// so views reading `duration` don't redraw on every tick.
+    private func setDuration(_ value: TimeInterval) {
+        if abs(duration - value) > 0.01 { duration = value }
+    }
+
     private static func normalizedPlaybackURLString(_ raw: String) -> String? {
         URLComponents(string: raw)?.string
     }
 
     private func transition(to state: PlaybackState, clearError: Bool = false) {
+        if clearError, lastErrorMessage != nil { lastErrorMessage = nil }
+        guard playbackState != state else { return }
         playbackState = state
-        if clearError { lastErrorMessage = nil }
         syncNowPlayingProgressIfNeeded(force: true)
+        onPlaybackStateChange?(state)
     }
 
     private func registerPlaybackFailure(_ error: Error?, fallback: String) {
@@ -786,15 +1029,17 @@ final class AudioPlayer {
         wantsPlayback = false
         stallRetryTask?.cancel()
         stallRetryTask = nil
+        pendingStartTime = nil
+        cancelCrossfade(keepPreload: true)
 
         var message = fallback
         if let nsError = error as NSError? {
             if nsError.domain == NSURLErrorDomain {
                 switch nsError.code {
                 case NSURLErrorNotConnectedToInternet, NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost:
-                    message = "Server unreachable."
+                    message = String(localized: "Server unreachable.")
                 case NSURLErrorTimedOut:
-                    message = "Stream timed out."
+                    message = String(localized: "Stream timed out.")
                 default:
                     break
                 }
@@ -821,6 +1066,7 @@ final class AudioPlayer {
 
     private func installEndObserver(for item: AVPlayerItem) {
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        endObserver = nil
         guard trackEndAction != nil else { return }
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
@@ -836,65 +1082,79 @@ final class AudioPlayer {
 
     // MARK: - Now Playing Info Center
 
-    private var cachedArtwork: MPMediaItemArtwork?
-    private var cachedArtworkURL: String?
+    @ObservationIgnored private var nowPlayingTrackID: String?
+    @ObservationIgnored private var cachedArtwork: MPMediaItemArtwork?
+    @ObservationIgnored private var cachedArtworkURL: String?
+    @ObservationIgnored private var artworkLoadTask: Task<Void, Never>?
 
     func updateNowPlayingInfo(track: Track) {
+        nowPlayingTrackID = track.id
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: track.title,
             MPMediaItemPropertyArtist: track.artist,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
             MPMediaItemPropertyPlaybackDuration: duration > 0 ? duration : (track.duration ?? 0),
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
+            MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
+            MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
         ]
         if let album = track.album {
             info[MPMediaItemPropertyAlbumTitle] = album
         }
-
         if let cached = cachedArtwork, cachedArtworkURL == track.artwork {
             info[MPMediaItemPropertyArtwork] = cached
         }
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        applyNowPlayingPlaybackState()
         lastNowPlayingElapsedSecond = Int(currentTime.rounded(.down))
         lastNowPlayingDuration = duration > 0 ? duration : (track.duration ?? 0)
 
-        // Load artwork asynchronously if needed.
-        let artURLString = track.artwork ?? ""
-        let trackTitle = track.title
-        let trackArtist = track.artist
-        let trackAlbum = track.album
-        let trackDuration = track.duration
-        if cachedArtworkURL != artURLString,
-           let artURL = Self.normalizedPlaybackURLString(artURLString),
-           let url = URL(string: artURL) {
-            Task { @MainActor [weak self] in
-                if let result = try? await ArtworkPipeline.shared.loadImage(from: url, maxPixelSize: 1024) {
-                    guard let self else { return }
-                    let image = result.image
-                    let artwork = Self.makeNowPlayingArtwork(image)
-                    self.cachedArtwork = artwork
-                    self.cachedArtworkURL = artURLString
-                    var updatedInfo: [String: Any] = [
-                        MPMediaItemPropertyTitle: trackTitle,
-                        MPMediaItemPropertyArtist: trackArtist,
-                        MPNowPlayingInfoPropertyElapsedPlaybackTime: self.currentTime,
-                        MPMediaItemPropertyPlaybackDuration: self.duration > 0 ? self.duration : (trackDuration ?? 0),
-                        MPNowPlayingInfoPropertyPlaybackRate: self.isPlaying ? 1.0 : 0.0,
-                        MPMediaItemPropertyArtwork: artwork,
-                    ]
-                    if let album = trackAlbum { updatedInfo[MPMediaItemPropertyAlbumTitle] = album }
-                    MPNowPlayingInfoCenter.default().nowPlayingInfo = updatedInfo
-                }
-            }
+        guard cachedArtworkURL != track.artwork else { return }
+        artworkLoadTask?.cancel()
+        guard let artURLString = track.artwork,
+              let normalized = Self.normalizedPlaybackURLString(artURLString),
+              let url = URL(string: normalized) else { return }
+        let trackID = track.id
+        artworkLoadTask = Task { @MainActor [weak self] in
+            guard let result = try? await ArtworkPipeline.shared.loadImage(from: url, maxPixelSize: 1024) else { return }
+            // The track may have changed while the image was loading.
+            guard let self, !Task.isCancelled, self.nowPlayingTrackID == trackID else { return }
+            let artwork = Self.makeNowPlayingArtwork(result.image)
+            self.cachedArtwork = artwork
+            self.cachedArtworkURL = artURLString
+            var updated = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+            updated[MPMediaItemPropertyArtwork] = artwork
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = updated
         }
+    }
+
+    /// Removes lock-screen / Control Center metadata (logout).
+    func clearNowPlayingInfo() {
+        artworkLoadTask?.cancel()
+        artworkLoadTask = nil
+        nowPlayingTrackID = nil
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        applyNowPlayingPlaybackState()
     }
 
     private nonisolated static func makeNowPlayingArtwork(_ image: PlatformImage) -> MPMediaItemArtwork {
         MPMediaItemArtwork(boundsSize: image.platformSize) { _ in image }
     }
 
+    private func applyNowPlayingPlaybackState() {
+        #if os(macOS)
+        let center = MPNowPlayingInfoCenter.default()
+        if center.nowPlayingInfo == nil {
+            center.playbackState = .stopped
+        } else {
+            center.playbackState = isPlaying ? .playing : (playbackState == .idle ? .stopped : .paused)
+        }
+        #endif
+    }
+
     private func syncNowPlayingProgressIfNeeded(force: Bool = false) {
+        guard nowPlayingTrackID != nil else { return }
         let resolvedDuration = duration > 0 ? duration : (PlayerStore.shared.currentTrack?.duration ?? 0)
         let elapsedSecond = Int(currentTime.rounded(.down))
         guard force || elapsedSecond != lastNowPlayingElapsedSecond || abs(resolvedDuration - lastNowPlayingDuration) > 0.5 else {
@@ -909,15 +1169,10 @@ final class AudioPlayer {
         nowPlaying[MPMediaItemPropertyPlaybackDuration] = resolvedDuration
         nowPlaying[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlaying
+        applyNowPlayingPlaybackState()
     }
 
-    // Callbacks for skip next/previous and playback events - set by PlayerStore.
-    var onRemoteNext: (@MainActor () -> Void)?
-    var onRemotePrevious: (@MainActor () -> Void)?
-    var onPlaybackProgress: (@MainActor (TimeInterval) -> Void)?
-    var onPlaybackPaused: (@MainActor () -> Void)?
-    var onPlaybackResumed: (@MainActor () -> Void)?
-    var onPlaybackFailed: (@MainActor () -> Void)?
+    // MARK: - Remote commands
 
     private func setupRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
@@ -930,15 +1185,24 @@ final class AudioPlayer {
         center.changePlaybackPositionCommand.isEnabled = true
 
         center.playCommand.addTarget { [weak self] _ in
-            Task { @MainActor [weak self] in self?.resume() }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let hook = self.onRemotePlay { hook() } else { self.resume() }
+            }
             return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor [weak self] in self?.pause() }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let hook = self.onRemotePause { hook() } else { self.pause() }
+            }
             return .success
         }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor [weak self] in self?.togglePlayPause() }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let hook = self.onRemoteTogglePlayPause { hook() } else { self.togglePlayPause() }
+            }
             return .success
         }
 
@@ -962,7 +1226,8 @@ final class AudioPlayer {
                 guard let self else { return }
                 let dur = self.duration > 0 ? self.duration : (PlayerStore.shared.currentTrack?.duration ?? 0)
                 guard dur > 0 else { return }
-                self.seek(to: position / dur)
+                let fraction = position / dur
+                if let hook = self.onRemoteSeek { hook(fraction) } else { self.seek(to: fraction) }
             }
             return .success
         }

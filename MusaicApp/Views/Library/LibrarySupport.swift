@@ -14,7 +14,7 @@ func libraryAlbumTitle(for track: Track) -> String {
     if !album.isEmpty { return album }
 
     let title = normalizedLibraryText(track.title)
-    return title.isEmpty ? "Untitled Single" : title
+    return title.isEmpty ? String(localized: "Untitled Single") : title
 }
 
 func trackBelongs(to album: Album, track: Track) -> Bool {

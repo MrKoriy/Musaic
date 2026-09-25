@@ -1,66 +1,58 @@
-# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
-
-# dependencies
+# dependencies & build output
 node_modules/
+server/dist/
+coverage/
+*.tsbuildinfo
 
-# Expo
-.expo/
-dist/
-web-build/
-expo-env.d.ts
+# Xcode — Musaic.xcodeproj is generated from MusaicApp/project.yml by XcodeGen
+MusaicApp/Musaic.xcodeproj/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+.swiftpm/
+build/
 
-# Native
-.kotlin/
-*.orig.*
-*.jks
+# signing material
 *.p8
 *.p12
 *.key
+*.pem
 *.mobileprovision
-
-# Metro
-.metro-health-check*
-
-# debug
-npm-debug.*
-yarn-debug.*
-yarn-error.*
 
 # macOS
 .DS_Store
-*.pem
+._*
 
-# local env files
-.env*.local
+# logs
+*.log
+npm-debug.*
 
-# typescript
-*.tsbuildinfo
+# local env files & secrets (never commit)
+.env
+.env.*
+!.env.example
+*.secret
+.musaic.secret
 
-# generated native folders
-/ios
-/android
+# local databases
+*.db
+*.db-wal
+*.db-shm
 
-# media sidecar (Python venv + runtime logs)
+# media sidecar (Python venv + caches)
 server/sidecar/.venv/
-server/sidecar/sidecar.log
-server/sidecar/__pycache__/
+__pycache__/
+*.pyc
 
 # local tool/IDE folders
 .bg-shell/
 .claude/
 .xcode-home/
 .gemini/
-
-# secrets + local databases (never commit)
-*.secret
-.musaic.secret
-*.db
-*.db-wal
-*.db-shm
-
+.hermes/
+.context/
 
 # local experiments / tool artifacts
-/.hermes/
 /musaic-api-cache/
 /musaic-artwork-cache/
 /musaic-cachetest/

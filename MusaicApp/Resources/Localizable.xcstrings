@@ -1164,6 +1164,1739 @@
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Tap a mood to build a fast queue." } },
         "ru" : { "stringUnit" : { "state" : "translated", "value" : "Выберите настроение, чтобы быстро собрать очередь." } }
       }
+    },
+    "%@ of %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%@ of %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "%@ из %@" } }
+      }
+    },
+    "%@ s" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%@ s" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "%@ с" } }
+      }
+    },
+    "%@ • %@ • SLEEP %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%@ • %@ • SLEEP %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "%@ • %@ • СОН %@" } }
+      }
+    },
+    "%@ • %@ • SLEEP AFTER TRACK" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%@ • %@ • SLEEP AFTER TRACK" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "%@ • %@ • СОН ПОСЛЕ ТРЕКА" } }
+      }
+    },
+    "%lld Tracks" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : { "stringUnit" : { "state" : "translated", "value" : "%lld Track" } },
+              "other" : { "stringUnit" : { "state" : "translated", "value" : "%lld Tracks" } }
+            }
+          }
+        },
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : { "stringUnit" : { "state" : "translated", "value" : "%lld трека" } },
+              "many" : { "stringUnit" : { "state" : "translated", "value" : "%lld треков" } },
+              "one" : { "stringUnit" : { "state" : "translated", "value" : "%lld трек" } },
+              "other" : { "stringUnit" : { "state" : "translated", "value" : "%lld трека" } }
+            }
+          }
+        }
+      }
+    },
+    "%lld albums • %lld tracks" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%#@albums@ • %#@tracks@"
+          },
+          "substitutions" : {
+            "albums" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : { "stringUnit" : { "state" : "translated", "value" : "%arg album" } },
+                  "other" : { "stringUnit" : { "state" : "translated", "value" : "%arg albums" } }
+                }
+              }
+            },
+            "tracks" : {
+              "argNum" : 2,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "one" : { "stringUnit" : { "state" : "translated", "value" : "%arg track" } },
+                  "other" : { "stringUnit" : { "state" : "translated", "value" : "%arg tracks" } }
+                }
+              }
+            }
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%#@albums@ • %#@tracks@"
+          },
+          "substitutions" : {
+            "albums" : {
+              "argNum" : 1,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "few" : { "stringUnit" : { "state" : "translated", "value" : "%arg альбома" } },
+                  "many" : { "stringUnit" : { "state" : "translated", "value" : "%arg альбомов" } },
+                  "one" : { "stringUnit" : { "state" : "translated", "value" : "%arg альбом" } },
+                  "other" : { "stringUnit" : { "state" : "translated", "value" : "%arg альбома" } }
+                }
+              }
+            },
+            "tracks" : {
+              "argNum" : 2,
+              "formatSpecifier" : "lld",
+              "variations" : {
+                "plural" : {
+                  "few" : { "stringUnit" : { "state" : "translated", "value" : "%arg трека" } },
+                  "many" : { "stringUnit" : { "state" : "translated", "value" : "%arg треков" } },
+                  "one" : { "stringUnit" : { "state" : "translated", "value" : "%arg трек" } },
+                  "other" : { "stringUnit" : { "state" : "translated", "value" : "%arg трека" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld found" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%lld found" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Найдено: %lld" } }
+      }
+    },
+    "%lld of %lld tracks couldn't be added." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%lld of %lld tracks couldn't be added." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось добавить треков: %lld из %lld." } }
+      }
+    },
+    "%lld plays" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : { "stringUnit" : { "state" : "translated", "value" : "%lld play" } },
+              "other" : { "stringUnit" : { "state" : "translated", "value" : "%lld plays" } }
+            }
+          }
+        },
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : { "stringUnit" : { "state" : "translated", "value" : "%lld прослушивания" } },
+              "many" : { "stringUnit" : { "state" : "translated", "value" : "%lld прослушиваний" } },
+              "one" : { "stringUnit" : { "state" : "translated", "value" : "%lld прослушивание" } },
+              "other" : { "stringUnit" : { "state" : "translated", "value" : "%lld прослушивания" } }
+            }
+          }
+        }
+      }
+    },
+    "%lld tracks" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : { "stringUnit" : { "state" : "translated", "value" : "%lld track" } },
+              "other" : { "stringUnit" : { "state" : "translated", "value" : "%lld tracks" } }
+            }
+          }
+        },
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : { "stringUnit" : { "state" : "translated", "value" : "%lld трека" } },
+              "many" : { "stringUnit" : { "state" : "translated", "value" : "%lld треков" } },
+              "one" : { "stringUnit" : { "state" : "translated", "value" : "%lld трек" } },
+              "other" : { "stringUnit" : { "state" : "translated", "value" : "%lld трека" } }
+            }
+          }
+        }
+      }
+    },
+    "%lld up next" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%lld up next" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Далее: %lld" } }
+      }
+    },
+    "%lld/%lld tracks found" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%lld/%lld tracks found" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Найдено треков: %lld из %lld" } }
+      }
+    },
+    "%lldd" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%lldd" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "%lld дн." } }
+      }
+    },
+    "%lldh" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%lldh" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "%lld ч" } }
+      }
+    },
+    "%lldh %lldm" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%lldh %lldm" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "%lld ч %lld мин" } }
+      }
+    },
+    "%lldm" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%lldm" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "%lld мин" } }
+      }
+    },
+    "%llds" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%llds" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "%lld с" } }
+      }
+    },
+    "+ shows lines earlier" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "+ shows lines earlier" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "+ показывает строки раньше" } }
+      }
+    },
+    "0.0 s" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "0.0 s" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "0,0 с" } }
+      }
+    },
+    "A personal music player for your own server: local files, Yandex Music, YouTube and SoundCloud." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "A personal music player for your own server: local files, Yandex Music, YouTube and SoundCloud." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Личный музыкальный плеер для вашего сервера: локальные файлы, Яндекс Музыка, YouTube и SoundCloud." } }
+      }
+    },
+    "ALL" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "ALL" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "ВСЕ" } }
+      }
+    },
+    "Add to Library" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Add to Library" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Добавить в медиатеку" } }
+      }
+    },
+    "Add tracks from search or any track's menu." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Add tracks from search or any track's menu." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Добавляйте треки из поиска или из меню любого трека." } }
+      }
+    },
+    "Added %lld likes" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : { "stringUnit" : { "state" : "translated", "value" : "Added %lld like" } },
+              "other" : { "stringUnit" : { "state" : "translated", "value" : "Added %lld likes" } }
+            }
+          }
+        },
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : { "stringUnit" : { "state" : "translated", "value" : "Добавлено %lld лайка" } },
+              "many" : { "stringUnit" : { "state" : "translated", "value" : "Добавлено %lld лайков" } },
+              "one" : { "stringUnit" : { "state" : "translated", "value" : "Добавлен %lld лайк" } },
+              "other" : { "stringUnit" : { "state" : "translated", "value" : "Добавлено %lld лайка" } }
+            }
+          }
+        }
+      }
+    },
+    "Adjust lyrics timing" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Adjust lyrics timing" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Настроить синхронизацию текста" } }
+      }
+    },
+    "All songs (%lld)" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "All songs (%lld)" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Все песни (%lld)" } }
+      }
+    },
+    "All sources" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "All sources" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Все источники" } }
+      }
+    },
+    "Already have an account? Sign In" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Already have an account? Sign In" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Уже есть аккаунт? Войти" } }
+      }
+    },
+    "Already playing with these filters" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Already playing with these filters" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Уже играет с этими фильтрами" } }
+      }
+    },
+    "An endless station built from your favorites" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "An endless station built from your favorites" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Бесконечная станция из вашего любимого" } }
+      }
+    },
+    "Any language" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Any language" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Любой язык" } }
+      }
+    },
+    "Artist" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Artist" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Исполнитель" } }
+      }
+    },
+    "Authentication required for %@." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Authentication required for %@." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Требуется вход: %@." } }
+      }
+    },
+    "Calm" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Calm" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Спокойствие" } }
+      }
+    },
+    "Can't reach the server. Check your connection and try again." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Can't reach the server. Check your connection and try again." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удается связаться с сервером. Проверьте подключение и повторите попытку." } }
+      }
+    },
+    "Cancelled." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Cancelled." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Отменено." } }
+      }
+    },
+    "Character" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Character" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Характер" } }
+      }
+    },
+    "Choose from Files" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Choose from Files" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Выбрать из Файлов" } }
+      }
+    },
+    "Choose from Photos" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Choose from Photos" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Выбрать из Фото" } }
+      }
+    },
+    "Clearing…" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Clearing…" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Очистка…" } }
+      }
+    },
+    "Close lyrics" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Close lyrics" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Закрыть текст" } }
+      }
+    },
+    "Close wheel" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Close wheel" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Закрыть колесо" } }
+      }
+    },
+    "Closer to your likes" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Closer to your likes" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Ближе к вашим лайкам" } }
+      }
+    },
+    "Command" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Command" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Команда" } }
+      }
+    },
+    "Connect your Yandex account by code — no password typing. Full tracks require an active Yandex Plus subscription." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Connect your Yandex account by code — no password typing. Full tracks require an active Yandex Plus subscription." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Подключите аккаунт Яндекса по коду — без ввода пароля. Для полных треков нужна активная подписка Яндекс Плюс." } }
+      }
+    },
+    "Connected, but no active Yandex Plus — only 30s previews will play." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Connected, but no active Yandex Plus — only 30s previews will play." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Подключено, но нет активной подписки Яндекс Плюс — будут играть только 30-секундные фрагменты." } }
+      }
+    },
+    "Connection failed: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Connection failed: %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Ошибка подключения: %@" } }
+      }
+    },
+    "Controls Musaic playback" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Controls Musaic playback" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Управляет воспроизведением Musaic" } }
+      }
+    },
+    "Could not connect Yandex. Check the token and that the server can reach Yandex." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Could not connect Yandex. Check the token and that the server can reach Yandex." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось подключить Яндекс. Проверьте токен и доступ сервера к Яндексу." } }
+      }
+    },
+    "Could not open VK login. Check the server connection." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Could not open VK login. Check the server connection." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось открыть вход в VK. Проверьте подключение к серверу." } }
+      }
+    },
+    "Could not promote the next track." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Could not promote the next track." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось переключиться на следующий трек." } }
+      }
+    },
+    "Could not start Yandex authorization. Check the server connection." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Could not start Yandex authorization. Check the server connection." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось начать авторизацию в Яндексе. Проверьте подключение к серверу." } }
+      }
+    },
+    "Could not sync likes" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Could not sync likes" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось синхронизировать лайки" } }
+      }
+    },
+    "Couldn't add to playlist: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Couldn't add to playlist: %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось добавить в плейлист: %@" } }
+      }
+    },
+    "Couldn't clear cached lyrics: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Couldn't clear cached lyrics: %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось очистить сохраненный текст: %@" } }
+      }
+    },
+    "Couldn't create playlist: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Couldn't create playlist: %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось создать плейлист: %@" } }
+      }
+    },
+    "Couldn't delete: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Couldn't delete: %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось удалить: %@" } }
+      }
+    },
+    "Couldn't load playlists: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Couldn't load playlists: %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось загрузить плейлисты: %@" } }
+      }
+    },
+    "Couldn't load the stream." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Couldn't load the stream." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось загрузить поток." } }
+      }
+    },
+    "Couldn't read the selected file." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Couldn't read the selected file." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось прочитать выбранный файл." } }
+      }
+    },
+    "Couldn't read the selected photo." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Couldn't read the selected photo." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось прочитать выбранное фото." } }
+      }
+    },
+    "Couldn't remove cover: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Couldn't remove cover: %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось удалить обложку: %@" } }
+      }
+    },
+    "Couldn't remove the track: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Couldn't remove the track: %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось убрать трек: %@" } }
+      }
+    },
+    "Couldn't rename: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Couldn't rename: %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось переименовать: %@" } }
+      }
+    },
+    "Couldn't start generation: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Couldn't start generation: %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось запустить генерацию: %@" } }
+      }
+    },
+    "Couldn't upload cover: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Couldn't upload cover: %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось загрузить обложку: %@" } }
+      }
+    },
+    "Create" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Create" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Создать" } }
+      }
+    },
+    "Create Account" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Create Account" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Создать аккаунт" } }
+      }
+    },
+    "Create a fresh playlist and start filling it right away." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Create a fresh playlist and start filling it right away." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Создайте новый плейлист и сразу начните его наполнять." } }
+      }
+    },
+    "Create and add track" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Create and add track" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Создать и добавить трек" } }
+      }
+    },
+    "Create your account" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Create your account" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Создайте аккаунт" } }
+      }
+    },
+    "Crown controls volume" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Crown controls volume" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Колесико регулирует громкость" } }
+      }
+    },
+    "Crown scrubs the track" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Crown scrubs the track" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Колесико перематывает трек" } }
+      }
+    },
+    "Daily Mix" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Daily Mix" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Дневной микс" } }
+      }
+    },
+    "Delete" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Delete" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Удалить" } }
+      }
+    },
+    "Delete Playlist" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Delete Playlist" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Удалить плейлист" } }
+      }
+    },
+    "Delete Playlist?" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Delete Playlist?" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Удалить плейлист?" } }
+      }
+    },
+    "Display name" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Display name" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Отображаемое имя" } }
+      }
+    },
+    "Don't have an account? Register" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Don't have an account? Register" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Нет аккаунта? Зарегистрироваться" } }
+      }
+    },
+    "Downloaded only" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Downloaded only" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Только скачанные" } }
+      }
+    },
+    "Edit Cover" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Edit Cover" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Изменить обложку" } }
+      }
+    },
+    "Empty Playlist" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Empty Playlist" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Пустой плейлист" } }
+      }
+    },
+    "Energetic" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Energetic" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Драйв" } }
+      }
+    },
+    "Energise" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Energise" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Энергия" } }
+      }
+    },
+    "Enter a valid server address, e.g. 192.168.1.10:3001." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Enter a valid server address, e.g. 192.168.1.10:3001." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Введите корректный адрес сервера, например 192.168.1.10:3001." } }
+      }
+    },
+    "Favorites" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Favorites" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Любимое" } }
+      }
+    },
+    "Feel good" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Feel good" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Хорошее настроение" } }
+      }
+    },
+    "Find Tracks" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Find Tracks" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Найти треки" } }
+      }
+    },
+    "Focus" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Focus" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Фокус" } }
+      }
+    },
+    "For You" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "For You" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Для вас" } }
+      }
+    },
+    "Foreign" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Foreign" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Зарубежное" } }
+      }
+    },
+    "Found on %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Found on %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Найдено: %@" } }
+      }
+    },
+    "Gathering the first batch of tracks for your language, familiarity and mood." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Gathering the first batch of tracks for your language, familiarity and mood." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Собираем первые треки под ваш язык, степень знакомости и настроение." } }
+      }
+    },
+    "Good afternoon" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Good afternoon" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Добрый день" } }
+      }
+    },
+    "Good evening" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Good evening" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Добрый вечер" } }
+      }
+    },
+    "Good morning" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Good morning" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Доброе утро" } }
+      }
+    },
+    "HTTP %lld for %@%@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "HTTP %lld for %@%@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "HTTP %lld для %@%@" } }
+      }
+    },
+    "High (320)" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "High (320)" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Высокое (320)" } }
+      }
+    },
+    "Imported Playlist" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Imported Playlist" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Импортированный плейлист" } }
+      }
+    },
+    "Invalid audio URL." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Invalid audio URL." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Некорректная ссылка на аудио." } }
+      }
+    },
+    "Invalid download URL" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Invalid download URL" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Некорректная ссылка для загрузки" } }
+      }
+    },
+    "Invalid request path: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Invalid request path: %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Некорректный путь запроса: %@" } }
+      }
+    },
+    "Invalid server response" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Invalid server response" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Некорректный ответ сервера" } }
+      }
+    },
+    "Invalid server response from %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Invalid server response from %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Некорректный ответ сервера: %@" } }
+      }
+    },
+    "LIVE" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "LIVE" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "В ЭФИРЕ" } }
+      }
+    },
+    "LOCAL" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "LOCAL" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "ЛОКАЛЬНО" } }
+      }
+    },
+    "Language" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Language" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Язык" } }
+      }
+    },
+    "Late night" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Late night" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Поздний вечер" } }
+      }
+    },
+    "Likes are up to date" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Likes are up to date" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Лайки актуальны" } }
+      }
+    },
+    "Listens" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Listens" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Прослушивания" } }
+      }
+    },
+    "Low (128)" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Low (128)" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Низкое (128)" } }
+      }
+    },
+    "Lyrics generation failed." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Lyrics generation failed." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось сгенерировать текст." } }
+      }
+    },
+    "Lyrics generation is taking too long. Try again later." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Lyrics generation is taking too long. Try again later." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Генерация текста занимает слишком много времени. Повторите попытку позже." } }
+      }
+    },
+    "Lyrics timing" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Lyrics timing" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Синхронизация текста" } }
+      }
+    },
+    "MENU" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "MENU" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "МЕНЮ" } }
+      }
+    },
+    "Menu" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Menu" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Меню" } }
+      }
+    },
+    "Mix" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Mix" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Микс" } }
+      }
+    },
+    "Mixed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Mixed" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Смешанные" } }
+      }
+    },
+    "Mood" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Mood" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Настроение" } }
+      }
+    },
+    "Mood-weighted picks." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Mood-weighted picks." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Подборка с учетом настроения." } }
+      }
+    },
+    "Musaic Playback" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Musaic Playback" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Воспроизведение Musaic" } }
+      }
+    },
+    "New release" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "New release" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Новый релиз" } }
+      }
+    },
+    "New release • %lld" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "New release • %lld" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Новый релиз • %lld" } }
+      }
+    },
+    "Next track" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Next track" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Следующий трек" } }
+      }
+    },
+    "Next wheel mode" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Next wheel mode" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Следующий режим колеса" } }
+      }
+    },
+    "No Tracks" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No Tracks" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Нет треков" } }
+      }
+    },
+    "No active Yandex Plus — only 30s previews will play." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No active Yandex Plus — only 30s previews will play." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Нет активной подписки Яндекс Плюс — будут играть только 30-секундные фрагменты." } }
+      }
+    },
+    "No response from the server" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No response from the server" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сервер не ответил" } }
+      }
+    },
+    "No tracks" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No tracks" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Нет треков" } }
+      }
+    },
+    "No tracks were found for this album." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No tracks were found for this album." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Для этого альбома не найдено треков." } }
+      }
+    },
+    "No tracks were found for this artist." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No tracks were found for this artist." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Для этого исполнителя не найдено треков." } }
+      }
+    },
+    "Normal (192)" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Normal (192)" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Обычное (192)" } }
+      }
+    },
+    "Not saved — check connection" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Not saved — check connection" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не сохранено — проверьте подключение" } }
+      }
+    },
+    "Nothing matched \"%@\"." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Nothing matched \"%@\"." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "По запросу «%@» ничего не найдено." } }
+      }
+    },
+    "Nothing playing" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Nothing playing" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Ничего не играет" } }
+      }
+    },
+    "OK" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "OK" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "ОК" } }
+      }
+    },
+    "OTHER" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "OTHER" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "ДРУГОЕ" } }
+      }
+    },
+    "Oldest First" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Oldest First" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сначала старые" } }
+      }
+    },
+    "One input across your library, Yandex, YouTube and SoundCloud." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "One input across your library, Yandex, YouTube and SoundCloud." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Один запрос — по медиатеке, Яндексу, YouTube и SoundCloud." } }
+      }
+    },
+    "Open %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Open %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Открыть %@" } }
+      }
+    },
+    "Open Musaic on your iPhone." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Open Musaic on your iPhone." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Откройте Musaic на iPhone." } }
+      }
+    },
+    "Open Musaic to start a track." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Open Musaic to start a track." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Откройте Musaic, чтобы включить трек." } }
+      }
+    },
+    "Open the Yandex page, sign in, and enter this code exactly as shown (valid ~5 min):" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Open the Yandex page, sign in, and enter this code exactly as shown (valid ~5 min):" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Откройте страницу Яндекса, войдите и введите этот код точно как показано (действует ~5 мин):" } }
+      }
+    },
+    "Party" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Party" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Вечеринка" } }
+      }
+    },
+    "Password" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Password" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Пароль" } }
+      }
+    },
+    "Paste" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Paste" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Вставить" } }
+      }
+    },
+    "Paste a link from Yandex Music. Tracks are matched in your library and enabled sources." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Paste a link from Yandex Music. Tracks are matched in your library and enabled sources." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Вставьте ссылку из Яндекс Музыки. Треки будут найдены в вашей медиатеке и включенных источниках." } }
+      }
+    },
+    "Plain text" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Plain text" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Обычный текст" } }
+      }
+    },
+    "Play Next" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Play Next" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Воспроизвести следующим" } }
+      }
+    },
+    "Play Now" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Play Now" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Воспроизвести сейчас" } }
+      }
+    },
+    "Play or pause" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Play or pause" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Воспроизвести или приостановить" } }
+      }
+    },
+    "Playback stalled after two retries." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Playback stalled after two retries." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Воспроизведение зависло после двух попыток." } }
+      }
+    },
+    "Playback stopped unexpectedly." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Playback stopped unexpectedly." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Воспроизведение неожиданно остановилось." } }
+      }
+    },
+    "Playback will fade out in %@." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Playback will fade out in %@." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Воспроизведение затихнет через %@." } }
+      }
+    },
+    "Playlist cover" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Playlist cover" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Обложка плейлиста" } }
+      }
+    },
+    "Playlist name" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Playlist name" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Название плейлиста" } }
+      }
+    },
+    "Playlist options" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Playlist options" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Параметры плейлиста" } }
+      }
+    },
+    "Playlist unavailable" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Playlist unavailable" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Плейлист недоступен" } }
+      }
+    },
+    "Plays from this line" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Plays from this line" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Воспроизводит с этой строки" } }
+      }
+    },
+    "Popular" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Popular" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Популярное" } }
+      }
+    },
+    "Popular Tracks" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Popular Tracks" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Популярные треки" } }
+      }
+    },
+    "Previous track" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Previous track" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Предыдущий трек" } }
+      }
+    },
+    "Queue (%lld)" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Queue (%lld)" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Очередь (%lld)" } }
+      }
+    },
+    "Re-aligning lyrics with AI" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Re-aligning lyrics with AI" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Выравниваем текст с помощью ИИ" } }
+      }
+    },
+    "Rebuilt from recent listening and favorites." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Rebuilt from recent listening and favorites." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Собран заново из недавних прослушиваний и любимого." } }
+      }
+    },
+    "Recently Added" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Recently Added" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Недавно добавленные" } }
+      }
+    },
+    "Recommendations pulled from your library and history." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Recommendations pulled from your library and history." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Рекомендации на основе вашей медиатеки и истории." } }
+      }
+    },
+    "Recommendations shifted to %@ mood." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Recommendations shifted to %@ mood." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Рекомендации под настроение «%@»." } }
+      }
+    },
+    "Refresh" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Refresh" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Обновить" } }
+      }
+    },
+    "Relax" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Relax" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Релакс" } }
+      }
+    },
+    "Remove Cover" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Remove Cover" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Удалить обложку" } }
+      }
+    },
+    "Remove from Playlist" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Remove from Playlist" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Убрать из плейлиста" } }
+      }
+    },
+    "Remove from Queue" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Remove from Queue" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Убрать из очереди" } }
+      }
+    },
+    "Removes cached artwork and server responses. Downloads are kept." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Removes cached artwork and server responses. Downloads are kept." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Удаляет кэш обложек и ответов сервера. Загрузки сохраняются." } }
+      }
+    },
+    "Rename" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Rename" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Переименовать" } }
+      }
+    },
+    "Rename Playlist" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Rename Playlist" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Переименовать плейлист" } }
+      }
+    },
+    "Repeat All" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Repeat All" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Повтор всех" } }
+      }
+    },
+    "Repeat Off" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Repeat Off" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Повтор выкл." } }
+      }
+    },
+    "Repeat One" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Repeat One" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Повтор одного" } }
+      }
+    },
+    "Request failed: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Request failed: %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Запрос не выполнен: %@" } }
+      }
+    },
+    "Reset" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Reset" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сбросить" } }
+      }
+    },
+    "Reset lyrics timing" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Reset lyrics timing" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сбросить синхронизацию текста" } }
+      }
+    },
+    "Restart My Vibe" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Restart My Vibe" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Перезапустить Мою волну" } }
+      }
+    },
+    "Romance" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Romance" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Романтика" } }
+      }
+    },
+    "Russian" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Russian" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Русское" } }
+      }
+    },
+    "Sad" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Sad" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Грусть" } }
+      }
+    },
+    "Save Playlist" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Save Playlist" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сохранить плейлист" } }
+      }
+    },
+    "Save failed: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Save failed: %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось сохранить: %@" } }
+      }
+    },
+    "Saved" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Saved" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сохранено" } }
+      }
+    },
+    "Saved as \"%@\"" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Saved as \"%@\"" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сохранено как «%@»" } }
+      }
+    },
+    "Saving…" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Saving…" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сохранение…" } }
+      }
+    },
+    "Scrub" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Scrub" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Перемотка" } }
+      }
+    },
+    "Search lyrics manually" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Search lyrics manually" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Найти текст вручную" } }
+      }
+    },
+    "Searching %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Searching %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Поиск: %@" } }
+      }
+    },
+    "Searching…" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Searching…" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Поиск…" } }
+      }
+    },
+    "Select" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Select" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Выбрать" } }
+      }
+    },
+    "Server address" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Server address" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Адрес сервера" } }
+      }
+    },
+    "Server is reachable." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Server is reachable." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сервер доступен." } }
+      }
+    },
+    "Server returned an invalid VK login URL." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Server returned an invalid VK login URL." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сервер вернул некорректную ссылку для входа в VK." } }
+      }
+    },
+    "Server unreachable." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Server unreachable." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сервер недоступен." } }
+      }
+    },
+    "Session expired. Sign in again to download." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Session expired. Sign in again to download." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сеанс истек. Войдите снова, чтобы скачивать." } }
+      }
+    },
+    "Show lyrics earlier" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Show lyrics earlier" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Показывать текст раньше" } }
+      }
+    },
+    "Show lyrics later" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Show lyrics later" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Показывать текст позже" } }
+      }
+    },
+    "Shows the currently playing track in Musaic." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Shows the currently playing track in Musaic." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Показывает трек, который сейчас играет в Musaic." } }
+      }
+    },
+    "Shuffle & Repeat" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Shuffle & Repeat" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Перемешивание и повтор" } }
+      }
+    },
+    "Shuffle Off" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Shuffle Off" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Перемешивание выкл." } }
+      }
+    },
+    "Shuffle On" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Shuffle On" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Перемешивание вкл." } }
+      }
+    },
+    "Sign In" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Sign In" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Войти" } }
+      }
+    },
+    "Sign in to VK directly inside Musaic and send the token to your server." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Sign in to VK directly inside Musaic and send the token to your server." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Войдите в VK прямо в Musaic и отправьте токен на свой сервер." } }
+      }
+    },
+    "Similar, but less familiar" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Similar, but less familiar" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Похожее, но менее знакомое" } }
+      }
+    },
+    "Sleep" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Sleep" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сон" } }
+      }
+    },
+    "Some sources did not respond" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Some sources did not respond" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Некоторые источники не ответили" } }
+      }
+    },
+    "Sort by" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Sort by" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сортировка" } }
+      }
+    },
+    "Source: %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Source: %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Источник: %@" } }
+      }
+    },
+    "Sources, accounts, playback defaults and server control." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Sources, accounts, playback defaults and server control." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Источники, аккаунты, настройки воспроизведения и управление сервером." } }
+      }
+    },
+    "Spin the wheel to scrub" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Spin the wheel to scrub" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Вращайте колесо для перемотки" } }
+      }
+    },
+    "Start My Vibe" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Start My Vibe" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Запустить Мою волну" } }
+      }
+    },
+    "Start a track in Musaic on your iPhone." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Start a track in Musaic on your iPhone." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Включите трек в Musaic на iPhone." } }
+      }
+    },
+    "Streak" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Streak" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Серия" } }
+      }
+    },
+    "Stream Quality applies to Yandex (real bitrate tiers); other sources serve a fixed quality. Gapless uses a short seamless bridge between tracks when Crossfade is Off." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Stream Quality applies to Yandex (real bitrate tiers); other sources serve a fixed quality. Gapless uses a short seamless bridge between tracks when Crossfade is Off." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Качество потока применяется к Яндексу (реальные уровни битрейта); остальные источники отдают фиксированное качество. Режим «Без пауз» использует короткий плавный переход между треками, когда плавное смешивание выключено." } }
+      }
+    },
+    "Stream timed out." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Stream timed out." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Время ожидания потока истекло." } }
+      }
+    },
+    "Switches between scrub, volume and shuffle/repeat" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Switches between scrub, volume and shuffle/repeat" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Переключает перемотку, громкость и перемешивание/повтор" } }
+      }
+    },
+    "Synced" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Synced" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Синхронизирован" } }
+      }
+    },
+    "Tap to change the server address (e.g. a LAN IP)." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Tap to change the server address (e.g. a LAN IP)." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Нажмите, чтобы изменить адрес сервера (например, IP в локальной сети)." } }
+      }
+    },
+    "Test connection" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Test connection" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Проверить подключение" } }
+      }
+    },
+    "Testing…" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Testing…" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Проверка…" } }
+      }
+    },
+    "The code expired. Tap Connect to get a new one." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The code expired. Tap Connect to get a new one." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Срок действия кода истек. Нажмите «Подключить по коду», чтобы получить новый." } }
+      }
+    },
+    "The main wave from your favorites. Filters can be combined freely." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The main wave from your favorites. Filters can be combined freely." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Главная волна из вашего любимого. Фильтры можно свободно сочетать." } }
+      }
+    },
+    "The more obvious hits" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The more obvious hits" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Самые очевидные хиты" } }
+      }
+    },
+    "The server answered with HTTP %lld." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The server answered with HTTP %lld." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сервер ответил кодом HTTP %lld." } }
+      }
+    },
+    "The server didn't save the playlist." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The server didn't save the playlist." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сервер не сохранил плейлист." } }
+      }
+    },
+    "The server returned an empty file." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The server returned an empty file." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сервер вернул пустой файл." } }
+      }
+    },
+    "This VK login cannot access music. Reconnect with a working VK audio client on the server." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "This VK login cannot access music. Reconnect with a working VK audio client on the server." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "У этого входа VK нет доступа к музыке. Подключитесь заново через рабочий аудиоклиент VK на сервере." } }
+      }
+    },
+    "This image format isn't supported." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "This image format isn't supported." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Этот формат изображения не поддерживается." } }
+      }
+    },
+    "This wave is already playing. You can restart it with the same filters." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "This wave is already playing. You can restart it with the same filters." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Эта волна уже играет. Можно перезапустить ее с теми же фильтрами." } }
+      }
+    },
+    "This will permanently delete \"%@\" and all its tracks." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "This will permanently delete \"%@\" and all its tracks." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Плейлист «%@» и все его треки будут удалены безвозвратно." } }
+      }
+    },
+    "Time" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Time" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Время" } }
+      }
+    },
+    "Title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Title" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Название" } }
+      }
+    },
+    "Token is stored encrypted on the server." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Token is stored encrypted on the server." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Токен хранится на сервере в зашифрованном виде." } }
+      }
+    },
+    "Token is stored on the server." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Token is stored on the server." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Токен хранится на сервере." } }
+      }
+    },
+    "Top artists" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Top artists" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Топ исполнителей" } }
+      }
+    },
+    "Top tracks" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Top tracks" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Топ треков" } }
+      }
+    },
+    "Unable to securely store the session. Try again." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unable to securely store the session. Try again." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Не удалось безопасно сохранить сеанс. Повторите попытку." } }
+      }
+    },
+    "Unfamiliar" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unfamiliar" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Незнакомое" } }
+      }
+    },
+    "Unknown Artist" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unknown Artist" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Неизвестный исполнитель" } }
+      }
+    },
+    "Unknown Title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unknown Title" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Без названия" } }
+      }
+    },
+    "Untitled Single" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Untitled Single" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Сингл без названия" } }
+      }
+    },
+    "Uploading…" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Uploading…" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Загрузка…" } }
+      }
+    },
+    "Useful for tracks with features — try \"Flo Milli, SZA, Cardi B\" as artist. Cached result will be replaced." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Useful for tracks with features — try \"Flo Milli, SZA, Cardi B\" as artist. Cached result will be replaced." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Полезно для треков с фитами — попробуйте указать исполнителя как «Flo Milli, SZA, Cardi B». Сохраненный результат будет заменен." } }
+      }
+    },
+    "Username" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Username" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Имя пользователя" } }
+      }
+    },
+    "VK Login" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "VK Login" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Вход в VK" } }
+      }
+    },
+    "VK Music" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "VK Music" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "VK Музыка" } }
+      }
+    },
+    "VK User" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "VK User" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Пользователь VK" } }
+      }
+    },
+    "VK is no longer used for search or recommendations — only your already-liked VK tracks still play. Connect VK below to keep them playing." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "VK is no longer used for search or recommendations — only your already-liked VK tracks still play. Connect VK below to keep them playing." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "VK больше не используется для поиска и рекомендаций — играют только уже отмеченные вами треки из VK. Подключите VK ниже, чтобы они продолжали играть." } }
+      }
+    },
+    "Version %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Version %@" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Версия %@" } }
+      }
+    },
+    "Version %@ (%@)" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Version %@ (%@)" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Версия %@ (%@)" } }
+      }
+    },
+    "Vibe" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Vibe" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Волна" } }
+      }
+    },
+    "Volume" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Volume" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Громкость" } }
+      }
+    },
+    "WAVE" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "WAVE" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "ВОЛНА" } }
+      }
+    },
+    "Waiting for confirmation…" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Waiting for confirmation…" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Ожидание подтверждения…" } }
+      }
+    },
+    "Welcome back" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Welcome back" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "С возвращением" } }
+      }
+    },
+    "Workout" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Workout" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Тренировка" } }
+      }
+    },
+    "Yandex OAuth token" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Yandex OAuth token" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "OAuth-токен Яндекса" } }
+      }
+    },
+    "Yandex account" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Yandex account" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Аккаунт Яндекса" } }
+      }
+    },
+    "Yandex rejected the authorization. Tap Connect to try again." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Yandex rejected the authorization. Tap Connect to try again." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Яндекс отклонил авторизацию. Нажмите «Подключить по коду», чтобы попробовать снова." } }
+      }
+    },
+    "Your Stats" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Your Stats" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Ваша статистика" } }
+      }
+    },
+    "Your infinite wave from liked tracks and quick filters." : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Your infinite wave from liked tracks and quick filters." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Ваша бесконечная волна из любимых треков и быстрых фильтров." } }
+      }
+    },
+    "iPod wheel" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "iPod wheel" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Колесо iPod" } }
+      }
+    },
+    "music.yandex.ru/users/.../playlists/..." : {
+      "shouldTranslate" : false
     }
   },
   "version" : "1.0"

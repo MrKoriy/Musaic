@@ -11,6 +11,8 @@ struct PlaylistDetailView: View {
     @State private var playlist: ServerPlaylist
     @State private var tracks: [Track] = []
     @State private var loading = true
+    @State private var loadError: String?
+    @State private var loadUnauthorized = false
     @State private var uploadingCover = false
     @State private var showCoverPicker = false
     @State private var showRename = false
@@ -27,6 +29,7 @@ struct PlaylistDetailView: View {
     private let api = APIService.shared
     private let player = PlayerStore.shared
     private let library = LibraryStore.shared
+    private let settings = SettingsStore.shared
 
     init(playlistId: String, initialPlaylist: ServerPlaylist, showNowPlaying: Binding<Bool>) {
         self.playlistId = playlistId
@@ -40,99 +43,50 @@ struct PlaylistDetailView: View {
 
             ScrollView {
                 VStack(spacing: 18) {
-                    ZStack(alignment: .bottomTrailing) {
-                        PlaylistArtworkView(coverURL: api.artworkURL(for: playlist.coverUrl))
-                            .frame(width: 240, height: 240)
+                    header
 
-                        Button {
-                            showCoverPicker = true
-                        } label: {
-                            HStack(spacing: 8) {
-                                if uploadingCover {
-                                    ProgressView()
-                                        .tint(Color.textPrimary)
-                                } else {
-                                    Image(systemName: "photo")
-                                }
-                                Text(uploadingCover ? "Uploading..." : "Edit Cover")
-                                    .font(.system(size: 12, weight: .semibold))
-                            }
-                            .foregroundStyle(Color.textPrimary)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                            .glassCard(cornerRadius: 18, intensity: 0.10)
-                        }
-                        .buttonStyle(.plain)
-                        .padding(12)
-                    }
-                    .padding(.top, 16)
-
-                    VStack(spacing: 4) {
-                        Text(playlist.name)
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
-                            .foregroundStyle(Color.textPrimary)
-                            .multilineTextAlignment(.center)
-                        Text("\(tracks.count) tracks")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(Color.textSecondary)
-                    }
-
-                    if loading {
-                        VStack {
-                            ProgressView()
-                                .tint(Color.textPrimary)
-                                .padding(.top, 40)
-                        }
-                        .frame(maxWidth: .infinity)
-                    } else if tracks.isEmpty {
-                        ContentUnavailableView("Empty Playlist", systemImage: "music.note.list")
+                    if loading && tracks.isEmpty {
+                        ProgressView()
+                            .tint(Color.textPrimary)
                             .padding(.top, 40)
-                    } else {
-                        HStack(spacing: 12) {
-                            Button {
-                                if player.setQueue(tracks, startAt: 0) {
-                                    showNowPlaying = true
-                                }
-                            } label: {
-                                Label("Play All", systemImage: "play.fill")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(Color.bgPrimary)
-                                    .padding(.horizontal, 18)
-                                    .padding(.vertical, 12)
-                                    .background(Color.textPrimary.opacity(0.92), in: Capsule())
-                            }
-
-                            Button {
-                                var shuffled = tracks
-                                shuffled.shuffle()
-                                if player.setQueue(shuffled, startAt: 0) {
-                                    showNowPlaying = true
-                                }
-                            } label: {
-                                Label("Shuffle", systemImage: "shuffle")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(Color.textPrimary)
-                                    .padding(.horizontal, 18)
-                                    .padding(.vertical, 12)
-                                    .glassCard(cornerRadius: 22, intensity: 0.08)
-                            }
-                        }
+                            .frame(maxWidth: .infinity)
+                    } else if let loadError, tracks.isEmpty {
+                        ErrorRetryView(
+                            title: loadUnauthorized ? String(localized: "Session expired") : String(localized: "Playlist unavailable"),
+                            message: loadError,
+                            isUnauthorized: loadUnauthorized,
+                            onRetry: { Task { await refreshPlaylist() } },
+                            onSignIn: loadUnauthorized ? { settings.logout() } : nil
+                        )
                         .padding(.horizontal, 18)
+                        .padding(.top, 24)
+                    } else if tracks.isEmpty {
+                        ContentUnavailableView(
+                            String(localized: "Empty Playlist"),
+                            systemImage: "music.note.list",
+                            description: Text(String(localized: "Add tracks from search or any track's menu."))
+                        )
+                        .padding(.top, 40)
+                    } else {
+                        PlayShuffleButtons(tracks: tracks) { showNowPlaying = true }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 18)
 
                         LazyVStack(spacing: 10) {
-                            ForEach(Array(tracks.enumerated()), id: \.element.id) { idx, track in
+                            ForEach(tracks.listItems) { item in
                                 TrackRow(
-                                    track: track,
-                                    index: idx + 1,
-                                    isCurrent: player.currentTrack?.id == track.id,
-                                    isLiked: library.isLiked(track.id),
+                                    track: item.track,
+                                    index: item.index + 1,
+                                    isCurrent: player.currentTrack?.id == item.track.id,
+                                    isLiked: library.isLiked(item.track.id),
                                     onTap: {
-                                        if player.setQueue(tracks, startAt: idx) {
+                                        if player.setQueue(tracks, startAt: item.index) {
                                             showNowPlaying = true
                                         }
                                     },
-                                    onLike: { library.toggleLike(track: track) },
-                                    onAddToQueue: { player.addToQueue(track) }
+                                    onLike: { library.toggleLike(track: item.track) },
+                                    onAddToQueue: { player.addToQueue(item.track) },
+                                    onRemove: { remove(item.track) }
                                 )
                             }
                         }
@@ -141,44 +95,48 @@ struct PlaylistDetailView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.bottom, Layout.playerBottomInset)
             }
+            .refreshable { await refreshPlaylist() }
         }
         .navigationTitle(playlist.name)
         .navigationBarTitleDisplayModeCompat()
-        .confirmationDialog("Playlist cover", isPresented: $showCoverPicker, titleVisibility: .visible) {
+        .confirmationDialog(String(localized: "Playlist cover"), isPresented: $showCoverPicker, titleVisibility: .visible) {
             #if os(iOS)
-            Button("Choose from Photos") {
+            Button(String(localized: "Choose from Photos")) {
                 showPhotosPicker = true
             }
             #endif
-            Button("Choose from Files") {
+            Button(String(localized: "Choose from Files")) {
                 showFileImporter = true
             }
             if playlist.hasCustomCover == true {
-                Button("Remove Cover", role: .destructive) {
+                Button(String(localized: "Remove Cover"), role: .destructive) {
                     removeCover()
                 }
             }
-            Button("Cancel", role: .cancel) {}
+            Button(String(localized: "Cancel"), role: .cancel) {}
         }
         #if os(iOS)
         .photosPicker(isPresented: $showPhotosPicker, selection: $selectedPhotoItem, matching: .images)
-        #endif
-        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.image]) { result in
-            guard case .success(let url) = result else { return }
-            guard let data = try? Data(contentsOf: url) else { return }
-            uploadCover(rawData: data)
-        }
-        #if os(iOS)
         .onChange(of: selectedPhotoItem) { _, item in
             guard let item else { return }
             Task {
                 if let data = try? await item.loadTransferable(type: Data.self) {
                     uploadCover(rawData: data)
+                } else {
+                    actionError = String(localized: "Couldn't read the selected photo.")
                 }
                 selectedPhotoItem = nil
             }
         }
         #endif
+        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.image]) { result in
+            switch result {
+            case .success(let url):
+                importCover(from: url)
+            case .failure(let error):
+                actionError = error.localizedDescription
+            }
+        }
         .task {
             await refreshPlaylist()
         }
@@ -189,58 +147,84 @@ struct PlaylistDetailView: View {
                         renameText = playlist.name
                         showRename = true
                     } label: {
-                        Label("Rename", systemImage: "pencil")
+                        Label(String(localized: "Rename"), systemImage: "pencil")
                     }
                     Button(role: .destructive) {
                         showDeleteConfirm = true
                     } label: {
-                        Label("Delete Playlist", systemImage: "trash")
+                        Label(String(localized: "Delete Playlist"), systemImage: "trash")
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                         .foregroundStyle(Color.textPrimary)
                 }
+                .accessibilityLabel(Text(String(localized: "Playlist options")))
             }
         }
-        .alert("Rename Playlist", isPresented: $showRename) {
-            TextField("Playlist name", text: $renameText)
-            Button("Save") {
-                guard !renameText.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-                Task {
-                    do {
-                        try await api.updatePlaylist(id: playlistId, name: renameText.trimmingCharacters(in: .whitespaces))
-                    } catch {
-                        actionError = "Couldn't rename: \(error.localizedDescription)"
-                    }
-                    await refreshPlaylist()
-                }
-            }
-            Button("Cancel", role: .cancel) {}
+        .alert(String(localized: "Rename Playlist"), isPresented: $showRename) {
+            TextField(String(localized: "Playlist name"), text: $renameText)
+            Button(String(localized: "Save")) { rename() }
+            Button(String(localized: "Cancel"), role: .cancel) {}
         }
-        .alert("Delete Playlist?", isPresented: $showDeleteConfirm) {
-            Button("Delete", role: .destructive) {
-                Task {
-                    do {
-                        try await api.deletePlaylist(id: playlistId)
-                        dismiss()
-                    } catch {
-                        actionError = "Couldn't delete: \(error.localizedDescription)"
-                    }
-                }
-            }
-            Button("Cancel", role: .cancel) {}
+        .alert(String(localized: "Delete Playlist?"), isPresented: $showDeleteConfirm) {
+            Button(String(localized: "Delete"), role: .destructive) { deletePlaylist() }
+            Button(String(localized: "Cancel"), role: .cancel) {}
         } message: {
-            Text("This will permanently delete \"\(playlist.name)\" and all its tracks.")
+            Text(String(localized: "This will permanently delete \"\(playlist.name)\" and all its tracks."))
         }
         .alert(
-            "Something went wrong",
+            String(localized: "Something went wrong"),
             isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })
         ) {
-            Button("OK", role: .cancel) {}
+            Button(String(localized: "OK"), role: .cancel) {}
         } message: {
             Text(actionError ?? "")
         }
     }
+
+    private var header: some View {
+        VStack(spacing: 18) {
+            ZStack(alignment: .bottomTrailing) {
+                PlaylistArtworkView(coverURL: api.artworkURL(for: playlist.coverUrl))
+                    .frame(width: 240, height: 240)
+
+                Button {
+                    showCoverPicker = true
+                } label: {
+                    HStack(spacing: 8) {
+                        if uploadingCover {
+                            ProgressView()
+                                .tint(Color.textPrimary)
+                        } else {
+                            Image(systemName: "photo")
+                        }
+                        Text(uploadingCover ? String(localized: "Uploading…") : String(localized: "Edit Cover"))
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(Color.textPrimary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .glassCard(cornerRadius: 18, intensity: 0.10)
+                }
+                .buttonStyle(.plain)
+                .disabled(uploadingCover)
+                .padding(12)
+            }
+            .padding(.top, 16)
+
+            VStack(spacing: 4) {
+                Text(playlist.name)
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.textPrimary)
+                    .multilineTextAlignment(.center)
+                Text(String(localized: "\(tracks.count) tracks"))
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.textSecondary)
+            }
+        }
+    }
+
+    // MARK: - Actions
 
     private func refreshPlaylist() async {
         // Show cached tracks instantly, then revalidate — reopening a large
@@ -250,32 +234,92 @@ struct PlaylistDetailView: View {
             loading = false
         }
 
-        async let playlistTask = try? api.getPlaylist(id: playlistId)
-        async let tracksTask = try? api.getPlaylistTracks(playlistId: playlistId)
-
-        if let fetchedPlaylist = await playlistTask {
+        do {
+            async let playlistTask = api.getPlaylist(id: playlistId)
+            async let tracksTask = api.getPlaylistTracks(playlistId: playlistId)
+            let (fetchedPlaylist, fetchedTracks) = try await (playlistTask, tracksTask)
             playlist = fetchedPlaylist
-        }
-        if let fetchedTracks = await tracksTask {
             api.storePlaylistTracks(fetchedTracks, playlistId: playlistId)
             let mapped = fetchedTracks.map(api.toAppTrack)
             if mapped != tracks {
                 tracks = mapped
             }
+            loadError = nil
+            loadUnauthorized = false
+        } catch where error.isCancellation {
+            return
+        } catch {
+            loadError = error.localizedDescription
+            loadUnauthorized = error.isUnauthorized
         }
         loading = false
     }
 
-    private func uploadCover(rawData: Data) {
-        guard let prepared = normalizedImagePayload(from: rawData) else { return }
+    /// Optimistic: the row disappears at once and comes back if the server refuses.
+    private func remove(_ track: Track) {
+        guard let index = tracks.firstIndex(where: { $0.id == track.id }) else { return }
+        tracks.remove(at: index)
+        Task {
+            do {
+                try await api.removeFromPlaylist(playlistId: playlistId, trackId: track.id)
+            } catch {
+                tracks.insert(track, at: min(index, tracks.count))
+                if !error.isCancellation {
+                    actionError = String(localized: "Couldn't remove the track: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
 
+    private func rename() {
+        let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        Task {
+            do {
+                try await api.updatePlaylist(id: playlistId, name: name)
+            } catch {
+                actionError = String(localized: "Couldn't rename: \(error.localizedDescription)")
+            }
+            await refreshPlaylist()
+        }
+    }
+
+    private func deletePlaylist() {
+        Task {
+            do {
+                try await api.deletePlaylist(id: playlistId)
+                dismiss()
+            } catch {
+                actionError = String(localized: "Couldn't delete: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Files from the document picker are security-scoped; read them off the main actor.
+    private func importCover(from url: URL) {
+        Task {
+            let data = await Task.detached(priority: .userInitiated) { () -> Data? in
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                return try? Data(contentsOf: url)
+            }.value
+            guard let data else {
+                actionError = String(localized: "Couldn't read the selected file.")
+                return
+            }
+            uploadCover(rawData: data)
+        }
+    }
+
+    private func uploadCover(rawData: Data) {
         Task {
             uploadingCover = true
             defer { uploadingCover = false }
             do {
-                _ = try await api.uploadPlaylistCover(playlistId: playlistId, data: prepared.data, mimeType: prepared.mimeType)
+                // APIService downsizes and re-encodes off the main actor.
+                _ = try await api.uploadPlaylistCover(playlistId: playlistId, data: rawData, mimeType: "image/jpeg")
             } catch {
-                actionError = "Couldn't upload cover: \(error.localizedDescription)"
+                actionError = String(localized: "Couldn't upload cover: \(error.localizedDescription)")
             }
             await refreshPlaylist()
         }
@@ -288,23 +332,9 @@ struct PlaylistDetailView: View {
             do {
                 try await api.deletePlaylistCover(playlistId: playlistId)
             } catch {
-                actionError = "Couldn't remove cover: \(error.localizedDescription)"
+                actionError = String(localized: "Couldn't remove cover: \(error.localizedDescription)")
             }
             await refreshPlaylist()
         }
     }
-}
-
-private func normalizedImagePayload(from data: Data) -> (data: Data, mimeType: String)? {
-    guard let image = PlatformImage.platformImage(from: data) else { return nil }
-    let maxSide: CGFloat = 1600
-    let size = image.platformSize
-    let scale = min(1, maxSide / max(size.width, size.height))
-    let targetSize = CGSize(width: size.width * scale, height: size.height * scale)
-
-    let rendered = resizedImage(image, to: targetSize)
-    if let jpeg = rendered.platformJPEGData(compressionQuality: 0.82) {
-        return (jpeg, "image/jpeg")
-    }
-    return nil
 }

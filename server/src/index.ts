@@ -10,7 +10,6 @@ import { isIP } from "node:net";
 import os from "os";
 import fs from "fs";
 import path from "path";
-import { createReadStream } from "fs";
 import vkRoutes from "./routes/vk.js";
 import yandexRoutes from "./routes/yandex.js";
 import youtubeRoutes from "./routes/youtube.js";
@@ -30,12 +29,13 @@ import { runMigrations } from "./db/migrations.js";
 import { clearUserRecommendationCaches } from "./providers/taste-engine.js";
 import { getLocalProvider } from "./providers/local.js";
 import { log } from "./logger.js";
-import { registerRecommendationJobs } from "./jobs/index.js";
+import { registerRecommendationJobs, registerTaskHandlers } from "./jobs/index.js";
+import { startTaskWorker, stopTaskWorker } from "./jobs/tasks.js";
 import { startScheduler } from "./jobs/scheduler.js";
-import { optionalAuth, requireAuth } from "./middleware/auth.js";
+import { optionalAuth, requestUserId, requireAuth } from "./middleware/auth.js";
 import { publicTracks } from "./utils/public-track.js";
 import { InMemoryRateLimiter, requestIp } from "./utils/rate-limit.js";
-import { resolveAllowedLocalFile } from "./utils/stream-proxy.js";
+import { resolveAllowedLocalFile, serveLocalFile, StreamProxyError } from "./utils/stream-proxy.js";
 
 const SERVER_START = Date.now();
 const SERVER_VERSION = "0.1.0";
@@ -318,31 +318,20 @@ app.use("/api/*", async (c, next) => {
   return next();
 });
 
-function requiresAuth(path: string, method: string): boolean {
-  if (path === "/api/auth/register" || path === "/api/auth/login") return false;
-  if (path.startsWith("/api/auth/")) return true;
-  // Artwork stays public unless REQUIRE_AUTH_READS=1 — covers should load for
-  // any client page without a login session.
-  if (path.startsWith("/api/downloads/")) return true;
-  // Streams proxy the user's paid provider accounts; they must never be
-  // reachable without a session even on a personal server (public IP).
-  if (path.startsWith("/api/stream/")) return true;
-  if (path.startsWith("/api/yandex/proxy/") || path.startsWith("/api/yandex/stream/")) return true;
-  if (path.startsWith("/api/vk/stream/") || path.startsWith("/api/vk/proxy/")) return true;
-  if (path.startsWith("/api/sc/stream/") || path.startsWith("/api/sc/proxy/")) return true;
-  if (path.startsWith("/api/youtube/stream/")) return true;
-  if (path.startsWith("/api/local/scan")) return true;
-  if (path === "/api/history" && method === "POST") return true;
-  if (path.startsWith("/api/import/") && ["POST", "PUT", "PATCH", "DELETE"].includes(method)) return true;
-  if (path.startsWith("/api/playlists") && ["POST", "PUT", "PATCH", "DELETE"].includes(method)) return true;
-  if (path.startsWith("/api/smart-playlists")) return true;
-  if (path.startsWith("/api/lyrics/") && ["POST", "PUT", "DELETE"].includes(method)) return true;
-  if (path === "/api/recommendations/chat" || path === "/api/recommendations/scrobble" || path === "/api/recommendations/dj-intro") return true;
-  if (path === "/api/vk/auth" || path === "/api/vk/auth-token" || path === "/api/vk/_probe" || path === "/api/vk/logout" || path === "/api/vk/import") return true;
-  if (path.startsWith("/api/yandex/token") || path.startsWith("/api/yandex/device/") || path === "/api/yandex/logout" || path === "/api/yandex/likes/import") return true;
-  if (path.startsWith("/audio/local/")) return true;
-  if (process.env.REQUIRE_AUTH_READS === "1" && ["GET", "HEAD"].includes(method) && path.startsWith("/api/")) return true;
-  return false;
+/**
+ * Deny-by-default: every /api/* route needs a session except this list.
+ * Artwork stays public (watch and widget load covers without a session)
+ * unless REQUIRE_AUTH_READS=1.
+ */
+export function isPublicRoute(path: string, method: string): boolean {
+  if (method === "POST" && (path === "/api/auth/register" || path === "/api/auth/login")) return true;
+  // Browser landing page of the VK OAuth redirect; carries no bearer token.
+  if (method === "GET" && path === "/api/vk/oauth-callback") return true;
+  if (process.env.REQUIRE_AUTH_READS === "1") return false;
+  if (method !== "GET" && method !== "HEAD") return false;
+  if (path === "/api/artwork") return true;
+  // /api/covers/:trackId only; /api/covers/:trackId/fetch hits upstream providers.
+  return /^\/api\/covers\/[^/]+$/.test(path);
 }
 
 function stripPrivateResponseFields(value: unknown): unknown {
@@ -360,11 +349,13 @@ function stripPrivateResponseFields(value: unknown): unknown {
 }
 
 app.use("/api/*", async (c, next) => {
-  if (!requiresAuth(c.req.path, c.req.method)) return next();
-  return requireAuth(c, next);
+  if (isPublicRoute(c.req.path, c.req.method)) return next();
+  // optionalAuth above already resolved the session for this request.
+  if (requestUserId(c)) return next();
+  return c.json({ error: "Not authenticated" }, 401);
 });
 
-app.use("/audio/local/*", requireAuth);
+app.use("/audio/*", requireAuth);
 
 app.use("/api/*", async (c, next) => {
   await next();
@@ -727,46 +718,12 @@ app.get("/audio/local/:trackId", (c) => {
     return c.json({ error: "File not found" }, 404);
   }
 
-  const stat = fs.statSync(filePath);
-  const rangeHeader = c.req.header("Range");
-  const ext = path.extname(filePath).toLowerCase();
-  const mimeTypes: Record<string, string> = {
-    ".mp3": "audio/mpeg",
-    ".flac": "audio/flac",
-    ".m4a": "audio/mp4",
-    ".wav": "audio/wav",
-    ".ogg": "audio/ogg",
-    ".opus": "audio/opus",
-  };
-  const contentType = mimeTypes[ext] ?? "audio/mpeg";
-
-  if (rangeHeader) {
-    const [startStr, endStr] = rangeHeader.replace("bytes=", "").split("-");
-    const start = parseInt(startStr, 10);
-    const end = endStr ? parseInt(endStr, 10) : stat.size - 1;
-    const chunkSize = end - start + 1;
-
-    const stream = createReadStream(filePath, { start, end });
-    return new Response(stream as unknown as ReadableStream, {
-      status: 206,
-      headers: {
-        "Content-Range": `bytes ${start}-${end}/${stat.size}`,
-        "Accept-Ranges": "bytes",
-        "Content-Length": String(chunkSize),
-        "Content-Type": contentType,
-      },
-    });
+  try {
+    return serveLocalFile(filePath, c.req.header("Range"));
+  } catch (err) {
+    if (err instanceof StreamProxyError) return c.json({ error: err.message }, err.status);
+    throw err;
   }
-
-  const stream = createReadStream(filePath);
-  return new Response(stream as unknown as ReadableStream, {
-    status: 200,
-    headers: {
-      "Content-Length": String(stat.size),
-      "Accept-Ranges": "bytes",
-      "Content-Type": contentType,
-    },
-  });
 });
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
@@ -790,6 +747,9 @@ try {
 
 registerRecommendationJobs();
 startScheduler();
+// Handlers first: tasks queued or leased before a restart resume right away.
+registerTaskHandlers();
+startTaskWorker();
 
 let httpServer: Server | null = null;
 let bunServer: { port?: number; stop(closeActiveConnections?: boolean): void } | null = null;
@@ -861,24 +821,32 @@ function shutdown(signal: string): void {
 
   const forceExit = setTimeout(() => {
     log.warn("server", "Graceful shutdown timeout — forcing exit");
-    process.exit(1);
+    exitAfterDbSettled(1);
   }, 10_000);
   forceExit.unref?.();
 
-  if (httpServer) {
-    httpServer.close(() => {
-      log.info("server", "HTTP server closed");
+  // Aborted tasks go back to the queue, so the DB closes only after they settle.
+  const finish = () => {
+    void stopTaskWorker(3_000).finally(() => {
       exitAfterDbSettled(0);
       log.info("server", "Shutdown complete");
       clearTimeout(forceExit);
     });
+  };
+
+  if (httpServer) {
+    httpServer.close(() => {
+      log.info("server", "HTTP server closed");
+      finish();
+    });
+    // Audio and SSE streams would otherwise hold close() open until the force-exit.
+    httpServer.closeAllConnections?.();
   } else if (bunServer) {
     bunServer.stop(true);
     log.info("server", "HTTP server closed");
-    exitAfterDbSettled(0);
-    clearTimeout(forceExit);
+    finish();
   } else {
-    exitAfterDbSettled(0);
+    finish();
   }
 }
 

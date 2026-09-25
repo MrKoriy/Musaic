@@ -1,31 +1,57 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
+
+#if os(iOS)
+/// Relaunch hook for downloads that finished while the app was suspended.
+final class MusaicAppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        DownloadManager.shared.handleBackgroundEvents(identifier: identifier, completionHandler: completionHandler)
+    }
+}
+#endif
 
 @main
 struct MusaicApp: App {
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(MusaicAppDelegate.self) private var appDelegate
+    #endif
     private let settings = SettingsStore.shared
 
     init() {
         #if os(iOS)
         ReleaseNotificationService.shared.requestAuthorizationIfNeeded()
         WatchControlHandler.shared.activate()
+        #elseif os(macOS)
+        // The palette is dark-only; keep menus and alerts dark too.
+        NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
         #endif
     }
 
     var body: some Scene {
         WindowGroup {
-            if settings.isLoggedIn {
-                ContentView()
-                    .preferredColorScheme(settings.theme.colorScheme)
-                    #if os(macOS)
-                    .frame(minWidth: 900, minHeight: 600)
-                    #endif
-            } else {
-                AuthView()
-                    .preferredColorScheme(settings.theme.colorScheme)
-                    #if os(macOS)
-                    .frame(minWidth: 560, minHeight: 640)
-                    #endif
+            Group {
+                if settings.isLoggedIn {
+                    ContentView()
+                        #if os(macOS)
+                        .frame(minWidth: 900, minHeight: 600)
+                        #endif
+                } else {
+                    AuthView()
+                        #if os(macOS)
+                        .frame(minWidth: 560, minHeight: 640)
+                        #endif
+                }
             }
+            // DESIGN.md: dark-first with fixed dark tokens; light mode is not supported.
+            .preferredColorScheme(.dark)
         }
         #if os(macOS)
         .defaultSize(width: 1100, height: 750)
@@ -164,19 +190,27 @@ struct ContentView: View {
         }
         .task {
             player.processPendingWidgetCommands()
-            await LibraryStore.shared.ensureSynced(force: true)
+            await libraryStore.ensureSynced()
             #if os(iOS)
             await ReleaseNotificationService.shared.checkForNewReleasesIfNeeded()
             #endif
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
-            Task {
-                player.processPendingWidgetCommands()
-                await LibraryStore.shared.ensureSynced(force: true)
-                #if os(iOS)
-                await ReleaseNotificationService.shared.checkForNewReleasesIfNeeded()
-                #endif
+            switch phase {
+            case .active:
+                Task {
+                    player.processPendingWidgetCommands()
+                    // Throttled inside: only pending changes or a stale list hit the server.
+                    await libraryStore.ensureSynced()
+                    #if os(iOS)
+                    await ReleaseNotificationService.shared.checkForNewReleasesIfNeeded()
+                    #endif
+                }
+            case .background:
+                libraryStore.flushPendingWrites()
+                DownloadManager.shared.flushPendingWrites()
+            default:
+                break
             }
         }
     }
@@ -273,7 +307,7 @@ struct ContentView: View {
                 }
                 .frame(width: 36, height: 36)
 
-                Text("Musaic")
+                Text(verbatim: "Musaic")
                     .font(.system(size: 20, weight: .bold, design: .rounded))
                     .foregroundStyle(Color.textPrimary)
             }
@@ -321,10 +355,10 @@ struct ContentView: View {
                     .padding(.leading, 4)
 
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                    macMetricTile(value: "\(player.queue.count)", label: String(localized: "Queue"), icon: "music.note.list")
-                    macMetricTile(value: "\(library.likedTrackIds.count)", label: String(localized: "Liked"), icon: "heart.fill")
-                    macMetricTile(value: "\(enabledSourceCount)", label: String(localized: "Sources"), icon: "dot.radiowaves.left.and.right")
-                    macMetricTile(value: "\(DownloadManager.shared.downloadCount)", label: String(localized: "Offline"), icon: "arrow.down.circle.fill")
+                    StatCard(value: "\(player.queue.count)", label: String(localized: "Queue"), icon: "music.note.list", compact: true)
+                    StatCard(value: "\(library.likedTrackIds.count)", label: String(localized: "Liked"), icon: "heart.fill", compact: true)
+                    StatCard(value: "\(enabledSourceCount)", label: String(localized: "Sources"), icon: "dot.radiowaves.left.and.right", compact: true)
+                    StatCard(value: "\(DownloadManager.shared.downloadCount)", label: String(localized: "Offline"), icon: "arrow.down.circle.fill", compact: true)
                 }
             }
             .padding(.horizontal, 14)
@@ -349,7 +383,7 @@ struct ContentView: View {
                     macSourceBadge("SC", active: settings.sourceSoundcloud)
                     macSourceBadge("YA", active: settings.sourceYandex)
                     macSourceBadge("YT", active: settings.sourceYoutube)
-                    macSourceBadge("LOCAL", active: true)
+                    macSourceBadge(String(localized: "LOCAL"), active: true)
                 }
             }
             .padding(12)
@@ -429,15 +463,9 @@ struct ContentView: View {
                         }
                         .padding(.horizontal, 18)
 
-                        // Seek bar — interactive ScrubBar (same as iOS full player)
-                        ScrubBar(
-                            progress: audio.progress,
-                            currentTime: audio.currentTime,
-                            duration: audio.duration > 0 ? audio.duration : (track.duration ?? 0),
-                            tint: Color.accentStrong,
-                            onCommit: { fraction in audio.seek(to: fraction) }
-                        )
-                        .padding(.horizontal, 18)
+                        // Seek bar in its own view: only it re-renders on playback ticks.
+                        MacPanelScrubBar(fallbackDuration: track.duration ?? 0)
+                            .padding(.horizontal, 18)
 
                         // Transport controls
                         HStack(spacing: 10) {
@@ -666,36 +694,12 @@ struct ContentView: View {
     }
 
     private var enabledSourcesLine: String {
-        var sources = ["Local"]
+        var sources = [String(localized: "Local")]
         if settings.sourceVK { sources.append("VK") }
         if settings.sourceSoundcloud { sources.append("SoundCloud") }
-        if settings.sourceYandex { sources.append("Yandex") }
+        if settings.sourceYandex { sources.append(String(localized: "Yandex")) }
         if settings.sourceYoutube { sources.append("YouTube") }
         return sources.joined(separator: " • ")
-    }
-
-    private func macMetricTile(value: String, label: String, icon: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Image(systemName: icon)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.textSecondary)
-            Text(value)
-                .font(.system(size: 22, weight: .bold, design: .rounded))
-                .foregroundStyle(Color.textPrimary)
-            Text(label)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Color.textMuted)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.white.opacity(0.04))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.06), lineWidth: 0.5)
-                )
-        )
     }
 
     private func macSourceBadge(_ label: String, active: Bool) -> some View {
@@ -813,6 +817,24 @@ struct ContentView: View {
         }
     }
 }
+
+#if os(macOS)
+/// The only part of the macOS Now Playing panel that reads playback progress.
+private struct MacPanelScrubBar: View {
+    let fallbackDuration: TimeInterval
+    private let audio = AudioPlayer.shared
+
+    var body: some View {
+        ScrubBar(
+            progress: audio.progress,
+            currentTime: audio.currentTime,
+            duration: audio.duration > 0 ? audio.duration : fallbackDuration,
+            tint: Color.accentStrong,
+            onCommit: { fraction in audio.seek(to: fraction) }
+        )
+    }
+}
+#endif
 
 extension Color {
     init(hex: String) {

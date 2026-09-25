@@ -16,6 +16,7 @@
 import type { Database } from "bun:sqlite";
 import fs from "node:fs";
 import path from "node:path";
+import { RECO_MIGRATIONS } from "./migrations-reco.js";
 
 const configuredSessionDays = Number(process.env.SESSION_TTL_DAYS ?? 90);
 const SESSION_TTL_SECONDS = Math.floor(
@@ -27,7 +28,7 @@ export function hashSessionToken(token: string): string {
   return new Bun.CryptoHasher("sha256").update(token).digest("hex");
 }
 
-interface Migration {
+export interface Migration {
   version: number;
   description: string;
   up: string;
@@ -504,7 +505,58 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE lyrics_cache ADD COLUMN words TEXT;
     `,
   },
+  {
+    version: 24,
+    description: "Durable background task queue",
+    up: `
+      CREATE TABLE IF NOT EXISTS background_tasks (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        dedupe_key TEXT,
+        payload TEXT NOT NULL DEFAULT '{}',
+        status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'done', 'failed')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 3,
+        run_after INTEGER NOT NULL DEFAULT (unixepoch()),
+        lease_until INTEGER,
+        last_error TEXT,
+        result TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      CREATE INDEX IF NOT EXISTS idx_background_tasks_claim
+        ON background_tasks(status, type, run_after);
+      CREATE INDEX IF NOT EXISTS idx_background_tasks_dedupe
+        ON background_tasks(dedupe_key, created_at);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_background_tasks_active_dedupe
+        ON background_tasks(dedupe_key)
+        WHERE dedupe_key IS NOT NULL AND status IN ('queued', 'running');
+    `,
+  },
+  {
+    version: 25,
+    description: "Per-user lyrics highlight offset",
+    up: `
+      CREATE TABLE IF NOT EXISTS lyrics_user_offsets (
+        user_id TEXT NOT NULL,
+        track_id TEXT NOT NULL,
+        offset_sec REAL NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (user_id, track_id)
+      );
+    `,
+  },
 ];
+
+const ALL_MIGRATIONS: Migration[] = (() => {
+  const all = [...MIGRATIONS, ...RECO_MIGRATIONS].sort((a, b) => a.version - b.version);
+  for (let i = 1; i < all.length; i++) {
+    if (all[i]!.version === all[i - 1]!.version) {
+      throw new Error(`Duplicate migration version v${all[i]!.version}`);
+    }
+  }
+  return all;
+})();
 
 /**
  * Run all pending migrations against the given database.
@@ -525,7 +577,7 @@ export function runMigrations(db: Database): void {
       .map((r) => r.version)
   );
 
-  const pending = MIGRATIONS.filter((m) => !applied.has(m.version));
+  const pending = ALL_MIGRATIONS.filter((m) => !applied.has(m.version));
 
   if (pending.length === 0) {
     return; // Nothing to do

@@ -34,7 +34,7 @@ struct SearchView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     VStack(alignment: .leading, spacing: 14) {
-                        LiquidSectionHeader(title: String(localized: "Search"), subtitle: String(localized: "One input across local files, VK and SoundCloud."))
+                        LiquidSectionHeader(title: String(localized: "Search"), subtitle: String(localized: "One input across your library, Yandex, YouTube and SoundCloud."))
 
                         HStack(spacing: 12) {
                             Image(systemName: "magnifyingglass")
@@ -51,17 +51,8 @@ struct SearchView: View {
                                     .tint(Color.textPrimary)
                             } else if !query.isEmpty {
                                 Button {
-                                    searchTask?.cancel()
-                                    searchRequestTask?.cancel()
-                                    loadMoreTask?.cancel()
                                     query = ""
-                                    results = []
-                                    playlists = []
-                                    artists = []
-                                    loading = false
-                                    loadingMore = false
-                                    hasMore = true
-                                    nextOffset = 0
+                                    resetResults()
                                 } label: {
                                     Image(systemName: "xmark.circle.fill")
                                         .foregroundStyle(Color.textMuted)
@@ -149,7 +140,7 @@ struct SearchView: View {
                         VStack(alignment: .leading, spacing: 12) {
                             if !artists.isEmpty {
                                 VStack(alignment: .leading, spacing: 10) {
-                                    LiquidSectionHeader(title: "Artists", subtitle: "\(artists.count) found")
+                                    LiquidSectionHeader(title: String(localized: "Artists"), subtitle: String(localized: "\(artists.count) found"))
                                         .padding(.horizontal, 18)
 
                                     ScrollView(.horizontal, showsIndicators: false) {
@@ -171,7 +162,7 @@ struct SearchView: View {
 
                             if !playlists.isEmpty {
                                 VStack(alignment: .leading, spacing: 10) {
-                                    LiquidSectionHeader(title: "Playlists", subtitle: "\(playlists.count) found")
+                                    LiquidSectionHeader(title: String(localized: "Playlists"), subtitle: String(localized: "\(playlists.count) found"))
                                         .padding(.horizontal, 18)
 
                                     ScrollView(.horizontal, showsIndicators: false) {
@@ -189,27 +180,27 @@ struct SearchView: View {
                             }
 
                             if !results.isEmpty {
-                                LiquidSectionHeader(title: "\(results.count) Tracks", subtitle: "Source: \(sourceLabel)")
+                                LiquidSectionHeader(title: String(localized: "\(results.count) Tracks"), subtitle: String(localized: "Source: \(sourceLabel)"))
                                     .padding(.horizontal, 18)
 
                                 LazyVStack(spacing: 10) {
-                                    ForEach(Array(results.enumerated()), id: \.element.id) { idx, track in
+                                    ForEach(results.listItems) { item in
                                         TrackRow(
-                                            track: track,
-                                            index: idx + 1,
-                                            isCurrent: player.currentTrack?.id == track.id,
-                                            isLiked: library.isLiked(track.id),
+                                            track: item.track,
+                                            index: item.index + 1,
+                                            isCurrent: player.currentTrack?.id == item.track.id,
+                                            isLiked: library.isLiked(item.track.id),
                                             onTap: {
-                                                if player.setQueue(results, startAt: idx) {
+                                                if player.setQueue(results, startAt: item.index) {
                                                     showNowPlaying = true
                                                 }
                                             },
-                                            onLike: { library.toggleLike(track: track) },
-                                            onAddToQueue: { player.addToQueue(track) },
-                                            onAddToPlaylist: { playlistPickerTrack = track }
+                                            onLike: { library.toggleLike(track: item.track) },
+                                            onAddToQueue: { player.addToQueue(item.track) },
+                                            onAddToPlaylist: { playlistPickerTrack = item.track }
                                         )
                                         .onAppear {
-                                            if idx >= results.count - 5 && hasMore && !loadingMore {
+                                            if item.index >= results.count - 5 && hasMore && !loadingMore {
                                                 loadMore()
                                             }
                                         }
@@ -241,17 +232,8 @@ struct SearchView: View {
                         search()
                     }
                 } else {
-                    searchTask?.cancel()
-                    searchRequestTask?.cancel()
-                    loadMoreTask?.cancel()
-                    loading = false
-                    loadingMore = false
-                    hasMore = true
-                    nextOffset = 0
-                    artists = []
-                    searchErrors = [:]
-                    searchError = nil
-                    searchUnauthorized = false
+                    // Clearing (or shortening) the query drops stale results.
+                    resetResults()
                 }
             }
             .sheet(item: $playlistPickerTrack) { track in
@@ -279,19 +261,26 @@ struct SearchView: View {
         sourceFilter == "all" ? settings.enabledSourcesParam : sourceFilter
     }
 
+    private func resetResults() {
+        searchTask?.cancel()
+        searchRequestTask?.cancel()
+        loadMoreTask?.cancel()
+        searchGeneration += 1
+        results = []
+        playlists = []
+        artists = []
+        searchErrors = [:]
+        searchError = nil
+        searchUnauthorized = false
+        loading = false
+        loadingMore = false
+        hasMore = true
+        nextOffset = 0
+    }
+
     private func search() {
         guard query.count >= 2 else {
-            searchRequestTask?.cancel()
-            loadMoreTask?.cancel()
-            results = []
-            playlists = []
-            artists = []
-            searchErrors = [:]
-            searchError = nil
-            searchUnauthorized = false
-            loading = false
-            hasMore = true
-            nextOffset = 0
+            resetResults()
             return
         }
 
@@ -323,13 +312,13 @@ struct SearchView: View {
                 hasMore = result.hasMore
                 nextOffset = pageSize
             } catch {
-                guard generation == searchGeneration else { return }
+                guard generation == searchGeneration, !error.isCancellation else { return }
                 results = []
                 playlists = []
                 artists = []
                 searchErrors = [:]
                 searchError = error.localizedDescription
-                searchUnauthorized = (error as? APIError)?.statusCode == 401
+                searchUnauthorized = error.isUnauthorized
                 hasMore = false
             }
             if generation == searchGeneration {
@@ -357,11 +346,13 @@ struct SearchView: View {
                 let unique = newTracks.filter { !existingIds.contains($0.id) }
                 results.append(contentsOf: unique)
                 hasMore = result.hasMore
+            } catch where error.isCancellation {
+                // Superseded by a newer query.
             } catch {
                 if generation == searchGeneration {
                     hasMore = false
                     searchError = error.localizedDescription
-                    searchUnauthorized = (error as? APIError)?.statusCode == 401
+                    searchUnauthorized = error.isUnauthorized
                 }
             }
             if generation == searchGeneration {

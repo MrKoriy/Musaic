@@ -5,10 +5,14 @@ struct ProfileView: View {
     @State private var connectionOk: Bool?
     @State private var testing = false
     @State private var serverDraft = ""
+    @State private var serverMessage: String?
     @State private var editingServer = false
-    @State private var cacheSize = "Tap to check"
+    @State private var cacheSize = "…"
+    @State private var clearingCache = false
     @State private var authState = ProfileAuthState()
+    @State private var lastLoadedAt: Date?
 
+    private static let staleAfter: TimeInterval = 5 * 60
     private let api = APIService.shared
     private let settings = SettingsStore.shared
 
@@ -19,12 +23,14 @@ struct ProfileView: View {
         let version = info?["CFBundleShortVersionString"] as? String ?? "—"
         let build = info?["CFBundleVersion"] as? String
         if let build, !build.isEmpty, build != version {
-            return "Version \(version) (\(build))"
+            return String(localized: "Version \(version) (\(build))")
         }
-        return "Version \(version)"
+        return String(localized: "Version \(version)")
     }
 
     var body: some View {
+        @Bindable var settings = settings
+
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
@@ -40,29 +46,10 @@ struct ProfileView: View {
                     )
 
                     ProfileSourcesSection(
-                        sourceYandex: Binding(
-                            get: { settings.sourceYandex },
-                            set: { settings.sourceYandex = $0 }
-                        ),
-                        sourceYoutube: Binding(
-                            get: { settings.sourceYoutube },
-                            set: { settings.sourceYoutube = $0 }
-                        ),
-                        sourceSoundcloud: Binding(
-                            get: { settings.sourceSoundcloud },
-                            set: { settings.sourceSoundcloud = $0 }
-                        ),
-                        sourceVK: Binding(
-                            get: { settings.sourceVK },
-                            set: { settings.sourceVK = $0 }
-                        )
-                    )
-
-                    ProfileAppearanceSection(
-                        theme: Binding(
-                            get: { settings.theme },
-                            set: { settings.theme = $0 }
-                        )
+                        sourceYandex: $settings.sourceYandex,
+                        sourceYoutube: $settings.sourceYoutube,
+                        sourceSoundcloud: $settings.sourceSoundcloud,
+                        sourceVK: $settings.sourceVK
                     )
 
                     if settings.sourceYandex {
@@ -74,28 +61,17 @@ struct ProfileView: View {
                     }
 
                     ProfilePlaybackSection(
-                        streamQuality: Binding(
-                            get: { settings.streamQuality },
-                            set: { settings.streamQuality = $0 }
-                        ),
-                        crossfadeSeconds: Binding(
-                            get: { settings.crossfadeSec },
-                            set: { settings.crossfadeSec = $0 }
-                        ),
-                        gapless: Binding(
-                            get: { settings.gapless },
-                            set: { settings.gapless = $0 }
-                        ),
-                        normalization: Binding(
-                            get: { settings.normalization },
-                            set: { settings.normalization = $0 }
-                        )
+                        streamQuality: $settings.streamQuality,
+                        crossfadeSeconds: $settings.crossfadeSec,
+                        gapless: $settings.gapless,
+                        normalization: $settings.normalization
                     )
 
                     ProfileDownloadsSection()
 
                     ProfileStorageSection(
-                        cacheSize: $cacheSize,
+                        cacheSize: cacheSize,
+                        clearing: clearingCache,
                         onClearCache: clearCache
                     )
 
@@ -103,6 +79,7 @@ struct ProfileView: View {
                         serverURL: api.serverURL,
                         connectionButtonLabel: connectionButtonLabel,
                         testing: testing,
+                        message: serverMessage,
                         editingServer: $editingServer,
                         serverDraft: $serverDraft,
                         onSave: saveServer,
@@ -116,11 +93,7 @@ struct ProfileView: View {
             }
             .background(AppBackdrop())
             .navigationBarHiddenCompat(true)
-            .onAppear {
-                serverDraft = api.serverURL
-                // Reset so re-opening the view shows "checking" instead of stale red
-                if connectionOk == false { connectionOk = nil }
-            }
+            .refreshable { await refresh() }
             .onChange(of: scenePhase) { _, phase in
                 // Returning from the browser after authorizing Yandex: re-check
                 // status immediately so the token the server captured is picked up.
@@ -129,15 +102,8 @@ struct ProfileView: View {
                 }
             }
             .task {
-                let ok = await api.ping()
-                connectionOk = ok
-                await authState.refreshVKStatus()
-                await authState.refreshYandexStatus()
-                // Auto-retry once after a short delay if initial ping failed
-                if !ok {
-                    try? await Task.sleep(nanoseconds: 3_000_000_000)
-                    connectionOk = await api.ping()
-                }
+                if let lastLoadedAt, Date().timeIntervalSince(lastLoadedAt) < Self.staleAfter { return }
+                await refresh()
             }
         }
     }
@@ -149,31 +115,59 @@ struct ProfileView: View {
     }
 
     private var connectionButtonLabel: String {
+        if editingServer { return String(localized: "Test Connection") }
         if connectionOk == true { return String(localized: "Connected") }
         if connectionOk == false { return String(localized: "Retry Connection") }
         return String(localized: "Test Connection")
     }
 
+    private func refresh() async {
+        serverDraft = api.serverURL
+        async let ping = api.ping()
+        async let usage = AppCaches.usageBytes()
+        await authState.refreshVKStatus()
+        await authState.refreshYandexStatus()
+        let reachable = await ping
+        cacheSize = AppCaches.formatted(await usage)
+        guard !Task.isCancelled else { return }
+        connectionOk = reachable
+        lastLoadedAt = Date()
+    }
+
+    /// Tests the draft while editing (without saving), otherwise the saved server.
     private func testConnection() {
         testing = true
-        connectionOk = nil
+        serverMessage = nil
+        let target = editingServer ? serverDraft : nil
         Task {
-            connectionOk = await api.ping()
+            let result = await api.checkConnection(to: target)
+            if target == nil {
+                connectionOk = result == .ok
+            }
+            serverMessage = result.message
             testing = false
         }
     }
 
     private func saveServer() {
-        api.setServerURL(serverDraft)
+        guard let normalized = APIService.validatedServerURL(serverDraft) else {
+            serverMessage = APIService.ConnectionCheck.invalidAddress.message
+            return
+        }
+        api.setServerURL(normalized)
+        serverDraft = normalized
         editingServer = false
+        serverMessage = nil
         connectionOk = nil
+        testConnection()
     }
 
     private func clearCache() {
-        if let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
-            try? FileManager.default.removeItem(at: cacheDir)
-            try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-            cacheSize = "0 MB"
+        clearingCache = true
+        Task {
+            await AppCaches.clearAll()
+            cacheSize = AppCaches.formatted(await AppCaches.usageBytes())
+            clearingCache = false
         }
     }
 }

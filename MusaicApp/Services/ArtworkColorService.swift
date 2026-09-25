@@ -20,7 +20,15 @@ actor ArtworkColorService {
 
     private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
     private var cache: [String: ArtworkPalette] = [:]
+    /// Insertion order of `cache` keys, oldest first, for bounded eviction.
+    private var cacheOrder: [String] = []
     private var inflight: [String: Task<ArtworkPalette, Never>] = [:]
+    private let cacheLimit = 128
+
+    func clear() {
+        cache.removeAll()
+        cacheOrder.removeAll()
+    }
 
     func palette(for image: PlatformImage, cacheKey: String) async -> ArtworkPalette {
         if let hit = cache[cacheKey] { return hit }
@@ -33,11 +41,14 @@ actor ArtworkColorService {
         defer { inflight[cacheKey] = nil }
 
         let palette = await task.value
-        cache[cacheKey] = palette
-        if cache.count > 128 {
-            // Trim oldest half — cheap bounded cache
-            let keep = cache.suffix(64)
-            cache = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+        if cache.updateValue(palette, forKey: cacheKey) == nil {
+            cacheOrder.append(cacheKey)
+        }
+        if cacheOrder.count > cacheLimit {
+            // Evict the oldest half in one go.
+            let evicted = cacheOrder.prefix(cacheOrder.count - cacheLimit / 2)
+            for key in evicted { cache.removeValue(forKey: key) }
+            cacheOrder.removeFirst(evicted.count)
         }
         return palette
     }

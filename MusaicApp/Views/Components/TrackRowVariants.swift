@@ -1,7 +1,4 @@
 import SwiftUI
-#if os(iOS)
-import UIKit
-#endif
 
 /// Track row used across Home / Search / Library lists.
 ///
@@ -24,6 +21,8 @@ struct TrackRow: View {
     var onLike: (() -> Void)?
     var onAddToQueue: (() -> Void)?
     var onAddToPlaylist: (() -> Void)?
+    /// Shown as a destructive swipe/context action (e.g. "Remove from Playlist").
+    var onRemove: (() -> Void)? = nil
 
     /// macOS-only hover state — iOS never fires `.onHover`, so the default
     /// false value silently no-ops there.
@@ -40,7 +39,7 @@ struct TrackRow: View {
     private let actionSize: CGFloat = 64
     private var leadingActionsWidth: CGFloat { onLike != nil ? actionSize : 0 }
     private var trailingActionsWidth: CGFloat {
-        ((onAddToQueue != nil ? 1 : 0) + (onAddToPlaylist != nil ? 1 : 0)) * actionSize
+        ((onAddToQueue != nil ? 1 : 0) + (onAddToPlaylist != nil ? 1 : 0) + (onRemove != nil ? 1 : 0)) * actionSize
     }
 
     /// 30ms per row, capped so deep rows in long lists don't wait seconds.
@@ -128,7 +127,7 @@ struct TrackRow: View {
                     .frame(width: 38, alignment: .trailing)
             }
 
-            downloadButton
+            TrackDownloadButton(track: track)
 
             likeButton
         }
@@ -172,6 +171,11 @@ struct TrackRow: View {
                     Label(String(localized: "Add to Queue"), systemImage: "text.append")
                 }
             }
+            if let onRemove {
+                Button(role: .destructive) { onRemove() } label: {
+                    Label(String(localized: "Remove from Playlist"), systemImage: "minus.circle")
+                }
+            }
             if downloadManager.isDownloaded(track.id) {
                 Button(role: .destructive) {
                     downloadManager.deleteDownload(trackId: track.id)
@@ -184,15 +188,14 @@ struct TrackRow: View {
                 } label: {
                     Label(String(localized: "Download (AAC 128k)"), systemImage: "arrow.down.circle")
                 }
+                .disabled(downloadManager.phase(for: track.id).isActive)
             }
         }
     }
 
     private var likeButton: some View {
         Button(action: {
-            #if os(iOS)
-            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
-            #endif
+            Haptics.impact(.soft)
             onLike?()
         }) {
             Image(systemName: isLiked ? "heart.fill" : "heart")
@@ -216,48 +219,6 @@ struct TrackRow: View {
         return Color.white.opacity(0.05)
     }
 
-    @ViewBuilder
-    private var downloadButton: some View {
-        let state = downloadManager.downloadState(for: track.id)
-        switch state {
-        case .completed:
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 14))
-                .foregroundStyle(.green.opacity(0.7))
-                .frame(width: 32, height: 32)
-                .accessibilityLabel(Text(String(localized: "Downloaded")))
-        case .downloading:
-            ProgressView()
-                .scaleEffect(0.6)
-                .frame(width: 32, height: 32)
-                .accessibilityLabel(Text(String(localized: "Downloading")))
-        case .failed:
-            Button {
-                downloadManager.downloadTrack(track)
-            } label: {
-                Image(systemName: "exclamationmark.circle")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.red.opacity(0.7))
-                    .frame(width: 32, height: 32)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text(String(localized: "Download failed, tap to retry")))
-        case .idle:
-            Button {
-                downloadManager.downloadTrack(track)
-            } label: {
-                Image(systemName: "arrow.down.circle")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color.textSecondary.opacity(0.5))
-                    .frame(width: 32, height: 32)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text(String(localized: "Download track")))
-        }
-    }
-
     // MARK: - Swipe actions
 
     private var swipeActions: some View {
@@ -269,9 +230,7 @@ struct TrackRow: View {
                     label: String(localized: "Like")
                 ) {
                     closeSwipe()
-                    #if os(iOS)
-                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
-                    #endif
+                    Haptics.impact(.soft)
                     onLike?()
                 }
                 .frame(width: actionSize)
@@ -288,6 +247,13 @@ struct TrackRow: View {
                 swipeActionButton(systemName: "text.append", tint: Color.textPrimary, label: String(localized: "Add to Queue")) {
                     closeSwipe()
                     onAddToQueue()
+                }
+                .frame(width: actionSize)
+            }
+            if let onRemove {
+                swipeActionButton(systemName: "minus.circle.fill", tint: .red, label: String(localized: "Remove from Playlist")) {
+                    closeSwipe()
+                    onRemove()
                 }
                 .frame(width: actionSize)
             }
@@ -358,6 +324,70 @@ struct TrackRow: View {
                 appeared = true
             }
         }
+    }
+}
+
+/// Download control for a row. Reads only this track's phase; live progress
+/// is observed by the ring alone, so ticks re-render nothing else.
+private struct TrackDownloadButton: View {
+    let track: Track
+    private let downloadManager = DownloadManager.shared
+
+    var body: some View {
+        switch downloadManager.phase(for: track.id) {
+        case .completed:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(.green.opacity(0.7))
+                .frame(width: 32, height: 32)
+                .accessibilityLabel(Text(String(localized: "Downloaded")))
+        case .downloading:
+            DownloadProgressRing(progress: downloadManager.progress(for: track.id))
+                .frame(width: 32, height: 32)
+                .accessibilityLabel(Text(String(localized: "Downloading")))
+        case .failed(let message):
+            Button {
+                downloadManager.downloadTrack(track)
+            } label: {
+                Image(systemName: "exclamationmark.circle")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.red.opacity(0.7))
+                    .frame(width: 32, height: 32)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help(message)
+            .accessibilityLabel(Text(String(localized: "Download failed, tap to retry")))
+        case .idle:
+            Button {
+                downloadManager.downloadTrack(track)
+            } label: {
+                Image(systemName: "arrow.down.circle")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.textSecondary.opacity(0.5))
+                    .frame(width: 32, height: 32)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text(String(localized: "Download track")))
+        }
+    }
+}
+
+private struct DownloadProgressRing: View {
+    let progress: DownloadProgress
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.white.opacity(0.12), lineWidth: 2)
+            Circle()
+                .trim(from: 0, to: max(0.04, progress.fraction))
+                .stroke(Color.accentStrong, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: 16, height: 16)
+        .accessibilityValue(Text("\(Int(progress.fraction * 100))%"))
     }
 }
 

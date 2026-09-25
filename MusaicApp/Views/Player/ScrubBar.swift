@@ -15,6 +15,7 @@ struct ScrubBar: View {
     @State private var dragProgress: Double = 0
     @State private var isDragging = false
     @State private var lastHapticSecond: Int = -1
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let restHeight: CGFloat = 5
     private let activeHeight: CGFloat = 11
@@ -96,30 +97,24 @@ struct ScrubBar: View {
                             // Keep dragging=true briefly so the bar holds height during seek
                             Task { @MainActor in
                                 try? await Task.sleep(for: .milliseconds(350))
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                                withAnimation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.85)) {
                                     isDragging = false
                                 }
                             }
                         }
                 )
-                .animation(.spring(response: 0.28, dampingFraction: 0.82), value: height)
+                .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.82), value: height)
             }
             .frame(height: activeHeight)
 
-            HStack {
-                Text(fmtTime(displayTime))
-                    .font(.system(size: isDragging ? 13 : 12, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(isDragging ? Color.textPrimary : Color.textSecondary)
-                    .scaleEffect(isDragging ? 1.08 : 1.0, anchor: .leading)
-
-                Spacer()
-
-                Text("-\(fmtTime(remainingTime))")
-                    .font(.system(size: isDragging ? 13 : 12, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(isDragging ? Color.textPrimary : Color.textSecondary)
-                    .scaleEffect(isDragging ? 1.08 : 1.0, anchor: .trailing)
-            }
-            .animation(.spring(response: 0.3, dampingFraction: 0.85), value: isDragging)
+            // Plain-value inputs: SwiftUI skips the labels' body unless a
+            // displayed second changes, not on every 0.25 s position tick.
+            ScrubTimeLabels(
+                elapsedSeconds: Int(max(0, displayTime)),
+                remainingSeconds: Int(max(0, remainingTime)),
+                isDragging: isDragging
+            )
+            .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.85), value: isDragging)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(String(localized: "Playback position")))
@@ -151,5 +146,31 @@ struct ScrubBar: View {
         guard seconds.isFinite else { return "0:00" }
         let s = Int(max(0, seconds))
         return "\(s / 60):\(String(format: "%02d", s % 60))"
+    }
+}
+
+private struct ScrubTimeLabels: View {
+    let elapsedSeconds: Int
+    let remainingSeconds: Int
+    let isDragging: Bool
+
+    var body: some View {
+        HStack {
+            Text(Self.format(elapsedSeconds))
+                .font(.system(size: isDragging ? 13 : 12, weight: .semibold, design: .monospaced))
+                .foregroundStyle(isDragging ? Color.textPrimary : Color.textSecondary)
+                .scaleEffect(isDragging ? 1.08 : 1.0, anchor: .leading)
+
+            Spacer()
+
+            Text("-\(Self.format(remainingSeconds))")
+                .font(.system(size: isDragging ? 13 : 12, weight: .semibold, design: .monospaced))
+                .foregroundStyle(isDragging ? Color.textPrimary : Color.textSecondary)
+                .scaleEffect(isDragging ? 1.08 : 1.0, anchor: .trailing)
+        }
+    }
+
+    private static func format(_ seconds: Int) -> String {
+        "\(seconds / 60):\(String(format: "%02d", seconds % 60))"
     }
 }

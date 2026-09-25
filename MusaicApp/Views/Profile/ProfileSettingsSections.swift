@@ -79,15 +79,15 @@ struct ProfileStatusSection: View {
         VStack(alignment: .leading, spacing: 18) {
             LiquidSectionHeader(
                 title: String(localized: "Settings"),
-                subtitle: String(localized: "Sources, VK access, playback defaults and server control.")
+                subtitle: String(localized: "Sources, accounts, playback defaults and server control.")
             )
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
-                    statusChip(title: "Server", state: connectionLabel)
-                    statusChip(title: "Yandex", state: yandexState)
+                    statusChip(title: String(localized: "Server"), state: connectionLabel, showsConnectionDot: true)
+                    statusChip(title: String(localized: "Yandex"), state: yandexState)
                     statusChip(title: "VK", state: vkState)
-                    statusChip(title: "Cache", state: cacheSize)
+                    statusChip(title: String(localized: "Cache"), state: cacheSize)
                 }
             }
 
@@ -103,9 +103,9 @@ struct ProfileStatusSection: View {
         .padding(.top, 12)
     }
 
-    private func statusChip(title: String, state: String) -> some View {
+    private func statusChip(title: String, state: String, showsConnectionDot: Bool = false) -> some View {
         HStack(spacing: 8) {
-            if title == "Server" {
+            if showsConnectionDot {
                 Circle()
                     .fill(connectionOk == true ? Color.green : connectionOk == false ? Color.red : Color.gray.opacity(0.5))
                     .frame(width: 8, height: 8)
@@ -138,26 +138,10 @@ struct ProfileSourcesSection: View {
             ProfileSourceToggle(title: String(localized: "YouTube Music"), isOn: $sourceYoutube)
             ProfileSourceToggle(title: String(localized: "SoundCloud"), isOn: $sourceSoundcloud)
             ProfileSourceToggle(title: String(localized: "VK (liked tracks only)"), isOn: $sourceVK)
-            Text("VK is no longer used for search or recommendations — only your already-liked VK tracks still play. Connect VK below to keep them playing.")
+            Text(String(localized: "VK is no longer used for search or recommendations — only your already-liked VK tracks still play. Connect VK below to keep them playing."))
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(Color.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-}
-
-struct ProfileAppearanceSection: View {
-    @Binding var theme: AppTheme
-
-    var body: some View {
-        ProfileSettingsCard(title: String(localized: "Appearance")) {
-            Picker(String(localized: "Theme"), selection: $theme) {
-                ForEach(AppTheme.allCases) { theme in
-                    Text(theme.localizedName).tag(theme)
-                }
-            }
-            .pickerStyle(.menu)
-            .tint(Color.textPrimary)
         }
     }
 }
@@ -177,7 +161,7 @@ struct ProfilePlaybackSection: View {
             }
             ProfileSettingRow(
                 title: String(localized: "Crossfade"),
-                value: crossfadeSeconds == 0 ? String(localized: "Off") : "\(crossfadeSeconds)s"
+                value: crossfadeSeconds == 0 ? String(localized: "Off") : String(localized: "\(crossfadeSeconds)s")
             ) {
                 let options = [0, 2, 5, 10]
                 let index = options.firstIndex(of: crossfadeSeconds) ?? 0
@@ -195,7 +179,7 @@ struct ProfilePlaybackSection: View {
                 )
             )
             ProfileSourceToggle(title: String(localized: "Volume Normalization"), isOn: $normalization)
-            Text("Stream Quality applies to Yandex (real bitrate tiers); other sources serve a fixed quality. Gapless uses a short seamless bridge between tracks when Crossfade is Off.")
+            Text(String(localized: "Stream Quality applies to Yandex (real bitrate tiers); other sources serve a fixed quality. Gapless uses a short seamless bridge between tracks when Crossfade is Off."))
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(Color.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -204,9 +188,9 @@ struct ProfilePlaybackSection: View {
 
     private var streamQualityLabel: String {
         switch streamQuality {
-        case "low": return "Low (128)"
-        case "normal": return "Normal (192)"
-        default: return "High (320)"
+        case "low": return String(localized: "Low (128)")
+        case "normal": return String(localized: "Normal (192)")
+        default: return String(localized: "High (320)")
         }
     }
 }
@@ -230,15 +214,21 @@ struct ProfileDownloadsSection: View {
 }
 
 struct ProfileStorageSection: View {
-    @Binding var cacheSize: String
+    let cacheSize: String
+    let clearing: Bool
     let onClearCache: () -> Void
 
     var body: some View {
         ProfileSettingsCard(title: String(localized: "Storage")) {
             ProfileSettingRow(title: String(localized: "Cache Size"), value: cacheSize)
-            Button(String(localized: "Clear Cache"), action: onClearCache)
+            Button(clearing ? String(localized: "Clearing…") : String(localized: "Clear Cache"), action: onClearCache)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color.textPrimary)
+                .disabled(clearing)
+            Text(String(localized: "Removes cached artwork and server responses. Downloads are kept."))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -247,6 +237,7 @@ struct ProfileServerSection: View {
     let serverURL: String
     let connectionButtonLabel: String
     let testing: Bool
+    var message: String? = nil
     @Binding var editingServer: Bool
     @Binding var serverDraft: String
     let onSave: () -> Void
@@ -256,19 +247,7 @@ struct ProfileServerSection: View {
         ProfileSettingsCard(title: String(localized: "Server")) {
             if editingServer {
                 VStack(spacing: 10) {
-                    TextField("94.103.1.126:3001", text: $serverDraft)
-                        .textFieldStyle(.plain)
-                        .foregroundStyle(Color.textPrimary)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 14)
-                        .glassCard(cornerRadius: 18, intensity: 0.08)
-
-                    if serverDraft.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("http://") {
-                        Text(String(localized: "HTTP is unencrypted. Use HTTPS for public servers."))
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.orange)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    ServerAddressField(text: $serverDraft)
 
                     HStack(spacing: 10) {
                         Button(String(localized: "Save"), action: onSave)
@@ -297,7 +276,7 @@ struct ProfileServerSection: View {
                         Text(serverURL)
                             .font(.system(size: 13, weight: .semibold, design: .monospaced))
                             .foregroundStyle(Color.textPrimary)
-                        Text("Public server is default. You can still switch to a LAN IP if needed.")
+                        Text(String(localized: "Tap to change the server address (e.g. a LAN IP)."))
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(Color.textSecondary)
                     }
@@ -306,10 +285,18 @@ struct ProfileServerSection: View {
                 .buttonStyle(.plain)
             }
 
+            if let message {
+                Text(message)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Button {
                 onTestConnection()
             } label: {
-                Text(testing ? String(localized: "Testing...") : connectionButtonLabel)
+                Text(testing ? String(localized: "Testing…") : connectionButtonLabel)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.textPrimary)
                     .frame(maxWidth: .infinity)
@@ -343,7 +330,7 @@ struct ProfileAccountSection: View {
                     }
                     Spacer()
                 }
-                Button(String(localized: "Sign Out")) {
+                Button(String(localized: "Sign Out"), role: .destructive) {
                     Task { await api.logout() }
                 }
                 .font(.system(size: 13, weight: .semibold))
@@ -359,13 +346,13 @@ struct ProfileAboutSection: View {
     var body: some View {
         ProfileSettingsCard(title: String(localized: "About")) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Musaic")
+                Text(verbatim: "Musaic")
                     .font(.system(size: 18, weight: .bold, design: .rounded))
                     .foregroundStyle(Color.textPrimary)
                 Text(appVersionLabel)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Color.textSecondary)
-                Text("A personal music player with local, VK and SoundCloud support.")
+                Text(String(localized: "A personal music player for your own server: local files, Yandex Music, YouTube and SoundCloud."))
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Color.textMuted)
             }

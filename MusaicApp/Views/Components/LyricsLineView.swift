@@ -13,6 +13,8 @@ struct LyricsLineView: View {
     var activeWordIndex: Int? = nil
     let onTap: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         let bgColor: Color = isTapped
             ? Color.white.opacity(0.08)
@@ -35,8 +37,11 @@ struct LyricsLineView: View {
         .padding(.horizontal, 6)
         .background(bgColor, in: RoundedRectangle(cornerRadius: 8))
         .id(lineID)
-        .animation(.easeOut(duration: 0.22), value: isActive)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: isActive)
+        .contentShape(Rectangle())
         .onTapGesture(perform: onTap)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint(Text(String(localized: "Plays from this line")))
     }
 
     /// Word-by-word attributed run for the karaoke highlight: sung words stay
