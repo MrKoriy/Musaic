@@ -25,26 +25,12 @@ struct LibraryHeaderView: View {
             }
 
             HStack(spacing: 12) {
-                libraryStat(title: String(localized: "Liked"), value: "\(likedCount)")
-                libraryStat(title: String(localized: "Albums"), value: "\(albumCount)")
-                libraryStat(title: String(localized: "Playlists"), value: "\(playlistCount)")
+                StatCard(value: "\(likedCount)", label: String(localized: "Liked"), tint: Color.accentStrong)
+                StatCard(value: "\(albumCount)", label: String(localized: "Albums"), tint: Color.accentStrong)
+                StatCard(value: "\(playlistCount)", label: String(localized: "Playlists"), tint: Color.accentStrong)
             }
         }
         .padding(.horizontal, 18)
-    }
-
-    private func libraryStat(title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(value)
-                .font(.system(size: 22, weight: .bold, design: .rounded))
-                .foregroundStyle(Color.textPrimary)
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Color.textSecondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .glassCard(cornerRadius: 22, tint: Color.accentStrong, intensity: 0.10)
     }
 }
 
@@ -76,10 +62,10 @@ struct LibraryPlaylistSection: View {
                                 .liquidProminentSurface(cornerRadius: 18, accent: Color(hex: "d9b17b"))
                         )
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("New Playlist")
+                        Text(String(localized: "New Playlist"))
                             .font(.system(size: 15, weight: .bold, design: .rounded))
                             .foregroundStyle(Color.textPrimary)
-                        Text("Create a fresh playlist and start filling it right away.")
+                        Text(String(localized: "Create a fresh playlist and start filling it right away."))
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(Color.textSecondary)
                     }
@@ -128,7 +114,7 @@ struct LibraryPlaylistSection: View {
                                     .font(.system(size: 14, weight: .semibold))
                                     .foregroundStyle(Color.textPrimary)
                                     .lineLimit(1)
-                                Text("\(playlist.trackCount) tracks")
+                                Text(String(localized: "\(playlist.trackCount) tracks"))
                                     .font(.system(size: 12, weight: .medium))
                                     .foregroundStyle(Color.textSecondary)
                             }
@@ -141,10 +127,10 @@ struct LibraryPlaylistSection: View {
                 .padding(.horizontal, 18)
             }
         }
-        .alert("New Playlist", isPresented: $showNewPlaylist) {
-            TextField("Playlist name", text: $newPlaylistName)
-            Button("Create", action: onCreatePlaylist)
-            Button("Cancel", role: .cancel) {}
+        .alert(String(localized: "New Playlist"), isPresented: $showNewPlaylist) {
+            TextField(String(localized: "Playlist name"), text: $newPlaylistName)
+            Button(String(localized: "Create"), action: onCreatePlaylist)
+            Button(String(localized: "Cancel"), role: .cancel) {}
         }
     }
 }

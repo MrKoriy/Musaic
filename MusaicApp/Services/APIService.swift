@@ -7,24 +7,35 @@ import Foundation
 final class APIService {
     static let shared = APIService()
 
-    private let defaultServer = "http://94-103-1-126.nip.io:3001"
+    static let defaultServer = "http://94-103-1-126.nip.io:3001"
+    /// Interactive requests fail fast instead of spinning while offline.
+    static let interactiveTimeout: TimeInterval = 15
+    private static let maxRetries = 2
+    private static let retryableStatusCodes: Set<Int> = [502, 503, 504]
+    private static let retryableURLErrorCodes: Set<URLError.Code> = [
+        .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+    ]
+
     private(set) var serverURL: String
+    let urlCache: URLCache
     private let session: URLSession
     private let pingSession: URLSession
-    private let decoder = JSONDecoder()
-    private let encoder = JSONEncoder()
-    private let inFlightGETRequests = InFlightGETRequests()
+    private let inFlightGETRequests = InFlightRequests()
 
     init() {
+        let cache = URLCache(memoryCapacity: 32 * 1024 * 1024, diskCapacity: 128 * 1024 * 1024, diskPath: "musaic-api-cache")
+        self.urlCache = cache
+
         let configuration = URLSessionConfiguration.default
-        configuration.waitsForConnectivity = true
-        configuration.timeoutIntervalForRequest = 20
-        configuration.timeoutIntervalForResource = 45
+        configuration.waitsForConnectivity = false
+        configuration.timeoutIntervalForRequest = Self.interactiveTimeout
+        // Upper bound for the few long-running calls (playlist import) that
+        // raise their own per-request timeout.
+        configuration.timeoutIntervalForResource = 330
         configuration.requestCachePolicy = .reloadRevalidatingCacheData
-        configuration.urlCache = URLCache(memoryCapacity: 32 * 1024 * 1024, diskCapacity: 128 * 1024 * 1024, diskPath: "musaic-api-cache")
+        configuration.urlCache = cache
         self.session = URLSession(configuration: configuration)
 
-        // Fast-fail session for connectivity checks — no waiting, short timeout
         let pingConfig = URLSessionConfiguration.ephemeral
         pingConfig.waitsForConnectivity = false
         pingConfig.timeoutIntervalForRequest = 5
@@ -33,11 +44,12 @@ final class APIService {
 
         let storedServer = UserDefaults.standard.string(forKey: "server_url")
         let normalizedStoredServer = Self.normalizedServerURL(storedServer)
-        self.serverURL = normalizedStoredServer ?? defaultServer
+        self.serverURL = normalizedStoredServer ?? Self.defaultServer
 
         if let normalizedStoredServer, normalizedStoredServer != storedServer {
             UserDefaults.standard.set(normalizedStoredServer, forKey: "server_url")
         }
+        APICredentials.shared.setServerURL(serverURL)
     }
 
     func setServerURL(_ url: String) {
@@ -45,19 +57,36 @@ final class APIService {
             resetServerURL()
             return
         }
-
-        serverURL = normalized
+        applyServerURL(normalized)
         UserDefaults.standard.set(normalized, forKey: "server_url")
     }
 
     func resetServerURL() {
         UserDefaults.standard.removeObject(forKey: "server_url")
-        serverURL = defaultServer
+        applyServerURL(Self.defaultServer)
+    }
+
+    private func applyServerURL(_ normalized: String) {
+        guard normalized != serverURL else { return }
+        serverURL = normalized
+        APICredentials.shared.setServerURL(normalized)
+        clearSessionCaches()
+    }
+
+    /// Normalized server address, or nil when the input can't be a server URL.
+    static func validatedServerURL(_ raw: String) -> String? {
+        normalizedServerURL(raw)
     }
 
     var usesInsecurePublicHTTP: Bool {
         guard let url = URL(string: serverURL), url.scheme == "http", let host = url.host else { return false }
         return host != "localhost" && host != "127.0.0.1" && host != "::1"
+    }
+
+    /// Drops per-account in-memory and HTTP caches (logout, server switch).
+    func clearSessionCaches() {
+        playlistTracksCache.removeAll()
+        urlCache.removeAllCachedResponses()
     }
 
     // MARK: - HTTP Methods
@@ -69,7 +98,7 @@ final class APIService {
             url.path.hasPrefix("/api/yandex/") || url.path.hasPrefix("/api/vk/") {
             request.cachePolicy = .reloadIgnoringLocalCacheData
         }
-        if let token = SettingsStore.shared.authToken {
+        if let token = APICredentials.shared.token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         return request
@@ -83,49 +112,73 @@ final class APIService {
     }
 
     func get<T: Decodable>(_ path: String) async throws -> T {
-        let requestKey = getRequestKey(for: path)
-        let data = try await inFlightGETRequests.value(for: requestKey) { [self] in
-            let url = try self.makeURL(path)
-            let request = self.authenticatedRequest(for: url)
-            return try await self.requestData(path, request: request)
+        let url = try makeURL(path)
+        let request = authenticatedRequest(for: url)
+        let data = try await inFlightGETRequests.value(for: getRequestKey(for: path)) { [self] in
+            try await self.requestData(path, request: request)
         }
-        return try decoder.decode(T.self, from: data)
+        return try await Self.decode(data)
     }
 
     private func getRequestKey(for path: String) -> String {
-        // Avoid joining requests across server or account changes without
-        // retaining the bearer token itself in the deduplication table.
+        // Never join requests across server or account changes, without
+        // keeping the bearer token itself in the deduplication table.
         var hasher = Hasher()
         hasher.combine(serverURL)
-        hasher.combine(SettingsStore.shared.authToken ?? "")
+        hasher.combine(APICredentials.shared.token ?? "")
         hasher.combine(path)
         return String(hasher.finalize())
     }
 
-    /// Generic POST for ad-hoc client calls (fire-and-forget features).
+    /// Generic POST for ad-hoc client calls. Prefer `postJSON` for Sendable
+    /// bodies so encoding happens off the main actor.
     func post<T: Decodable>(_ path: String, body: Encodable) async throws -> T {
         let url = try makeURL(path)
         var request = authenticatedRequest(for: url, method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try encoder.encode(body)
+        request.httpBody = try JSONEncoder().encode(body)
         let data = try await requestData(path, request: request)
-        return try decoder.decode(T.self, from: data)
+        return try await Self.decode(data)
+    }
+
+    func postJSON<B: Encodable & Sendable, T: Decodable>(_ path: String, body: B, timeout: TimeInterval? = nil) async throws -> T {
+        try await sendJSON(method: "POST", path, body: body, timeout: timeout)
+    }
+
+    private func patchJSON<B: Encodable & Sendable, T: Decodable>(_ path: String, body: B) async throws -> T {
+        try await sendJSON(method: "PATCH", path, body: body, timeout: nil)
     }
 
     private func delete<T: Decodable>(_ path: String) async throws -> T {
         let url = try makeURL(path)
         let request = authenticatedRequest(for: url, method: "DELETE")
         let data = try await requestData(path, request: request)
-        return try decoder.decode(T.self, from: data)
+        return try await Self.decode(data)
     }
 
-    private func patch<T: Decodable>(_ path: String, body: Encodable) async throws -> T {
+    private func sendJSON<B: Encodable & Sendable, T: Decodable>(
+        method: String,
+        _ path: String,
+        body: B,
+        timeout: TimeInterval?
+    ) async throws -> T {
         let url = try makeURL(path)
-        var request = authenticatedRequest(for: url, method: "PATCH")
+        var request = authenticatedRequest(for: url, method: method)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try encoder.encode(body)
+        if let timeout { request.timeoutInterval = timeout }
+        request.httpBody = try await Self.encode(body)
         let data = try await requestData(path, request: request)
-        return try decoder.decode(T.self, from: data)
+        return try await Self.decode(data)
+    }
+
+    // Nonisolated async functions run on the global executor, keeping large
+    // library/playlist payloads off the main thread.
+    nonisolated private static func decode<T: Decodable>(_ data: Data) async throws -> sending T {
+        try JSONDecoder().decode(T.self, from: data)
+    }
+
+    nonisolated private static func encode<B: Encodable & Sendable>(_ body: B) async throws -> Data {
+        try JSONEncoder().encode(body)
     }
 
     private func requestData(_ path: String, request: URLRequest) async throws -> Data {
@@ -141,9 +194,12 @@ final class APIService {
         return data
     }
 
+    /// Sends a request. Only idempotent requests are retried, and only on
+    /// transient failures, with a short exponential backoff.
     private func send(_ request: URLRequest, endpoint: String) async throws -> (data: Data, response: HTTPURLResponse) {
-        var didRetry = false
-        let retryAllowed = request.httpMethod == nil || request.httpMethod == "GET" || request.httpMethod == "HEAD"
+        let method = request.httpMethod ?? "GET"
+        let retryAllowed = method == "GET" || method == "HEAD"
+        var attempt = 0
 
         while true {
             do {
@@ -151,22 +207,32 @@ final class APIService {
                 guard let http = response as? HTTPURLResponse else {
                     throw APIError.invalidResponse(endpoint: endpoint)
                 }
+                if retryAllowed, attempt < Self.maxRetries, Self.retryableStatusCodes.contains(http.statusCode) {
+                    attempt += 1
+                    try await Self.backoff(attempt: attempt)
+                    continue
+                }
                 return (data, http)
-            } catch let error as APIError {
-                throw error
             } catch {
-                if let urlError = error as? URLError, urlError.code == .cancelled {
-                    throw error
+                if error.isCancellation || Task.isCancelled { throw CancellationError() }
+                if let apiError = error as? APIError { throw apiError }
+                guard let urlError = error as? URLError else { throw error }
+                if retryAllowed, attempt < Self.maxRetries, Self.retryableURLErrorCodes.contains(urlError.code) {
+                    attempt += 1
+                    try await Self.backoff(attempt: attempt)
+                    continue
                 }
-                guard Self.isNetworkError(error) else { throw error }
-                let code = (error as? URLError)?.code ?? .unknown
-                print("[APIService] network code=\(code.rawValue) scheme=\(request.url?.scheme ?? "?") host=\(request.url?.host ?? "?") endpoint=\(endpoint)")
-                guard retryAllowed, !didRetry else {
-                    throw APIError.network(code: code, endpoint: endpoint)
-                }
-                didRetry = true
+                #if DEBUG
+                print("[APIService] network code=\(urlError.code.rawValue) host=\(request.url?.host ?? "?") endpoint=\(endpoint)")
+                #endif
+                throw APIError.network(code: urlError.code, endpoint: endpoint)
             }
         }
+    }
+
+    private static func backoff(attempt: Int) async throws {
+        let base = 0.4 * pow(3, Double(attempt - 1))
+        try await Task.sleep(for: .seconds(base + Double.random(in: 0...0.2)))
     }
 
     private func httpError(for response: HTTPURLResponse, data: Data, endpoint: String) -> APIError {
@@ -181,11 +247,6 @@ final class APIService {
             message = nil
         }
         return .httpStatus(statusCode: response.statusCode, endpoint: endpoint, message: message)
-    }
-
-    private static func isNetworkError(_ error: Error) -> Bool {
-        if error is URLError { return true }
-        return (error as NSError).domain == NSURLErrorDomain
     }
 
     // MARK: - Auth
@@ -204,13 +265,13 @@ final class APIService {
     }
 
     /// Auth requests parse JSON body even on 4xx errors (e.g. 409 "Username taken")
-    private func authPost<B: Encodable>(_ path: String, body: B) async throws -> AuthResponse {
+    private func authPost<B: Encodable & Sendable>(_ path: String, body: B) async throws -> AuthResponse {
         let url = try makeURL(path)
         var request = authenticatedRequest(for: url, method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try encoder.encode(body)
+        request.httpBody = try await Self.encode(body)
         let (data, response) = try await send(request, endpoint: path)
-        if let authResponse = try? decoder.decode(AuthResponse.self, from: data) {
+        if let authResponse = try? JSONDecoder().decode(AuthResponse.self, from: data) {
             // Preserve server-provided validation messages while still surfacing
             // unexpected non-JSON error statuses to callers.
             if !(200..<300).contains(response.statusCode), authResponse.error == nil {
@@ -218,47 +279,59 @@ final class APIService {
             }
             return authResponse
         }
-        guard (200..<300).contains(response.statusCode) else {
-            throw httpError(for: response, data: data, endpoint: path)
-        }
-        return try decoder.decode(AuthResponse.self, from: data)
+        throw httpError(for: response, data: data, endpoint: path)
     }
 
     func register(username: String, password: String, displayName: String?) async throws -> AuthResponse {
-        struct Body: Codable { let username: String; let password: String; let displayName: String? }
+        struct Body: Codable, Sendable { let username: String; let password: String; let displayName: String? }
         return try await authPost("/api/auth/register", body: Body(username: username, password: password, displayName: displayName))
     }
 
     func login(username: String, password: String) async throws -> AuthResponse {
-        struct Body: Codable { let username: String; let password: String }
+        struct Body: Codable, Sendable { let username: String; let password: String }
         return try await authPost("/api/auth/login", body: Body(username: username, password: password))
     }
 
     func logout() async {
-        do {
-            let _: OkResponse = try await post("/api/auth/logout", body: EmptyBody())
-        } catch {
-            // Local credentials must still be removed if the server is offline.
-        }
-        LibraryStore.shared.clearLocalLikes()
+        // Best-effort: local credentials are removed even if the server is offline.
+        let _: OkResponse? = try? await postJSON("/api/auth/logout", body: EmptyBody(), timeout: 5)
         SettingsStore.shared.logout()
     }
 
     // MARK: - Health
 
-    func ping() async -> Bool {
-        guard let url = URL(string: "\(serverURL)/health") else { return false }
-        var didRetry = false
+    enum ConnectionCheck: Equatable {
+        case ok
+        case invalidAddress
+        case httpStatus(Int)
+        case unreachable(String)
 
-        while true {
-            do {
-                let (_, response) = try await pingSession.data(from: url)
-                return (response as? HTTPURLResponse)?.statusCode == 200
-            } catch {
-                guard !didRetry, Self.isNetworkError(error) else { return false }
-                didRetry = true
+        var message: String {
+            switch self {
+            case .ok: return String(localized: "Server is reachable.")
+            case .invalidAddress: return String(localized: "Enter a valid server address, e.g. 192.168.1.10:3001.")
+            case .httpStatus(let code): return String(localized: "The server answered with HTTP \(code).")
+            case .unreachable(let reason): return reason
             }
         }
+    }
+
+    /// GET /health on `server` (default: the saved server) without saving it.
+    func checkConnection(to server: String? = nil) async -> ConnectionCheck {
+        let base = server.map(Self.normalizedServerURL) ?? serverURL
+        guard let base, let url = URL(string: "\(base)/health") else { return .invalidAddress }
+        do {
+            let (_, response) = try await pingSession.data(from: url)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            return status == 200 ? .ok : .httpStatus(status)
+        } catch {
+            if error.isCancellation { return .unreachable(String(localized: "Cancelled.")) }
+            return .unreachable(error.localizedDescription)
+        }
+    }
+
+    func ping() async -> Bool {
+        await checkConnection() == .ok
     }
 
     // MARK: - Tracks
@@ -309,6 +382,12 @@ final class APIService {
 
     // MARK: - Recommendations
 
+    /// One seed per track ID (duplicates in the queue must not crash or skew the seed list).
+    private func uniqueSeedBodies(_ seeds: [Track]) -> [MyVibeSeedBody] {
+        var seen = Set<String>()
+        return seeds.compactMap { seen.insert($0.id).inserted ? MyVibeSeedBody(track: $0) : nil }
+    }
+
     func getHomeRecommendations() async throws -> RecoResponse {
         try await get("/api/recommendations/home")
     }
@@ -341,9 +420,7 @@ final class APIService {
         skipStreak: Int = 0,
         reactionRefresh: Bool = false
     ) async throws -> RecoResponse {
-        let uniqueSeeds = Array(Dictionary(
-            uniqueKeysWithValues: seeds.map { ($0.id, MyVibeSeedBody(track: $0)) }
-        ).values)
+        let uniqueSeeds = uniqueSeedBodies(seeds)
         let body = MyVibeRequestBody(
             seeds: uniqueSeeds,
             excludeIds: Array(Set(excludeIds)),
@@ -356,7 +433,7 @@ final class APIService {
             reactionRefresh: reactionRefresh,
             enabledSources: SettingsStore.shared.enabledRecommendationSources
         )
-        return try await post("/api/recommendations/my-vibe", body: body)
+        return try await postJSON("/api/recommendations/my-vibe", body: body)
     }
 
     func getAutoMixTracks(
@@ -369,9 +446,7 @@ final class APIService {
         skipStreak: Int = 0,
         reactionRefresh: Bool = false
     ) async throws -> RecoResponse {
-        let uniqueSeeds = Array(Dictionary(
-            uniqueKeysWithValues: seeds.map { ($0.id, MyVibeSeedBody(track: $0)) }
-        ).values)
+        let uniqueSeeds = uniqueSeedBodies(seeds)
         let body = AutoMixRequestBody(
             seeds: uniqueSeeds,
             excludeIds: Array(Set(excludeIds)),
@@ -383,7 +458,7 @@ final class APIService {
             reactionRefresh: reactionRefresh,
             enabledSources: SettingsStore.shared.enabledRecommendationSources
         )
-        return try await post("/api/recommendations/auto-mix", body: body)
+        return try await postJSON("/api/recommendations/auto-mix", body: body)
     }
 
     // MARK: - Library
@@ -455,7 +530,7 @@ final class APIService {
 
     func createPlaylist(name: String, description: String? = nil) async throws -> String {
         let body = CreatePlaylistBody(name: name, description: description)
-        let response: CreatePlaylistResponse = try await post("/api/playlists", body: body)
+        let response: CreatePlaylistResponse = try await postJSON("/api/playlists", body: body)
         return response.id
     }
 
@@ -474,7 +549,7 @@ final class APIService {
     // cached rows render first, then the fresh response replaces them. Server
     // ETag + URLCache keep the revalidation round-trip tiny (304).
 
-    private var playlistTracksCache: [String: (tracks: [ServerTrack], fetchedAt: Date)] = [:]
+    @ObservationIgnored private var playlistTracksCache: [String: (tracks: [ServerTrack], fetchedAt: Date)] = [:]
     private static let playlistCacheTTL: TimeInterval = 60
     private static let playlistCacheMaxEntries = 16
 
@@ -495,45 +570,33 @@ final class APIService {
         playlistTracksCache.removeValue(forKey: playlistId)
     }
 
-    func addToPlaylist(playlistId: String, trackId: String) async throws {
-        let body = AddTrackBody(trackId: trackId)
-        let _: OkResponse = try await post("/api/playlists/\(playlistId)/tracks", body: body)
+    /// `position` pins the slot explicitly so concurrent batch adds keep order.
+    func addToPlaylist(playlistId: String, trackId: String, position: Int? = nil) async throws {
+        let body = AddTrackBody(trackId: trackId, position: position)
+        let _: OkResponse = try await postJSON("/api/playlists/\(playlistId)/tracks", body: body)
         invalidatePlaylistTracksCache(playlistId: playlistId)
     }
 
     func removeFromPlaylist(playlistId: String, trackId: String) async throws {
-        let _: OkResponse = try await delete("/api/playlists/\(playlistId)/tracks/\(trackId)")
+        let _: OkResponse = try await delete("/api/playlists/\(playlistId)/tracks/\(encodedTrackID(trackId))")
         invalidatePlaylistTracksCache(playlistId: playlistId)
     }
 
     func updatePlaylist(id: String, name: String? = nil, description: String? = nil) async throws {
         let body = UpdatePlaylistBody(name: name, description: description)
-        let _: OkResponse = try await patch("/api/playlists/\(id)", body: body)
+        let _: OkResponse = try await patchJSON("/api/playlists/\(id)", body: body)
         invalidatePlaylistTracksCache(playlistId: id)
     }
 
+    /// Downsamples and re-encodes the picked image off the main actor before
+    /// upload (the server caps covers at 4 MB).
     func uploadPlaylistCover(playlistId: String, data: Data, mimeType: String) async throws -> String? {
-        let compressedData: Data
-        let finalMime: String
-        // Downscale large images to max 512x512 to avoid OOM on base64 encoding
-        if data.count > 512 * 1024, let image = PlatformImage.platformImage(from: data) {
-            let maxDim: CGFloat = 512
-            let scale = min(maxDim / image.platformSize.width, maxDim / image.platformSize.height, 1.0)
-            if scale < 1.0 {
-                let newSize = CGSize(width: image.platformSize.width * scale, height: image.platformSize.height * scale)
-                let resized = resizedImage(image, to: newSize)
-                compressedData = resized.platformJPEGData(compressionQuality: 0.8) ?? data
-                finalMime = "image/jpeg"
-            } else {
-                compressedData = image.platformJPEGData(compressionQuality: 0.8) ?? data
-                finalMime = "image/jpeg"
-            }
-        } else {
-            compressedData = data
-            finalMime = mimeType
-        }
-        let body = UploadPlaylistCoverBody(imageBase64: compressedData.base64EncodedString(), mimeType: finalMime)
-        let response: PlaylistCoverUploadResponse = try await post("/api/playlists/\(playlistId)/image", body: body)
+        let base64 = await Task.detached(priority: .userInitiated) {
+            ImageDownsampler.jpegData(from: data, maxPixelSize: 1024)?.base64EncodedString()
+        }.value
+        guard let base64 else { throw APIError.unsupportedImage }
+        let body = UploadPlaylistCoverBody(imageBase64: base64, mimeType: "image/jpeg")
+        let response: PlaylistCoverUploadResponse = try await postJSON("/api/playlists/\(playlistId)/image", body: body)
         invalidatePlaylistTracksCache(playlistId: playlistId)
         return response.coverUrl
     }
@@ -541,6 +604,19 @@ final class APIService {
     func deletePlaylistCover(playlistId: String) async throws {
         let _: OkResponse = try await delete("/api/playlists/\(playlistId)/image")
         invalidatePlaylistTracksCache(playlistId: playlistId)
+    }
+
+    // MARK: - Playlist import
+
+    /// Matching a large external playlist can take minutes server-side.
+    func importPlaylist(url: String) async throws -> ImportResult {
+        struct Body: Encodable, Sendable { let url: String }
+        return try await postJSON("/api/import/playlist", body: Body(url: url), timeout: 300)
+    }
+
+    func saveImportedPlaylist(name: String, trackIds: [String]) async throws -> SaveResponse {
+        struct Body: Encodable, Sendable { let name: String; let trackIds: [String] }
+        return try await postJSON("/api/import/save", body: Body(name: name, trackIds: trackIds))
     }
 
     // MARK: - VK Auth
@@ -555,11 +631,11 @@ final class APIService {
 
     func vkSetToken(token: String, username: String?, state: String? = nil) async throws {
         let body = VKTokenBody(token: token, username: username, state: state)
-        let _: OkResponse = try await post("/api/vk/auth-token", body: body)
+        let _: OkResponse = try await postJSON("/api/vk/auth-token", body: body)
     }
 
     func vkLogout() async throws {
-        let _: OkResponse = try await post("/api/vk/logout", body: EmptyBody())
+        let _: OkResponse = try await postJSON("/api/vk/logout", body: EmptyBody())
     }
 
     func vkPlaylists() async throws -> [VKPlaylist] {
@@ -576,16 +652,16 @@ final class APIService {
     /// Connect Yandex with an account OAuth token. Server validates it and
     /// reports the login + whether Plus is active (needed for full tracks).
     func yandexConnect(token: String) async throws -> YandexConnectResponse {
-        try await post("/api/yandex/token", body: YandexTokenBody(token: token))
+        try await postJSON("/api/yandex/token", body: YandexTokenBody(token: token))
     }
 
     func yandexLogout() async throws {
-        let _: OkResponse = try await post("/api/yandex/logout", body: EmptyBody())
+        let _: OkResponse = try await postJSON("/api/yandex/logout", body: EmptyBody())
     }
 
     /// Begin Yandex OAuth device flow → returns a short code to enter at ya.ru/device.
     func yandexDeviceStart() async throws -> YandexDeviceStartResponse {
-        try await post("/api/yandex/device/start", body: EmptyBody())
+        try await postJSON("/api/yandex/device/start", body: EmptyBody())
     }
 
     /// Read device-flow status. The server captures the token in the background,
@@ -627,7 +703,7 @@ final class APIService {
             isOrganic: isOrganic,
             position: position
         )
-        let _: OkResponse? = try? await post("/api/history", body: body)
+        let _: OkResponse? = try? await postJSON("/api/history", body: body)
     }
 
     // MARK: - Likes Sync
@@ -637,13 +713,13 @@ final class APIService {
         tracks: [Track] = [],
         removedTrackIds: [String] = []
     ) async throws -> [String] {
-        struct Body: Encodable {
+        struct Body: Encodable, Sendable {
             let trackIds: [String]
             let tracks: [LikeTrackBody]
             let removedTrackIds: [String]
         }
         struct Resp: Codable { let trackIds: [String] }
-        let resp: Resp = try await post(
+        let resp: Resp = try await postJSON(
             "/api/auth/likes/sync",
             body: Body(
                 trackIds: trackIds,
@@ -655,16 +731,16 @@ final class APIService {
     }
 
     func toggleLikeOnServer(trackId: String) async throws {
-        struct Body: Codable { let trackId: String }
+        struct Body: Codable, Sendable { let trackId: String }
         struct Resp: Codable { let liked: Bool }
-        let _: Resp = try await post("/api/auth/likes/toggle", body: Body(trackId: trackId))
+        let _: Resp = try await postJSON("/api/auth/likes/toggle", body: Body(trackId: trackId))
     }
 
     func setLikeOnServer(track: Track, liked: Bool) async throws {
-        struct Body: Encodable { let trackId: String; let liked: Bool; let track: LikeTrackBody }
+        struct Body: Encodable, Sendable { let trackId: String; let liked: Bool; let track: LikeTrackBody }
         struct Resp: Codable { let liked: Bool }
         let normalized = normalizedTrack(track)
-        let _: Resp = try await post(
+        let _: Resp = try await postJSON(
             "/api/auth/likes/set",
             body: Body(trackId: normalized.id, liked: liked, track: LikeTrackBody(track: normalized))
         )
@@ -677,7 +753,7 @@ final class APIService {
     }
 
     func importYandexLikes() async throws -> YandexLikesImportResponse {
-        try await post("/api/yandex/likes/import", body: EmptyBody())
+        try await postJSON("/api/yandex/likes/import", body: EmptyBody())
     }
 
     func getStatsOverview() async throws -> StatsOverview {
@@ -709,7 +785,7 @@ final class APIService {
 
     func generateLyrics(trackId: String) async throws -> LyricsJobResponse {
         let body = EmptyBody()
-        return try await post("/api/lyrics/\(encodedTrackID(trackId))/generate", body: body)
+        return try await postJSON("/api/lyrics/\(encodedTrackID(trackId))/generate", body: body)
     }
 
     func getLyricsJobStatus(trackId: String) async throws -> LyricsJobResponse {
@@ -748,7 +824,7 @@ final class APIService {
 
     func ackReleases(ids: [String]) async throws {
         guard !(ids.isEmpty) else { return }
-        let _: AckResponse = try await post("/api/releases/ack", body: ["ids": ids])
+        let _: AckResponse = try await postJSON("/api/releases/ack", body: ["ids": ids])
     }
 
     private static func normalizedServerURL(_ raw: String?) -> String? {
@@ -867,27 +943,79 @@ final class APIService {
     }
 }
 
-private actor InFlightGETRequests {
-    private var requests: [String: Task<Data, Error>] = [:]
+/// Joins concurrent identical GETs. Every caller can cancel on its own; the
+/// shared request is cancelled only once no caller is waiting for it.
+private actor InFlightRequests {
+    private struct Entry {
+        let id: UInt64
+        let task: Task<Void, Never>
+        var waiters: [UInt64: CheckedContinuation<Data, Error>]
+    }
+
+    private var entries: [String: Entry] = [:]
+    private var nextID: UInt64 = 0
 
     func value(
         for key: String,
         operation: @escaping @MainActor @Sendable () async throws -> Data
     ) async throws -> Data {
-        if let request = requests[key] {
-            return try await request.value
+        nextID &+= 1
+        let waiterID = nextID
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                register(continuation, waiterID: waiterID, key: key, operation: operation)
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(waiterID, key: key) }
         }
+    }
 
-        let request = Task { try await operation() }
-        requests[key] = request
+    private func register(
+        _ continuation: CheckedContinuation<Data, Error>,
+        waiterID: UInt64,
+        key: String,
+        operation: @escaping @MainActor @Sendable () async throws -> Data
+    ) {
+        if Task.isCancelled {
+            continuation.resume(throwing: CancellationError())
+            return
+        }
+        if var entry = entries[key] {
+            entry.waiters[waiterID] = continuation
+            entries[key] = entry
+            return
+        }
+        nextID &+= 1
+        let entryID = nextID
+        let task = Task.detached(priority: Task.currentPriority) {
+            let result: Result<Data, Error>
+            do {
+                result = .success(try await operation())
+            } catch {
+                result = .failure(error)
+            }
+            await self.finish(entryID: entryID, key: key, result: result)
+        }
+        entries[key] = Entry(id: entryID, task: task, waiters: [waiterID: continuation])
+    }
 
-        do {
-            let data = try await request.value
-            requests.removeValue(forKey: key)
-            return data
-        } catch {
-            requests.removeValue(forKey: key)
-            throw error
+    private func finish(entryID: UInt64, key: String, result: Result<Data, Error>) {
+        guard let entry = entries[key], entry.id == entryID else { return }
+        entries[key] = nil
+        for continuation in entry.waiters.values {
+            continuation.resume(with: result)
+        }
+    }
+
+    private func cancelWaiter(_ waiterID: UInt64, key: String) {
+        guard var entry = entries[key],
+              let continuation = entry.waiters.removeValue(forKey: waiterID) else { return }
+        continuation.resume(throwing: CancellationError())
+        if entry.waiters.isEmpty {
+            entry.task.cancel()
+            entries[key] = nil
+        } else {
+            entries[key] = entry
         }
     }
 }
@@ -1055,11 +1183,14 @@ struct VKPlaylist: Codable, Identifiable {
 
 // MARK: - Request Bodies
 
-struct CreatePlaylistBody: Encodable { let name: String; let description: String? }
-struct AddTrackBody: Encodable { let trackId: String }
-struct VKTokenBody: Encodable { let token: String; let username: String?; let state: String? }
-struct YandexTokenBody: Encodable { let token: String }
-struct LogPlayBody: Encodable {
+struct CreatePlaylistBody: Encodable, Sendable { let name: String; let description: String? }
+struct AddTrackBody: Encodable, Sendable {
+    let trackId: String
+    var position: Int? = nil
+}
+struct VKTokenBody: Encodable, Sendable { let token: String; let username: String?; let state: String? }
+struct YandexTokenBody: Encodable, Sendable { let token: String }
+struct LogPlayBody: Encodable, Sendable {
     let trackId: String
     let action: String
     let eventId: String?
@@ -1072,10 +1203,10 @@ struct LogPlayBody: Encodable {
     let isOrganic: Bool?
     let position: Int?
 }
-struct UpdatePlaylistBody: Encodable { let name: String?; let description: String? }
-struct UploadPlaylistCoverBody: Encodable { let imageBase64: String; let mimeType: String }
-struct EmptyBody: Encodable {}
-struct LikeTrackBody: Encodable {
+struct UpdatePlaylistBody: Encodable, Sendable { let name: String?; let description: String? }
+struct UploadPlaylistCoverBody: Encodable, Sendable { let imageBase64: String; let mimeType: String }
+struct EmptyBody: Encodable, Sendable {}
+struct LikeTrackBody: Encodable, Sendable {
     let id: String
     let source: String
     let title: String
@@ -1094,7 +1225,7 @@ struct LikeTrackBody: Encodable {
         self.coverUrl = track.artwork
     }
 }
-struct StationOutcomeBody: Encodable {
+struct StationOutcomeBody: Encodable, Sendable {
     let id: String
     let artist: String
     let title: String
@@ -1109,7 +1240,7 @@ struct StationOutcomeBody: Encodable {
         self.completionRatio = min(max(completionRatio, 0), 1)
     }
 }
-struct MyVibeRequestBody: Encodable {
+struct MyVibeRequestBody: Encodable, Sendable {
     let seeds: [MyVibeSeedBody]
     let excludeIds: [String]
     let limit: Int
@@ -1121,7 +1252,7 @@ struct MyVibeRequestBody: Encodable {
     let reactionRefresh: Bool
     let enabledSources: [String]
 }
-struct AutoMixRequestBody: Encodable {
+struct AutoMixRequestBody: Encodable, Sendable {
     let seeds: [MyVibeSeedBody]
     let excludeIds: [String]
     let limit: Int
@@ -1132,7 +1263,7 @@ struct AutoMixRequestBody: Encodable {
     let reactionRefresh: Bool
     let enabledSources: [String]
 }
-struct MyVibeSeedBody: Encodable {
+struct MyVibeSeedBody: Encodable, Sendable {
     let id: String
     let artist: String
     let title: String
@@ -1147,7 +1278,7 @@ struct MyVibeSeedBody: Encodable {
         self.source = track.source.rawValue
     }
 }
-struct MyVibeFiltersBody: Encodable {
+struct MyVibeFiltersBody: Encodable, Sendable {
     let language: String?
     let character: String
     let mood: String?
@@ -1168,6 +1299,7 @@ enum APIError: LocalizedError {
     case httpStatus(statusCode: Int, endpoint: String, message: String?)
     case network(code: URLError.Code, endpoint: String)
     case requestFailed(String)
+    case unsupportedImage
 
     var statusCode: Int? {
         switch self {
@@ -1175,7 +1307,7 @@ enum APIError: LocalizedError {
             return 401
         case .httpStatus(let statusCode, _, _):
             return statusCode
-        case .invalidURL, .invalidResponse, .network, .requestFailed:
+        case .invalidURL, .invalidResponse, .network, .requestFailed, .unsupportedImage:
             return nil
         }
     }
@@ -1192,9 +1324,12 @@ enum APIError: LocalizedError {
             let suffix = message.map { ": \($0)" } ?? ""
             return "HTTP \(statusCode) for \(Self.safeEndpoint(endpoint))\(suffix)"
         case .network(_, let endpoint):
-            return "Network request failed for \(Self.safeEndpoint(endpoint))."
+            return String(localized: "Can't reach the server. Check your connection and try again.")
+                + " (\(Self.safeEndpoint(endpoint)))"
         case .requestFailed(let path):
             return "Request failed: \(Self.safeEndpoint(path))"
+        case .unsupportedImage:
+            return String(localized: "This image format isn't supported.")
         }
     }
 
@@ -1203,5 +1338,19 @@ enum APIError: LocalizedError {
             return endpoint
         }
         return components.path
+    }
+}
+
+extension Error {
+    /// Cancelled work (view disappeared, request superseded) is never shown to the user.
+    var isCancellation: Bool {
+        if self is CancellationError { return true }
+        if let urlError = self as? URLError { return urlError.code == .cancelled }
+        let nsError = self as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
+    }
+
+    var isUnauthorized: Bool {
+        (self as? APIError)?.statusCode == 401
     }
 }

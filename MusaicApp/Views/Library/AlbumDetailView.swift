@@ -56,61 +56,32 @@ struct AlbumDetailView: View {
                         .tint(Color.textPrimary)
                         .padding(.top, 40)
                 } else if tracks.isEmpty {
-                    ContentUnavailableView("No tracks", systemImage: "opticaldisc", description: Text(loadError ?? "No tracks were found for this album."))
+                    ContentUnavailableView(
+                        String(localized: "No tracks"),
+                        systemImage: "opticaldisc",
+                        description: Text(loadError ?? String(localized: "No tracks were found for this album."))
+                    )
                         .padding(.top, 40)
                 } else {
-                    HStack(spacing: 12) {
-                        Button {
-                            if player.setQueue(tracks, startAt: 0) {
-                                showNowPlaying = true
-                            }
-                        } label: {
-                            Label(String(localized: "Play All"), systemImage: "play.fill")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(Color.textPrimary)
-                                .padding(.horizontal, 20)
-                                .padding(.vertical, 13)
-                                .background(
-                                    Capsule()
-                                        .fill(Color.clear)
-                                        .liquidProminentSurface(cornerRadius: 999, accent: Color(hex: "d9b17b"))
-                                )
-                        }
-                        .buttonStyle(.plain)
-
-                        Button {
-                            var shuffled = tracks
-                            shuffled.shuffle()
-                            if player.setQueue(shuffled, startAt: 0) {
-                                showNowPlaying = true
-                            }
-                        } label: {
-                            Label(String(localized: "Shuffle"), systemImage: "shuffle")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(Color.textPrimary)
-                                .padding(.horizontal, 20)
-                                .padding(.vertical, 13)
-                                .glassCard(cornerRadius: 22, intensity: 0.08)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.horizontal, 18)
+                    PlayShuffleButtons(tracks: tracks) { showNowPlaying = true }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 18)
 
                     LazyVStack(spacing: 10) {
-                        ForEach(Array(tracks.enumerated()), id: \.element.id) { idx, track in
+                        ForEach(tracks.listItems) { item in
                             TrackRow(
-                                track: track,
-                                index: idx + 1,
-                                isCurrent: player.currentTrack?.id == track.id,
-                                isLiked: library.isLiked(track.id),
+                                track: item.track,
+                                index: item.index + 1,
+                                isCurrent: player.currentTrack?.id == item.track.id,
+                                isLiked: library.isLiked(item.track.id),
                                 onTap: {
-                                    if player.setQueue(tracks, startAt: idx) {
+                                    if player.setQueue(tracks, startAt: item.index) {
                                         showNowPlaying = true
                                     }
                                 },
-                                onLike: { library.toggleLike(track: track) },
-                                onAddToQueue: { player.addToQueue(track) },
-                                onAddToPlaylist: { playlistPickerTrack = track }
+                                onLike: { library.toggleLike(track: item.track) },
+                                onAddToQueue: { player.addToQueue(item.track) },
+                                onAddToPlaylist: { playlistPickerTrack = item.track }
                             )
                         }
                     }
@@ -144,7 +115,7 @@ struct AlbumDetailView: View {
                 Text(artistName)
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(Color.textSecondary)
-                Text("\(tracks.count) tracks\(source.map { " • \($0.uppercased())" } ?? "")")
+                Text(String(localized: "\(tracks.count) tracks") + (source.map { " • \(artistSourceDisplayName($0))" } ?? ""))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color.textMuted)
             }
@@ -153,15 +124,16 @@ struct AlbumDetailView: View {
         .padding(.top, 24)
     }
 
-    @MainActor
     private func loadTracks() async {
-        guard preloadedTracks.isEmpty else { return }
+        guard preloadedTracks.isEmpty, tracks.isEmpty else { return }
         loading = true
         loadError = nil
         defer { loading = false }
         do {
             let server = try await api.getAlbumTracks(album: albumTitle, artist: artistName, source: source)
             tracks = server.map(api.toAppTrack)
+        } catch where error.isCancellation {
+            return
         } catch {
             loadError = error.localizedDescription
         }

@@ -3,18 +3,23 @@ import SwiftUI
 struct LibraryView: View {
     @Binding var showNowPlaying: Bool
     @AppStorage("library_selected_tab") private var selectedTab = "Liked"
+    @AppStorage("library_liked_sort_option") private var sortOptionRaw = LikedSortOption.recentlyAdded.rawValue
     @State private var playlists: [ServerPlaylist] = []
     @State private var loading = false
     @State private var loadError: String?
     @State private var loadUnauthorized = false
+    @State private var lastLoadedAt: Date?
     @State private var showNewPlaylist = false
     @State private var showImport = false
     @State private var newPlaylistName = ""
     @State private var playlistPickerTrack: Track?
-    @State private var currentTrackId: String?
     @State private var downloadedOnly = false
+    /// Sorted/filtered liked list, recomputed only when its inputs change.
+    @State private var visibleLiked: [TrackListItem] = []
+    @State private var visibleLikedTracks: [Track] = []
 
     private let tabs = ["Playlists", "Albums", "Artists", "Liked"]
+    private static let staleAfter: TimeInterval = 5 * 60
     private let downloadManager = DownloadManager.shared
     private let api = APIService.shared
     private let player = PlayerStore.shared
@@ -61,13 +66,14 @@ struct LibraryView: View {
             }
             .background(AppBackdrop())
             .scrollIndicators(.hidden)
-            .task {
-                await library.ensureSynced()
-                await loadData()
+            .task { await refreshIfStale() }
+            .refreshable { await loadData(forceSync: true) }
+            .onChange(of: library.displayedLikedTracks, initial: true) { rebuildVisibleLiked() }
+            .onChange(of: sortOptionRaw) { rebuildVisibleLiked() }
+            .onChange(of: downloadedOnly) { rebuildVisibleLiked() }
+            .onChange(of: downloadManager.downloadedTrackIds) {
+                if downloadedOnly { rebuildVisibleLiked() }
             }
-            .refreshable { await loadData() }
-            .onAppear { currentTrackId = player.currentTrack?.id }
-            .onChange(of: player.currentTrack?.id) { _, newId in currentTrackId = newId }
             .sheet(item: $playlistPickerTrack) { track in
                 PlaylistPickerView(track: track)
             }
@@ -105,34 +111,33 @@ struct LibraryView: View {
         }
     }
 
-    @AppStorage("library_liked_sort_option") private var sortOptionRaw = LikedSortOption.recentlyAdded.rawValue
-
     private var currentSortOption: LikedSortOption {
         LikedSortOption(rawValue: sortOptionRaw) ?? .recentlyAdded
     }
 
-    private func sortedLikedTracks(_ raw: [Track]) -> [Track] {
+    private func rebuildVisibleLiked() {
+        let all = library.displayedLikedTracks
+        let filtered = downloadedOnly ? all.filter { downloadManager.isDownloaded($0.id) } : all
+        let sorted: [Track]
         switch currentSortOption {
         case .recentlyAdded:
-            return raw
+            sorted = filtered
         case .oldest:
-            return raw.reversed()
+            sorted = filtered.reversed()
         case .title:
-            return raw.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            sorted = filtered.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         case .artist:
-            return raw.sorted { $0.artist.localizedCaseInsensitiveCompare($1.artist) == .orderedAscending }
+            sorted = filtered.sorted { $0.artist.localizedCaseInsensitiveCompare($1.artist) == .orderedAscending }
         }
+        visibleLikedTracks = sorted
+        visibleLiked = sorted.listItems
     }
 
     private var likedView: some View {
-        let allLiked = library.displayedLikedTracks
-        let filtered = downloadedOnly ? allLiked.filter { downloadManager.isDownloaded($0.id) } : allLiked
-        let liked = sortedLikedTracks(filtered)
-
-        return VStack(spacing: 12) {
+        VStack(spacing: 12) {
             HStack(spacing: 10) {
                 Menu {
-                    Picker("Sort by", selection: $sortOptionRaw) {
+                    Picker(String(localized: "Sort by"), selection: $sortOptionRaw) {
                         ForEach(LikedSortOption.allCases) { option in
                             Label(option.title, systemImage: option.icon).tag(option.rawValue)
                         }
@@ -151,24 +156,27 @@ struct LibraryView: View {
                     .padding(.vertical, 6)
                     .glassCard(cornerRadius: 12, intensity: 0.08)
                 }
+                .accessibilityLabel(Text(String(localized: "Sort by")))
 
                 Spacer()
 
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .font(.system(size: 13))
-                        .foregroundStyle(downloadedOnly ? .green : Color.textSecondary)
-                    Text("Downloaded only")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.textPrimary)
-                    Toggle("", isOn: $downloadedOnly)
-                        .labelsHidden()
-                        .tint(Color.accentStrong)
+                Toggle(isOn: $downloadedOnly) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 13))
+                            .foregroundStyle(downloadedOnly ? .green : Color.textSecondary)
+                        Text(String(localized: "Downloaded only"))
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.textPrimary)
+                    }
                 }
+                .toggleStyle(.switch)
+                .tint(Color.accentStrong)
+                .fixedSize()
             }
             .padding(.horizontal, 18)
 
-            if liked.isEmpty {
+            if visibleLiked.isEmpty {
                 if downloadedOnly {
                     libraryEmptyState(
                         title: String(localized: "No downloads"),
@@ -190,21 +198,20 @@ struct LibraryView: View {
                 }
             } else {
                 LazyVStack(spacing: 10) {
-                    ForEach(liked.indices, id: \.self) { idx in
-                        let track = liked[idx]
+                    ForEach(visibleLiked) { item in
                         TrackRow(
-                            track: track,
-                            index: idx + 1,
-                            isCurrent: currentTrackId == track.id,
+                            track: item.track,
+                            index: item.index + 1,
+                            isCurrent: player.currentTrack?.id == item.track.id,
                             isLiked: true,
                             onTap: {
-                                if player.setQueue(liked, startAt: idx) {
+                                if player.setQueue(visibleLikedTracks, startAt: item.index) {
                                     showNowPlaying = true
                                 }
                             },
-                            onLike: { library.toggleLike(track: track) },
-                            onAddToQueue: { player.addToQueue(track) },
-                            onAddToPlaylist: { playlistPickerTrack = track }
+                            onLike: { library.toggleLike(track: item.track) },
+                            onAddToQueue: { player.addToQueue(item.track) },
+                            onAddToPlaylist: { playlistPickerTrack = item.track }
                         )
                     }
                 }
@@ -279,28 +286,16 @@ struct LibraryView: View {
                             ArtistDetailView(artist: artist, showNowPlaying: $showNowPlaying)
                         } label: {
                             HStack(spacing: 14) {
-                                Circle()
-                                    .fill(Color.white.opacity(0.08))
+                                ArtworkTile(urlString: api.artworkURL(for: artist.coverUrl), icon: "person.fill")
                                     .frame(width: 58, height: 58)
-                                    .overlay(
-                                        InspectableArtworkView(
-                                            urlString: api.artworkURL(for: artist.coverUrl),
-                                            debugLabel: "library-artist: \(artist.artist)",
-                                            contentMode: .fill,
-                                            maxPixelSize: 220
-                                        ) {
-                                            Image(systemName: "person.fill")
-                                                .foregroundStyle(Color.textPrimary)
-                                        }
-                                        .clipShape(Circle())
-                                    )
+                                    .clipShape(Circle())
                                     .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
 
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(artist.artist)
                                         .font(.system(size: 15, weight: .semibold))
                                         .foregroundStyle(Color.textPrimary)
-                                    Text("\(artist.albumCount) albums • \(artist.trackCount) tracks")
+                                    Text(String(localized: "\(artist.albumCount) albums • \(artist.trackCount) tracks"))
                                         .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(Color.textSecondary)
                                 }
@@ -333,20 +328,28 @@ struct LibraryView: View {
             .padding(.top, 24)
     }
 
-    private func loadData() async {
+    private func refreshIfStale() async {
+        if let lastLoadedAt, Date().timeIntervalSince(lastLoadedAt) < Self.staleAfter { return }
+        await loadData()
+    }
+
+    private func loadData(forceSync: Bool = false) async {
         loading = true
         loadError = nil
         loadUnauthorized = false
         defer { loading = false }
 
-        await library.hydrateLikedTracksIfNeeded()
+        async let likes: Void = library.ensureSynced(force: forceSync)
         do {
             playlists = try await api.getPlaylists()
+            lastLoadedAt = Date()
+        } catch where error.isCancellation {
+            // View went away mid-load; keep what is shown.
         } catch {
-            playlists = []
             loadError = error.localizedDescription
-            loadUnauthorized = (error as? APIError)?.statusCode == 401
+            loadUnauthorized = error.isUnauthorized
         }
+        await likes
     }
 
     private func createPlaylist() {
@@ -357,7 +360,7 @@ struct LibraryView: View {
                 _ = try await api.createPlaylist(name: trimmedName)
             } catch {
                 loadError = error.localizedDescription
-                loadUnauthorized = (error as? APIError)?.statusCode == 401
+                loadUnauthorized = error.isUnauthorized
                 return
             }
             newPlaylistName = ""

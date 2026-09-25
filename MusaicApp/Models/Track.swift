@@ -18,6 +18,13 @@ struct Track: Identifiable, Codable, Hashable {
 
     enum TrackSource: String, Codable, Hashable {
         case local, vk, soundcloud, yandex, youtube
+        /// A provider this client version doesn't know yet. Never treated as local.
+        case unknown
+
+        init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = TrackSource(rawValue: raw.lowercased()) ?? .unknown
+        }
 
         var displayTag: String {
             switch self {
@@ -26,6 +33,7 @@ struct Track: Identifiable, Codable, Hashable {
             case .soundcloud: return "SC"
             case .yandex: return "YANDEX"
             case .youtube: return "YT"
+            case .unknown: return "OTHER"
             }
         }
     }
@@ -82,7 +90,7 @@ struct Track: Identifiable, Codable, Hashable {
         // authenticated proxy URL after decoding track metadata.
         url = try container.decodeIfPresent(String.self, forKey: .url) ?? ""
         duration = try container.decodeIfPresent(TimeInterval.self, forKey: .duration)
-        source = (try? container.decode(TrackSource.self, forKey: .source)) ?? .local
+        source = (try? container.decodeIfPresent(TrackSource.self, forKey: .source)) ?? .unknown
         loudnessLufs = try container.decodeIfPresent(Double.self, forKey: .loudnessLufs)
         loudnessPeakDb = try container.decodeIfPresent(Double.self, forKey: .loudnessPeakDb)
     }
@@ -393,9 +401,9 @@ struct MyVibeFilters: Codable, Equatable, Hashable {
 
         var title: String {
             switch self {
-            case .all: return "Без фильтра"
-            case .russian: return "Русское"
-            case .foreign: return "Иностранное"
+            case .all: return String(localized: "Any language")
+            case .russian: return String(localized: "Russian")
+            case .foreign: return String(localized: "Foreign")
             }
         }
 
@@ -413,17 +421,17 @@ struct MyVibeFilters: Codable, Equatable, Hashable {
 
         var title: String {
             switch self {
-            case .favorite: return "Любимое"
-            case .unfamiliar: return "Незнакомое"
-            case .popular: return "Популярное"
+            case .favorite: return String(localized: "Favorites")
+            case .unfamiliar: return String(localized: "Unfamiliar")
+            case .popular: return String(localized: "Popular")
             }
         }
 
         var subtitle: String {
             switch self {
-            case .favorite: return "Ближе к твоим лайкам"
-            case .unfamiliar: return "Похоже, но менее знакомо"
-            case .popular: return "Более очевидные хиты"
+            case .favorite: return String(localized: "Closer to your likes")
+            case .unfamiliar: return String(localized: "Similar, but less familiar")
+            case .popular: return String(localized: "The more obvious hits")
             }
         }
     }
@@ -443,15 +451,15 @@ struct MyVibeFilters: Codable, Equatable, Hashable {
 
         var title: String {
             switch self {
-            case .auto: return "Авто"
-            case .energy: return "Бодро"
-            case .feelGood: return "Светло"
-            case .calm: return "Спокойно"
-            case .focus: return "Фокус"
-            case .romance: return "Романтика"
-            case .sad: return "Грусть"
-            case .party: return "Вечеринка"
-            case .night: return "Поздний вечер"
+            case .auto: return String(localized: "Auto")
+            case .energy: return String(localized: "Energetic")
+            case .feelGood: return String(localized: "Feel good")
+            case .calm: return String(localized: "Calm")
+            case .focus: return String(localized: "Focus")
+            case .romance: return String(localized: "Romance")
+            case .sad: return String(localized: "Sad")
+            case .party: return String(localized: "Party")
+            case .night: return String(localized: "Late night")
             }
         }
 

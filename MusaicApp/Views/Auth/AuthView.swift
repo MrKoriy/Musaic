@@ -7,9 +7,17 @@ struct AuthView: View {
     @State private var displayName = ""
     @State private var error: String?
     @State private var loading = false
+    @State private var serverDraft = APIService.shared.serverURL
+    @State private var serverCheck: APIService.ConnectionCheck?
+    @State private var testingServer = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let api = APIService.shared
     private let settings = SettingsStore.shared
+
+    private var canSubmit: Bool {
+        !loading && username.trimmingCharacters(in: .whitespaces).count >= 2 && password.count >= 4
+    }
 
     var body: some View {
         ZStack {
@@ -20,24 +28,27 @@ struct AuthView: View {
                     Spacer().frame(height: 60)
 
                     VStack(spacing: 8) {
-                        Text("Musaic")
+                        Text(verbatim: "Musaic")
                             .font(.system(size: 42, weight: .bold, design: .rounded))
                             .foregroundStyle(Color.textPrimary)
-                        Text(isRegistering ? "Create your account" : "Welcome back")
+                        Text(isRegistering ? String(localized: "Create your account") : String(localized: "Welcome back"))
                             .font(.system(size: 15, weight: .medium))
                             .foregroundStyle(Color.textSecondary)
                     }
 
+                    serverSection
+                        .padding(.horizontal, 24)
+
                     VStack(spacing: 14) {
                         if isRegistering {
-                            field(icon: "person.fill", placeholder: "Display name", text: $displayName)
+                            field(icon: "person.fill", placeholder: String(localized: "Display name"), text: $displayName)
                         }
-                        field(icon: "person", placeholder: "Username", text: $username)
+                        field(icon: "person", placeholder: String(localized: "Username"), text: $username)
                             #if os(iOS)
                             .textInputAutocapitalization(.never)
                             #endif
                             .autocorrectionDisabled()
-                        field(icon: "lock", placeholder: "Password", text: $password, secure: true)
+                        field(icon: "lock", placeholder: String(localized: "Password"), text: $password, secure: true)
                     }
                     .padding(.horizontal, 24)
 
@@ -56,7 +67,7 @@ struct AuthView: View {
                             if loading {
                                 ProgressView().tint(Color.bgPrimary).scaleEffect(0.8)
                             }
-                            Text(isRegistering ? "Create Account" : "Sign In")
+                            Text(isRegistering ? String(localized: "Create Account") : String(localized: "Sign In"))
                                 .font(.system(size: 16, weight: .bold, design: .rounded))
                         }
                         .foregroundStyle(Color.bgPrimary)
@@ -64,24 +75,78 @@ struct AuthView: View {
                         .padding(.vertical, 16)
                         .background(Color.textPrimary.opacity(0.92), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
                     }
-                    .disabled(loading || username.count < 2 || password.count < 4)
-                    .opacity(username.count < 2 || password.count < 4 ? 0.5 : 1)
+                    .buttonStyle(.plain)
+                    .disabled(!canSubmit)
+                    .opacity(canSubmit || loading ? 1 : 0.5)
                     .padding(.horizontal, 24)
 
                     Button {
-                        withAnimation(.easeInOut(duration: 0.25)) {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) {
                             isRegistering.toggle()
                             error = nil
                         }
                     } label: {
-                        Text(isRegistering ? "Already have an account? Sign In" : "Don't have an account? Register")
+                        Text(isRegistering ? String(localized: "Already have an account? Sign In") : String(localized: "Don't have an account? Register"))
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Color.textSecondary)
                     }
+                    .buttonStyle(.plain)
 
                     Spacer()
                 }
             }
+        }
+    }
+
+    private var serverSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                ServerAddressField(text: $serverDraft)
+                    .onSubmit { Task { await testServer() } }
+                    .onChange(of: serverDraft) { serverCheck = nil }
+
+                Button {
+                    Task { await testServer() }
+                } label: {
+                    Group {
+                        if testingServer {
+                            ProgressView().tint(Color.textPrimary)
+                        } else {
+                            Image(systemName: serverStatusIcon)
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(serverStatusColor)
+                        }
+                    }
+                    .frame(width: 48, height: 48)
+                    .glassCard(cornerRadius: 18, intensity: 0.08)
+                }
+                .buttonStyle(.plain)
+                .disabled(testingServer)
+                .accessibilityLabel(Text(String(localized: "Test connection")))
+            }
+
+            if let serverCheck {
+                Text(serverCheck.message)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(serverCheck == .ok ? Color.textSecondary : Color.accentStrong)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var serverStatusIcon: String {
+        switch serverCheck {
+        case .ok: return "checkmark.circle.fill"
+        case .none: return "antenna.radiowaves.left.and.right"
+        default: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    private var serverStatusColor: Color {
+        switch serverCheck {
+        case .ok: return .green
+        case .none: return Color.textPrimary
+        default: return Color.accentStrong
         }
     }
 
@@ -90,6 +155,7 @@ struct AuthView: View {
             Image(systemName: icon)
                 .foregroundStyle(Color.textSecondary)
                 .frame(width: 20)
+                .accessibilityHidden(true)
             if secure {
                 SecureField(placeholder, text: text)
                     .textFieldStyle(.plain)
@@ -112,25 +178,47 @@ struct AuthView: View {
         )
     }
 
-    @MainActor
+    private func testServer() async {
+        guard !testingServer else { return }
+        guard APIService.validatedServerURL(serverDraft) != nil else {
+            serverCheck = .invalidAddress
+            return
+        }
+        testingServer = true
+        serverCheck = await api.checkConnection(to: serverDraft)
+        testingServer = false
+    }
+
+    /// Saves the (validated) server address, then authenticates against it.
+    private func applyServerDraft() -> Bool {
+        guard let normalized = APIService.validatedServerURL(serverDraft) else {
+            serverCheck = .invalidAddress
+            return false
+        }
+        if normalized != api.serverURL {
+            api.setServerURL(normalized)
+        }
+        serverDraft = normalized
+        return true
+    }
+
     private func submit() async {
+        guard applyServerDraft() else { return }
         loading = true
         error = nil
         defer { loading = false }
 
         do {
+            let trimmedUsername = username.trimmingCharacters(in: .whitespaces)
             let response: APIService.AuthResponse
             if isRegistering {
                 response = try await api.register(
-                    username: username.trimmingCharacters(in: .whitespaces),
+                    username: trimmedUsername,
                     password: password,
                     displayName: displayName.isEmpty ? nil : displayName
                 )
             } else {
-                response = try await api.login(
-                    username: username.trimmingCharacters(in: .whitespaces),
-                    password: password
-                )
+                response = try await api.login(username: trimmedUsername, password: password)
             }
 
             if let errMsg = response.error {
@@ -139,7 +227,7 @@ struct AuthView: View {
             }
 
             guard let token = response.token, let user = response.user else {
-                error = "Invalid server response"
+                error = String(localized: "Invalid server response")
                 return
             }
 
@@ -153,8 +241,10 @@ struct AuthView: View {
                 error = String(localized: "Unable to securely store the session. Try again.")
                 return
             }
+        } catch where error.isCancellation {
+            return
         } catch {
-            self.error = "Connection failed: \(error.localizedDescription)"
+            self.error = String(localized: "Connection failed: \(error.localizedDescription)")
         }
     }
 }

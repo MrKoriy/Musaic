@@ -2,8 +2,8 @@ import Foundation
 import Security
 
 /// Small Keychain wrapper for values that must not be persisted in UserDefaults.
-@MainActor
-final class KeychainService {
+/// SecItem calls are thread-safe, so this type carries no actor isolation.
+final class KeychainService: Sendable {
     static let shared = KeychainService()
 
     private let service: String

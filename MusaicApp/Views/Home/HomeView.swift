@@ -4,21 +4,25 @@ struct HomeView: View {
     @Binding var showNowPlaying: Bool
     @State private var tracks: [Track] = []
     @State private var dailyMix: [Track] = []
-    @State private var dailyMixName = "Morning Mix"
+    @State private var dailyMixName = String(localized: "Daily Mix")
     @State private var recommendationsRequestId: String?
     @State private var dailyMixRequestId: String?
-    @State private var loading = true
+    /// Recommendations list state; independent of the Daily Mix so switching
+    /// moods never falls through to the empty state while loading.
+    @State private var feedLoading = true
     @State private var homeError: String?
     @State private var homeUnauthorized = false
     @State private var dailyMixError: String?
     @State private var dailyMixUnauthorized = false
     @State private var selectedMood: String?
+    @State private var feedTask: Task<Void, Never>?
+    @State private var feedGeneration = 0
+    /// Mood of the tracks currently on screen (nil = "For You").
+    @State private var displayedFeedMood: String?
+    @State private var lastLoadedAt: Date?
     @State private var myVibeFilters = MyVibeFilters.default
     @State private var startingMyVibe = false
-    @State private var currentTrackId: String?
-    /// Hero wave-icon entrance + slow glow drift (parallax) behind it.
     @State private var vibeIconAppeared = false
-    @State private var vibeGlowDrift = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let api = APIService.shared
@@ -26,7 +30,11 @@ struct HomeView: View {
     private let library = LibraryStore.shared
     private let settings = SettingsStore.shared
 
+    /// Tab switches reuse loaded content; it is refetched only after this long.
+    private static let staleAfter: TimeInterval = 5 * 60
     private let moods = ["Energise", "Feel good", "Relax", "Workout", "Sad", "Party", "Focus", "Romance", "Sleep"]
+
+    private var currentTrackId: String? { player.currentTrack?.id }
 
     var body: some View {
         NavigationStack {
@@ -55,62 +63,13 @@ struct HomeView: View {
                             options: moods,
                             label: { $0 },
                             isSelected: { selectedMood == $0 },
-                            onSelect: loadMood,
+                            onSelect: selectMood,
                             style: .mood
                         )
                     }
 
                     if !dailyMix.isEmpty {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack(alignment: .bottom) {
-                                LiquidSectionHeader(title: dailyMixName, subtitle: "Rebuilt from recent listening and favorites.")
-                                Spacer(minLength: 12)
-                                Button {
-                                    Task { await loadDailyMix(refresh: true) }
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "arrow.counterclockwise")
-                                            .font(.system(size: 12, weight: .bold))
-                                 Text(String(localized: "Reload"))
-                                            .font(.system(size: 12, weight: .semibold))
-                                    }
-                                    .foregroundStyle(Color.textPrimary)
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 10)
-                                    .background(Color.white.opacity(0.10), in: Capsule())
-                                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            .padding(.horizontal, 18)
-
-                            mixHeroCard
-                                .padding(.horizontal, 18)
-
-                            LazyVStack(spacing: 10) {
-                                let visibleDailyMix = Array(dailyMix.prefix(8))
-                                ForEach(Array(visibleDailyMix.enumerated()), id: \.element.id) { idx, track in
-                                    TrackRow(
-                                        track: track,
-                                        index: idx + 1,
-                                        isCurrent: currentTrackId == track.id,
-                                        isLiked: library.isLiked(track.id),
-                                        onTap: {
-                                            if player.setQueue(
-                                                dailyMix,
-                                                startAt: idx,
-                                                surface: "daily_mix",
-                                                requestId: dailyMixRequestId
-                                            ) {
-                                                showNowPlaying = true
-                                            }
-                                        },
-                                        onLike: { library.toggleLike(track: track) },
-                                        onAddToQueue: { player.addToQueue(track) }
-                                    )
-                                }
-                            }
-                        }
+                        dailyMixSection
                     }
 
                     recommendationsSection
@@ -121,68 +80,73 @@ struct HomeView: View {
             .scrollIndicators(.hidden)
             .background(AppBackdrop())
             .refreshable { await loadData() }
-            .task { await loadData() }
-            .onAppear { currentTrackId = player.currentTrack?.id }
-            .onChange(of: player.currentTrack?.id) { _, newId in currentTrackId = newId }
+            .task { await refreshIfStale() }
             .navigationBarHiddenCompat(true)
         }
     }
+
+    // MARK: - Sections
 
     @ViewBuilder
     private var jumpBackInSection: some View {
         let likedTracks = Array(library.likedTracks.prefix(10))
         if !likedTracks.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                     Text(String(localized: "Jump Back In"))
+                Text(String(localized: "Jump Back In"))
                     .font(.system(size: 16, weight: .bold, design: .rounded))
                     .foregroundStyle(Color.textPrimary)
                     .padding(.horizontal, 18)
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
-                        ForEach(Array(likedTracks.enumerated()), id: \.element.id) { idx, track in
+                        ForEach(likedTracks.listItems) { item in
                             Button {
-                                if player.setQueue(library.likedTracks, startAt: idx) {
+                                if player.setQueue(library.likedTracks, startAt: item.index) {
                                     showNowPlaying = true
                                 }
                             } label: {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    InspectableArtworkView(
-                                        urlString: track.artwork,
-                                        debugLabel: "\(track.source.rawValue): \(track.artist) - \(track.title)",
-                                        maxPixelSize: 256
-                                    ) {
-                                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                            .fill(Color.white.opacity(0.08))
-                                            .overlay(
-                                                Image(systemName: "music.note")
-                                                    .font(.system(size: 22, weight: .medium))
-                                                    .foregroundStyle(Color.textSecondary)
-                                            )
-                                    }
-                                    .frame(width: 88, height: 88)
-                                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                                    .shadow(color: Color.black.opacity(0.35), radius: 8, y: 4)
-
-                                    Text(track.title)
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .foregroundStyle(Color.textPrimary)
-                                        .lineLimit(1)
-                                        .frame(width: 88, alignment: .leading)
-
-                                    Text(track.artist)
-                                        .font(.system(size: 10, weight: .medium))
-                                        .foregroundStyle(Color.textSecondary)
-                                        .lineLimit(1)
-                                        .frame(width: 88, alignment: .leading)
-                                }
+                                jumpBackInCard(item.track)
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel(Text("\(item.track.title), \(item.track.artist)"))
                         }
                     }
                     .padding(.horizontal, 18)
                 }
             }
+        }
+    }
+
+    private func jumpBackInCard(_ track: Track) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            InspectableArtworkView(
+                urlString: track.artwork,
+                debugLabel: "jump-back-in",
+                maxPixelSize: 256
+            ) {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.white.opacity(0.08))
+                    .overlay(
+                        Image(systemName: "music.note")
+                            .font(.system(size: 22, weight: .medium))
+                            .foregroundStyle(Color.textSecondary)
+                    )
+            }
+            .frame(width: 88, height: 88)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .shadow(color: Color.black.opacity(0.35), radius: 8, y: 4)
+
+            Text(track.title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.textPrimary)
+                .lineLimit(1)
+                .frame(width: 88, alignment: .leading)
+
+            Text(track.artist)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Color.textSecondary)
+                .lineLimit(1)
+                .frame(width: 88, alignment: .leading)
         }
     }
 
@@ -193,7 +157,7 @@ struct HomeView: View {
                     Text(greeting)
                         .font(.system(size: 36, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.textPrimary)
-                    Text(selectedMood == nil ? "Your infinite wave from liked tracks and quick filters." : "Recommendations shifted to \(selectedMood!.lowercased()) mood.")
+                    Text(heroSubtitle)
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(Color.textSecondary)
                 }
@@ -211,20 +175,39 @@ struct HomeView: View {
             }
 
             HStack(spacing: 12) {
-                statCard(title: "Queue", value: "\(player.queue.count)", icon: "music.note.list")
-                statCard(title: "Liked", value: "\(library.likedTrackIds.count)", icon: "heart.fill")
-                statCard(title: player.isMyVibeActive ? "Vibe" : "Mix", value: player.isMyVibeActive ? (player.currentMyVibeFilters?.character.title ?? myVibeFilters.character.title) : (dailyMix.isEmpty ? "--" : "\(dailyMix.count)"), icon: player.isMyVibeActive ? "dot.radiowaves.up.forward" : "wand.and.stars")
+                StatCard(value: "\(player.queue.count)", label: String(localized: "Queue"), icon: "music.note.list")
+                StatCard(value: "\(library.likedTrackIds.count)", label: String(localized: "Liked"), icon: "heart.fill")
+                StatCard(
+                    value: mixStatValue,
+                    label: player.isMyVibeActive ? String(localized: "Vibe") : String(localized: "Mix"),
+                    icon: player.isMyVibeActive ? "dot.radiowaves.up.forward" : "wand.and.stars"
+                )
             }
         }
         .padding(.horizontal, 18)
     }
 
-    /// AI DJ line: appears right after the wave starts, auto-hides after 7s.
+    private var heroSubtitle: String {
+        if let selectedMood {
+            return String(localized: "Recommendations shifted to \(selectedMood.lowercased()) mood.")
+        }
+        return String(localized: "Your infinite wave from liked tracks and quick filters.")
+    }
+
+    private var mixStatValue: String {
+        if player.isMyVibeActive {
+            return player.currentMyVibeFilters?.character.title ?? myVibeFilters.character.title
+        }
+        return dailyMix.isEmpty ? "--" : "\(dailyMix.count)"
+    }
+
+    /// AI DJ line: appears right after the wave starts, auto-hides after ~7s.
     private func djIntroBanner(_ text: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "dot.radiowaves.forward")
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(Color.accentStrong)
+                .accessibilityHidden(true)
             Text(text)
                 .font(.system(size: 13, weight: .semibold, design: .rounded))
                 .foregroundStyle(Color.textPrimary)
@@ -236,8 +219,8 @@ struct HomeView: View {
         .glassCard(cornerRadius: 18, intensity: 0.12)
         .transition(.opacity.combined(with: .move(edge: .top)))
         .task {
-            try? await Task.sleep(for: .seconds(7.5))
-            withAnimation(.easeOut(duration: 0.4)) {
+            guard (try? await Task.sleep(for: .seconds(7.5))) != nil else { return }
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.4)) {
                 player.djIntroMessage = nil
             }
         }
@@ -248,11 +231,11 @@ struct HomeView: View {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 8) {
-                                  Text(String(localized: "My Vibe"))
+                        Text(String(localized: "My Vibe"))
                             .font(.system(size: 28, weight: .bold, design: .rounded))
                             .foregroundStyle(Color.textPrimary)
 
-                        Text(player.isMyVibeActive ? "LIVE" : "WAVE")
+                        Text(player.isMyVibeActive ? String(localized: "LIVE") : String(localized: "WAVE"))
                             .font(.system(size: 11, weight: .black))
                             .foregroundStyle(player.isMyVibeActive ? Color.bgPrimary : Color.textPrimary)
                             .padding(.horizontal, 10)
@@ -278,50 +261,7 @@ struct HomeView: View {
 
                 Spacer(minLength: 12)
 
-                ZStack {
-                    // Parallax glow layer drifting slowly behind the wave icon
-                    Circle()
-                        .fill(Color(hex: "f0d6a6").opacity(0.45))
-                        .frame(width: 66, height: 66)
-                        .blur(radius: 16)
-                        .offset(x: vibeGlowDrift ? 7 : -7, y: vibeGlowDrift ? -6 : 6)
-                        .scaleEffect(vibeGlowDrift ? 1.14 : 0.92)
-
-                    Circle()
-                        .fill(
-                            RadialGradient(
-                                colors: [
-                                    Color(hex: "f0d6a6").opacity(0.95),
-                                    Color(hex: "c28a46").opacity(0.38),
-                                    .clear
-                                ],
-                                center: .center,
-                                startRadius: 8,
-                                endRadius: 54
-                            )
-                        )
-                    Circle()
-                        .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
-                        .padding(8)
-                    Image(systemName: startingMyVibe ? "waveform.path.ecg" : "dot.radiowaves.up.forward")
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundStyle(Color.bgPrimary)
-                }
-                .frame(width: 88, height: 88)
-                .scaleEffect(vibeIconAppeared ? 1 : 0.8)
-                .opacity(vibeIconAppeared ? 1 : 0)
-                .onAppear {
-                    guard !reduceMotion else {
-                        vibeIconAppeared = true
-                        return
-                    }
-                    withAnimation(.spring(response: 0.55, dampingFraction: 0.72)) {
-                        vibeIconAppeared = true
-                    }
-                    withAnimation(.easeInOut(duration: 4.4).repeatForever(autoreverses: true).delay(0.5)) {
-                        vibeGlowDrift = true
-                    }
-                }
+                vibeOrb
             }
 
             HStack(spacing: 10) {
@@ -332,9 +272,9 @@ struct HomeView: View {
                         Image(systemName: startingMyVibe ? "hourglass" : "play.fill")
                             .font(.system(size: 13, weight: .black))
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(player.isMyVibeActive ? "Перезапустить волну" : "Запустить волну")
+                            Text(player.isMyVibeActive ? String(localized: "Restart My Vibe") : String(localized: "Start My Vibe"))
                                 .font(.system(size: 14, weight: .bold, design: .rounded))
-                            Text(player.isMyVibeActive && player.currentMyVibeFilters == myVibeFilters ? "Станция уже идёт с этими фильтрами" : "Бесконечная станция по избранному")
+                            Text(isCurrentVibe ? String(localized: "Already playing with these filters") : String(localized: "An endless station built from your favorites"))
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(Color.bgPrimary.opacity(0.70))
                         }
@@ -354,8 +294,8 @@ struct HomeView: View {
                 .disabled(startingMyVibe)
 
                 if !myVibeFilters.isDefault {
-                    Button("Сбросить") {
-                        withAnimation(.easeInOut(duration: 0.25)) {
+                    Button(String(localized: "Reset")) {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) {
                             myVibeFilters = .default
                         }
                     }
@@ -370,19 +310,19 @@ struct HomeView: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 vibeFilterRow(
-                    title: "Язык",
+                    title: String(localized: "Language"),
                     selection: $myVibeFilters.language,
                     options: MyVibeFilters.Language.allCases
                 ) { $0.title }
 
                 vibeFilterRow(
-                    title: "Характер",
+                    title: String(localized: "Character"),
                     selection: $myVibeFilters.character,
                     options: MyVibeFilters.Character.allCases
                 ) { $0.title }
 
                 vibeFilterRow(
-                    title: "Настроение",
+                    title: String(localized: "Mood"),
                     selection: $myVibeFilters.mood,
                     options: MyVibeFilters.Mood.allCases
                 ) { $0.title }
@@ -407,37 +347,114 @@ struct HomeView: View {
                             endPoint: .bottomTrailing
                         )
                     )
-
-                Circle()
-                    .fill(Color(hex: "f0d6a6").opacity(0.18))
-                    .frame(width: 200, height: 200)
-                    .blur(radius: 30)
-                    .offset(x: 110, y: -90)
-
-                Circle()
-                    .fill(Color.white.opacity(0.08))
-                    .frame(width: 170, height: 170)
-                    .blur(radius: 36)
-                    .offset(x: -110, y: 90)
+                // Static radial glows instead of large live blurs.
+                RadialGradient(
+                    colors: [Color(hex: "f0d6a6").opacity(0.16), .clear],
+                    center: .topTrailing,
+                    startRadius: 10,
+                    endRadius: 200
+                )
+                RadialGradient(
+                    colors: [Color.white.opacity(0.06), .clear],
+                    center: .bottomLeading,
+                    startRadius: 10,
+                    endRadius: 180
+                )
             }
+            .clipShape(RoundedRectangle(cornerRadius: 34, style: .continuous))
         )
         .glassCard(cornerRadius: 34, tint: Color.accentStrong, intensity: 0.14)
     }
 
+    /// Wave icon with a one-time entrance; no looping motion (see the heat
+    /// note in NowPlayingBackdrop).
+    private var vibeOrb: some View {
+        ZStack {
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            Color(hex: "f0d6a6").opacity(0.95),
+                            Color(hex: "c28a46").opacity(0.38),
+                            .clear
+                        ],
+                        center: .center,
+                        startRadius: 8,
+                        endRadius: 54
+                    )
+                )
+            Circle()
+                .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
+                .padding(8)
+            Image(systemName: startingMyVibe ? "waveform.path.ecg" : "dot.radiowaves.up.forward")
+                .font(.system(size: 24, weight: .bold))
+                .foregroundStyle(Color.bgPrimary)
+        }
+        .frame(width: 88, height: 88)
+        .scaleEffect(vibeIconAppeared ? 1 : 0.8)
+        .opacity(vibeIconAppeared ? 1 : 0)
+        .accessibilityHidden(true)
+        .onAppear {
+            guard !vibeIconAppeared else { return }
+            if reduceMotion {
+                vibeIconAppeared = true
+            } else {
+                withAnimation(.spring(response: 0.55, dampingFraction: 0.72)) {
+                    vibeIconAppeared = true
+                }
+            }
+        }
+    }
+
+    private var dailyMixSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .bottom) {
+                LiquidSectionHeader(title: dailyMixName, subtitle: String(localized: "Rebuilt from recent listening and favorites."))
+                Spacer(minLength: 12)
+                Button {
+                    Task { await loadDailyMix(refresh: true) }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 12, weight: .bold))
+                        Text(String(localized: "Reload"))
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(Color.textPrimary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color.white.opacity(0.10), in: Capsule())
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 18)
+
+            mixHeroCard
+                .padding(.horizontal, 18)
+
+            LazyVStack(spacing: 10) {
+                ForEach(Array(dailyMix.prefix(8)).listItems) { item in
+                    TrackRow(
+                        track: item.track,
+                        index: item.index + 1,
+                        isCurrent: currentTrackId == item.track.id,
+                        isLiked: library.isLiked(item.track.id),
+                        onTap: { playDailyMix(from: item.index) },
+                        onLike: { library.toggleLike(track: item.track) },
+                        onAddToQueue: { player.addToQueue(item.track) }
+                    )
+                }
+            }
+        }
+    }
+
     private var mixHeroCard: some View {
         Button {
-            guard !dailyMix.isEmpty else { return }
-            if player.setQueue(
-                dailyMix,
-                startAt: 0,
-                surface: "daily_mix",
-                requestId: dailyMixRequestId
-            ) {
-                showNowPlaying = true
-            }
+            playDailyMix(from: 0)
         } label: {
             HStack(spacing: 16) {
-                AnimatedMixCover(artworks: dailyMix.prefix(4).compactMap(\.artwork))
+                MixCover(artworks: dailyMix.prefix(4).compactMap(\.artwork))
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text(dailyMixName)
@@ -447,7 +464,7 @@ struct HomeView: View {
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Color.textSecondary)
                         .lineLimit(2)
-                     Text(String(localized: "Play curated blend"))
+                    Text(String(localized: "Play curated blend"))
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Color.textPrimary.opacity(0.85))
                 }
@@ -462,7 +479,7 @@ struct HomeView: View {
 
     @ViewBuilder
     private var recommendationsSection: some View {
-        if loading && tracks.isEmpty && dailyMix.isEmpty {
+        if feedLoading && tracks.isEmpty {
             VStack(spacing: 14) {
                 ProgressView()
                     .tint(Color.textPrimary)
@@ -477,7 +494,7 @@ struct HomeView: View {
                 title: homeUnauthorized ? String(localized: "Session expired") : String(localized: "Home unavailable"),
                 message: homeError,
                 isUnauthorized: homeUnauthorized,
-                onRetry: { Task { await loadData() } },
+                onRetry: { reloadFeed() },
                 onSignIn: homeUnauthorized ? { settings.logout() } : nil
             )
             .padding(.horizontal, 18)
@@ -485,31 +502,32 @@ struct HomeView: View {
         } else if !tracks.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 LiquidSectionHeader(
-                    title: selectedMood ?? "For You",
-                    subtitle: selectedMood == nil ? "Recommendations pulled from your library and history." : "Mood-weighted picks."
+                    title: selectedMood ?? String(localized: "For You"),
+                    subtitle: selectedMood == nil
+                        ? String(localized: "Recommendations pulled from your library and history.")
+                        : String(localized: "Mood-weighted picks.")
                 )
                 .padding(.horizontal, 18)
 
                 LazyVStack(spacing: 10) {
-                    let visibleTracks = Array(tracks.prefix(12))
-                    ForEach(Array(visibleTracks.enumerated()), id: \.element.id) { idx, track in
+                    ForEach(Array(tracks.prefix(12)).listItems) { item in
                         TrackRow(
-                            track: track,
-                            index: idx + 1,
-                            isCurrent: currentTrackId == track.id,
-                            isLiked: library.isLiked(track.id),
+                            track: item.track,
+                            index: item.index + 1,
+                            isCurrent: currentTrackId == item.track.id,
+                            isLiked: library.isLiked(item.track.id),
                             onTap: {
                                 if player.setQueue(
                                     tracks,
-                                    startAt: idx,
+                                    startAt: item.index,
                                     surface: selectedMood == nil ? "home" : "mood",
                                     requestId: recommendationsRequestId
                                 ) {
                                     showNowPlaying = true
                                 }
                             },
-                            onLike: { library.toggleLike(track: track) },
-                            onAddToQueue: { player.addToQueue(track) }
+                            onLike: { library.toggleLike(track: item.track) },
+                            onAddToQueue: { player.addToQueue(item.track) }
                         )
                     }
                 }
@@ -520,37 +538,24 @@ struct HomeView: View {
                 message: String(localized: "Connect to your server and scan some music to populate the home feed."),
                 systemImage: "music.note.house",
                 actionTitle: String(localized: "Retry"),
-                action: { Task { await loadData() } }
+                action: { reloadFeed() }
             )
-                .padding(.top, 80)
+            .padding(.top, 80)
         }
     }
 
-    private func statCard(title: String, value: String, icon: String) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color.textPrimary)
-            Text(value)
-                .font(.system(size: 22, weight: .bold, design: .rounded))
-                .foregroundStyle(Color.textPrimary)
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Color.textSecondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .glassCard(cornerRadius: 22, tint: Color.white, intensity: 0.08)
+    private var isCurrentVibe: Bool {
+        player.isMyVibeActive && player.currentMyVibeFilters == myVibeFilters
     }
 
     private var myVibeLead: String {
         if startingMyVibe {
-            return "Собираю первую пачку треков с учётом языка, знакомости и настроения."
+            return String(localized: "Gathering the first batch of tracks for your language, familiarity and mood.")
         }
-        if player.isMyVibeActive, player.currentMyVibeFilters == myVibeFilters {
-            return "Эта волна уже играет. Можно быстро перезапустить её с теми же фильтрами."
+        if isCurrentVibe {
+            return String(localized: "This wave is already playing. You can restart it with the same filters.")
         }
-        return "Главная волна от избранного. Фильтры можно сочетать между собой, как в Моей волне."
+        return String(localized: "The main wave from your favorites. Filters can be combined freely.")
     }
 
     private func vibeFilterRow<Option: Identifiable & Hashable>(
@@ -569,7 +574,7 @@ struct HomeView: View {
                     ForEach(options, id: \.id) { option in
                         let isSelected = selection.wrappedValue == option
                         Button {
-                            withAnimation(.easeInOut(duration: 0.22)) {
+                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
                                 selection.wrappedValue = option
                             }
                         } label: {
@@ -584,6 +589,7 @@ struct HomeView: View {
                                 )
                         }
                         .buttonStyle(.plain)
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
                     }
                 }
                 .padding(.vertical, 1)
@@ -593,52 +599,99 @@ struct HomeView: View {
     }
 
     private var greeting: String {
-        let h = Calendar.current.component(.hour, from: Date())
-        if h < 12 { return "Good morning" }
-        if h < 17 { return "Good afternoon" }
-        return "Good evening"
+        let hour = Calendar.current.component(.hour, from: Date())
+        if hour < 12 { return String(localized: "Good morning") }
+        if hour < 17 { return String(localized: "Good afternoon") }
+        return String(localized: "Good evening")
+    }
+
+    // MARK: - Loading
+
+    private func refreshIfStale() async {
+        if let lastLoadedAt, Date().timeIntervalSince(lastLoadedAt) < Self.staleAfter {
+            return
+        }
+        await loadData()
     }
 
     private func loadData() async {
-        loading = true
-        async let recoTask: Void = loadRecommendations()
-        async let dailyTask: Void = loadDailyMix()
-        _ = await (recoTask, dailyTask)
-        loading = false
+        async let feed: Void = loadFeed()
+        async let mix: Void = loadDailyMix()
+        _ = await (feed, mix)
+        // A tab switch mid-load cancels it; don't mark the screen as fresh then.
+        if !Task.isCancelled { lastLoadedAt = Date() }
     }
 
-    private func loadRecommendations() async {
+    private func reloadFeed() {
+        Task { await loadFeed() }
+    }
+
+    private func selectMood(_ mood: String) {
+        // Tapping the active mood returns to "For You".
+        selectedMood = selectedMood == mood ? nil : mood
+        reloadFeed()
+    }
+
+    /// Latest request wins: a newer mood/refresh cancels the previous load
+    /// and stale responses are dropped by generation.
+    private func loadFeed() async {
+        feedTask?.cancel()
+        feedGeneration += 1
+        let generation = feedGeneration
+        let mood = selectedMood
+        // A different mood replaces the list; a plain refresh keeps it visible.
+        if mood != displayedFeedMood {
+            tracks = []
+            recommendationsRequestId = nil
+        }
         homeError = nil
         homeUnauthorized = false
-        var lastError: Error?
+        feedLoading = true
 
-        // Try up to 2 times with a short delay
-        for attempt in 0..<2 {
-            do {
-                let response = try await api.getHomeRecommendations()
+        let task = Task {
+            let outcome = await fetchFeed(mood: mood)
+            guard !Task.isCancelled, generation == feedGeneration else { return }
+            switch outcome {
+            case .success(let response):
+                tracks = response.tracks
                 recommendationsRequestId = response.requestId
-                tracks = response.tracks.map(api.toAppTrack)
-                return
-            } catch {
-                lastError = error
-                if attempt == 0 {
-                    try? await Task.sleep(for: .milliseconds(800))
+                displayedFeedMood = mood
+            case .failure(let error):
+                // Keep a still-valid list after a failed refresh.
+                if tracks.isEmpty || mood != displayedFeedMood {
+                    tracks = []
+                    homeError = error.localizedDescription
+                    homeUnauthorized = error.isUnauthorized
                 }
             }
+            feedLoading = false
         }
-        // Final fallback: try local tracks
-        do {
-            let st = try await api.getTracks(source: "local", limit: 30)
-            recommendationsRequestId = nil
-            tracks = st.map(api.toAppTrack)
-            return
-        } catch {
-            lastError = error
-        }
+        feedTask = task
+        await task.value
+    }
 
-        tracks = []
-        homeError = lastError?.localizedDescription ?? String(localized: "Could not load the home feed.")
-        homeUnauthorized = (lastError as? APIError)?.statusCode == 401
+    private struct FeedResponse {
+        let tracks: [Track]
+        let requestId: String?
+    }
+
+    private func fetchFeed(mood: String?) async -> Result<FeedResponse, Error> {
+        do {
+            if let mood {
+                let response = try await api.getMoodTracks(mood: mood, limit: 20)
+                return .success(FeedResponse(tracks: response.tracks.map(api.toAppTrack), requestId: response.requestId))
+            }
+            let response = try await api.getHomeRecommendations()
+            return .success(FeedResponse(tracks: response.tracks.map(api.toAppTrack), requestId: response.requestId))
+        } catch where mood == nil && !error.isCancellation && !error.isUnauthorized {
+            // Recommendations down: fall back to the local library.
+            if let local = try? await api.getTracks(source: "local", limit: 30), !local.isEmpty {
+                return .success(FeedResponse(tracks: local.map(api.toAppTrack), requestId: nil))
+            }
+            return .failure(error)
+        } catch {
+            return .failure(error)
+        }
     }
 
     private func loadDailyMix(refresh: Bool = false) async {
@@ -649,33 +702,22 @@ struct HomeView: View {
             dailyMixName = mix.name
             dailyMixRequestId = mix.requestId
             dailyMix = mix.tracks.map(api.toAppTrack)
+        } catch where error.isCancellation {
+            return
         } catch {
             dailyMix = []
             dailyMixError = error.localizedDescription
-            dailyMixUnauthorized = (error as? APIError)?.statusCode == 401
+            dailyMixUnauthorized = error.isUnauthorized
         }
     }
 
-    private func loadMood(_ mood: String) {
-        selectedMood = mood
-        recommendationsRequestId = nil
-        tracks = []
-        homeError = nil
-        homeUnauthorized = false
-        Task {
-            do {
-                let response = try await api.getMoodTracks(mood: mood, limit: 20)
-                recommendationsRequestId = response.requestId
-                tracks = response.tracks.map(api.toAppTrack)
-            } catch {
-                tracks = []
-                homeError = error.localizedDescription
-                homeUnauthorized = (error as? APIError)?.statusCode == 401
-            }
+    private func playDailyMix(from index: Int) {
+        guard !dailyMix.isEmpty else { return }
+        if player.setQueue(dailyMix, startAt: index, surface: "daily_mix", requestId: dailyMixRequestId) {
+            showNowPlaying = true
         }
     }
 
-    @MainActor
     private func startMyVibe() async {
         startingMyVibe = true
         defer { startingMyVibe = false }
@@ -698,19 +740,13 @@ struct HomeView: View {
     }
 }
 
-// MARK: - Animated Mix Cover
+// MARK: - Mix Cover
 
-/// Living cover for the Daily Mix hero card: a 2x2 collage of the mix's track
-/// artworks with a slow "breathing" drift, a rotating light sheen and a pulsing
-/// glass play button. Falls back to drifting warm aurora blobs when the mix
-/// has no artwork. All motion is disabled with Reduce Motion enabled.
-private struct AnimatedMixCover: View {
+/// Daily Mix cover: a 2x2 collage of the mix's artworks (or a warm gradient
+/// when there is none) with a glass play badge. Deliberately static.
+private struct MixCover: View {
     let artworks: [String]
     var size: CGFloat = 92
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var breathe = false
-    @State private var sheen = false
 
     private var cornerRadius: CGFloat { size * 0.28 }
 
@@ -722,7 +758,6 @@ private struct AnimatedMixCover: View {
 
     var body: some View {
         ZStack {
-            // Warm dark base
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(
                     LinearGradient(
@@ -733,41 +768,29 @@ private struct AnimatedMixCover: View {
                 )
 
             if tiles.isEmpty {
-                auroraFallback
+                RadialGradient(
+                    colors: [Color(hex: "f0d6a6").opacity(0.45), Color(hex: "c28a46").opacity(0.2), .clear],
+                    center: .topLeading,
+                    startRadius: 4,
+                    endRadius: size
+                )
+                Image(systemName: "waveform")
+                    .font(.system(size: size * 0.30, weight: .semibold))
+                    .foregroundStyle(Color.textPrimary.opacity(0.85))
             } else {
                 collage
             }
 
-            // Contrast veil so the play button reads on any artwork
+            // Contrast veil so the play badge reads on any artwork.
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(Color.black.opacity(0.22))
 
-            // Rotating light sheen sweeping across the cover
-            if !reduceMotion {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(
-                        AngularGradient(
-                            colors: [
-                                .clear,
-                                Color(hex: "f0d6a6").opacity(0.20),
-                                .clear,
-                                Color.white.opacity(0.10),
-                                .clear,
-                            ],
-                            center: .center
-                        )
-                    )
-                    .rotationEffect(sheen ? .degrees(360) : .degrees(0))
-            }
-
-            // Glass play button
             Image(systemName: "play.fill")
                 .font(.system(size: size * 0.24, weight: .bold))
                 .foregroundStyle(Color.textPrimary)
                 .frame(width: size * 0.52, height: size * 0.52)
                 .background(.ultraThinMaterial, in: Circle())
                 .overlay(Circle().strokeBorder(Color.white.opacity(0.35), lineWidth: 1))
-                .scaleEffect(breathe ? 1.06 : 0.96)
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -786,68 +809,22 @@ private struct AnimatedMixCover: View {
                     ),
                     lineWidth: 1.4
                 )
-                .rotationEffect(sheen ? .degrees(-360) : .degrees(0))
         )
         .shadow(color: Color(hex: "c28a46").opacity(0.30), radius: 14, y: 6)
-        .onAppear {
-            guard !reduceMotion else { return }
-            withAnimation(.linear(duration: 16).repeatForever(autoreverses: false)) {
-                sheen = true
-            }
-            withAnimation(.easeInOut(duration: 3.2).repeatForever(autoreverses: true)) {
-                breathe = true
-            }
-        }
+        .accessibilityHidden(true)
     }
 
     private var collage: some View {
         let columns = [GridItem(.flexible(), spacing: 0), GridItem(.flexible(), spacing: 0)]
         return LazyVGrid(columns: columns, spacing: 0) {
             ForEach(Array(tiles.enumerated()), id: \.offset) { _, url in
-                InspectableArtworkView(
-                    urlString: url,
-                    debugLabel: "mix-cover",
-                    maxPixelSize: 128
-                ) {
-                    RoundedRectangle(cornerRadius: 0)
+                InspectableArtworkView(urlString: url, debugLabel: "mix-cover", maxPixelSize: 128) {
+                    Rectangle()
                         .fill(Color.white.opacity(0.06))
-                        .overlay(
-                            Image(systemName: "music.note")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(Color.textSecondary)
-                        )
                 }
                 .aspectRatio(1, contentMode: .fill)
                 .clipped()
             }
-        }
-        // Slow "breathing" drift — clipped by the rounded rect on the parent.
-        .scaleEffect(breathe ? 1.12 : 1.0)
-    }
-
-    private var auroraFallback: some View {
-        ZStack {
-            Circle()
-                .fill(Color(hex: "f0d6a6").opacity(0.45))
-                .frame(width: size * 0.7, height: size * 0.7)
-                .blur(radius: 14)
-                .offset(
-                    x: breathe ? size * 0.16 : -size * 0.16,
-                    y: breathe ? -size * 0.12 : size * 0.12
-                )
-
-            Circle()
-                .fill(Color(hex: "c28a46").opacity(0.40))
-                .frame(width: size * 0.55, height: size * 0.55)
-                .blur(radius: 12)
-                .offset(
-                    x: breathe ? -size * 0.18 : size * 0.14,
-                    y: breathe ? size * 0.14 : -size * 0.16
-                )
-
-            Image(systemName: "waveform")
-                .font(.system(size: size * 0.30, weight: .semibold))
-                .foregroundStyle(Color.textPrimary.opacity(0.85))
         }
     }
 }

@@ -12,16 +12,12 @@ extension ProfileAuthState {
         Task {
             do {
                 let start = try await api.yandexDeviceStart()
-                await MainActor.run {
-                    yandexUserCode = start.userCode
-                    yandexVerificationURL = start.verificationUrl
-                }
+                yandexUserCode = start.userCode
+                yandexVerificationURL = start.verificationUrl
             } catch {
-                await MainActor.run {
-                    yandexConnecting = false
-                    yandexUserCode = ""
-                    yandexError = "Could not start Yandex authorization. Check the server connection."
-                }
+                yandexConnecting = false
+                yandexUserCode = ""
+                yandexError = "Could not start Yandex authorization. Check the server connection."
                 return
             }
             // Light status polling — server holds the real state, so a paused/
@@ -31,12 +27,10 @@ extension ProfileAuthState {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 if await checkYandexDeviceOnce() { return }
             }
-            await MainActor.run {
-                if !yandexUserCode.isEmpty {
-                    yandexConnecting = false
-                    yandexUserCode = ""
-                    yandexError = "The code expired. Tap Connect to get a new one."
-                }
+            if !yandexUserCode.isEmpty {
+                yandexConnecting = false
+                yandexUserCode = ""
+                yandexError = "The code expired. Tap Connect to get a new one."
             }
         }
     }
@@ -47,29 +41,23 @@ extension ProfileAuthState {
         guard let status = try? await api.yandexDeviceStatus() else { return false } // transient → keep waiting
         switch status.state {
         case "done":
-            await MainActor.run {
-                settings.setYandexAuth(authenticated: true, username: status.login)
-                yandexConnecting = false
-                yandexUserCode = ""
-                if status.plus == false {
-                    yandexPlusWarning = "Connected, but no active Yandex Plus — only 30s previews will play."
-                }
+            settings.setYandexAuth(authenticated: true, username: status.login)
+            yandexConnecting = false
+            yandexUserCode = ""
+            if status.plus == false {
+                yandexPlusWarning = "Connected, but no active Yandex Plus — only 30s previews will play."
             }
             importYandexLikes()
             return true
         case "expired":
-            await MainActor.run {
-                yandexConnecting = false
-                yandexUserCode = ""
-                yandexError = "The code expired. Tap Connect to get a new one."
-            }
+            yandexConnecting = false
+            yandexUserCode = ""
+            yandexError = "The code expired. Tap Connect to get a new one."
             return true
         case "error":
-            await MainActor.run {
-                yandexConnecting = false
-                yandexUserCode = ""
-                yandexError = "Yandex rejected the authorization. Tap Connect to try again."
-            }
+            yandexConnecting = false
+            yandexUserCode = ""
+            yandexError = "Yandex rejected the authorization. Tap Connect to try again."
             return true
         default:
             return false // pending

@@ -1,38 +1,6 @@
 import SwiftUI
 import ImageIO
 
-private enum ArtworkDebugPhase: Equatable {
-    case idle
-    case missingURL
-    case invalidURL
-    case loading
-    case cached
-    case loaded
-    case failed
-
-    var label: String {
-        switch self {
-        case .idle: return "Idle"
-        case .missingURL: return "Missing URL"
-        case .invalidURL: return "Invalid URL"
-        case .loading: return "Loading"
-        case .cached: return "Loaded from cache"
-        case .loaded: return "Loaded"
-        case .failed: return "Failed"
-        }
-    }
-}
-
-private struct ArtworkDebugSnapshot {
-    var phase: ArtworkDebugPhase = .idle
-    var rawURL: String?
-    var resolvedURL: String?
-    var statusCode: Int?
-    var byteCount: Int?
-    var imageSize: String?
-    var errorMessage: String?
-}
-
 struct ArtworkLoadResult: @unchecked Sendable {
     let image: PlatformImage
     let statusCode: Int?
@@ -40,29 +8,79 @@ struct ArtworkLoadResult: @unchecked Sendable {
     let cacheHit: Bool
 }
 
+/// FIFO counting semaphore for async code. A released permit is handed
+/// directly to the oldest waiter; cancelled waiters leave the queue.
+actor AsyncSemaphore {
+    private var permits: Int
+    private var waiters: [(id: UInt64, continuation: CheckedContinuation<Void, Error>)] = []
+    private var nextID: UInt64 = 0
+
+    init(permits: Int) {
+        self.permits = permits
+    }
+
+    func acquire() async throws {
+        try Task.checkCancellation()
+        if permits > 0 {
+            permits -= 1
+            return
+        }
+        nextID &+= 1
+        let id = nextID
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiters.append((id, continuation))
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id) }
+        }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            permits += 1
+        } else {
+            waiters.removeFirst().continuation.resume()
+        }
+    }
+
+    private func cancelWaiter(_ id: UInt64) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume(throwing: CancellationError())
+    }
+}
+
 actor ArtworkPipeline {
     static let shared = ArtworkPipeline()
 
-    private var inflight: [String: Task<ArtworkLoadResult, Error>] = [:]
-    private let session: URLSession
-    private let imageCache: NSCache<NSString, PlatformImage>
+    /// A load shared by every view that wants the same image at the same size.
+    private struct SharedLoad {
+        let id: UInt64
+        let task: Task<ArtworkLoadResult, Error>
+        var waiters: Int
+    }
 
-    // Opening a 1000-track playlist used to fire a 1000-image fetch storm.
-    // Cap concurrent network+decode work; queued loads wait for a free slot.
-    private let maxConcurrentLoads = 12
-    private var activeLoads = 0
-    private var loadWaiters: [CheckedContinuation<Void, Never>] = []
+    private var inflight: [String: SharedLoad] = [:]
+    private var nextLoadID: UInt64 = 0
+    private let session: URLSession
+    private let urlCache: URLCache
+    private let imageCache: NSCache<NSString, PlatformImage>
+    /// Caps concurrent network + decode work so a 1000-row list can't start
+    /// a 1000-request storm; decoding runs off this actor.
+    private let loadSlots = AsyncSemaphore(permits: 8)
 
     init() {
-        let configuration = URLSessionConfiguration.default
-        configuration.requestCachePolicy = .returnCacheDataElseLoad
-        configuration.timeoutIntervalForRequest = 20
-        configuration.timeoutIntervalForResource = 30
-        configuration.urlCache = URLCache(
+        let urlCache = URLCache(
             memoryCapacity: 32 * 1024 * 1024,
             diskCapacity: 128 * 1024 * 1024,
             diskPath: "musaic-artwork-cache"
         )
+        let configuration = URLSessionConfiguration.default
+        configuration.requestCachePolicy = .returnCacheDataElseLoad
+        configuration.timeoutIntervalForRequest = 20
+        configuration.timeoutIntervalForResource = 30
+        configuration.urlCache = urlCache
+        self.urlCache = urlCache
         session = URLSession(configuration: configuration)
         let imageCache = NSCache<NSString, PlatformImage>()
         imageCache.countLimit = 320
@@ -70,79 +88,112 @@ actor ArtworkPipeline {
         self.imageCache = imageCache
     }
 
-    private func acquireLoadSlot() async {
-        if activeLoads < maxConcurrentLoads {
-            activeLoads += 1
-            return
-        }
-        await withCheckedContinuation { loadWaiters.append($0) }
-        activeLoads += 1
+    /// On-disk size of the artwork HTTP cache, in bytes.
+    func diskUsageBytes() -> Int {
+        urlCache.currentDiskUsage
     }
 
-    private func releaseLoadSlot() {
-        if let waiter = loadWaiters.first {
-            loadWaiters.removeFirst()
-            waiter.resume()
-        } else {
-            activeLoads -= 1
-        }
+    func clearCaches() {
+        imageCache.removeAllObjects()
+        urlCache.removeAllCachedResponses()
     }
 
     func loadImage(from url: URL, maxPixelSize: Int) async throws -> ArtworkLoadResult {
         let fetchURL = Self.unwrappedArtworkURL(url)
-        let cacheKey = "\(fetchURL.absoluteString)|\(maxPixelSize)" as NSString
-        if let cached = imageCache.object(forKey: cacheKey) {
+        let key = "\(fetchURL.absoluteString)|\(maxPixelSize)"
+        if let cached = imageCache.object(forKey: key as NSString) {
             return ArtworkLoadResult(image: cached, statusCode: nil, byteCount: nil, cacheHit: true)
         }
 
-        let requestKey = cacheKey as String
-        if let inflightTask = inflight[requestKey] {
-            return try await inflightTask.value
+        let load: SharedLoad
+        if var existing = inflight[key] {
+            existing.waiters += 1
+            inflight[key] = existing
+            load = existing
+        } else {
+            nextLoadID &+= 1
+            let request = Self.makeRequest(for: fetchURL)
+            let task = Task.detached(priority: Task.currentPriority) { [session, loadSlots] in
+                try await loadSlots.acquire()
+                do {
+                    let result = try await Self.fetchAndDecode(request, session: session, maxPixelSize: maxPixelSize)
+                    await loadSlots.release()
+                    return result
+                } catch {
+                    await loadSlots.release()
+                    throw error
+                }
+            }
+            load = SharedLoad(id: nextLoadID, task: task, waiters: 1)
+            inflight[key] = load
         }
 
-        await acquireLoadSlot()
-        let task = Task<ArtworkLoadResult, Error> { [session] in
-            defer { Task { await Self.shared.releaseLoadSlot() } }
-            // Rows that scrolled out of view cancel their load; bail before
-            // spending a slot on a download nobody needs.
-            if Task.isCancelled { throw CancellationError() }
-            var request = URLRequest(url: fetchURL)
-            request.cachePolicy = .returnCacheDataElseLoad
-            request.timeoutInterval = 20
-            if url.path.hasPrefix("/api/artwork") || url.path.hasPrefix("/api/covers") {
-                request = await MainActor.run { APIService.shared.authenticatedRequest(for: url) }
-                // Upstream sends Cache-Control: max-age=86400,immutable — honor
-                // it so scrolling a 1000-track list never re-downloads covers.
-                request.cachePolicy = .useProtocolCachePolicy
-            } else if url.path.hasPrefix("/api/playlists/") && url.path.hasSuffix("/image") {
-                // Custom playlist covers can change; never serve a stale one.
-                request.cachePolicy = .reloadIgnoringLocalCacheData
+        let loadID = load.id
+        let task = load.task
+        do {
+            let result = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                Task { await self.leave(key: key, loadID: loadID) }
             }
-
-            let (data, response) = try await session.data(for: request)
-            if Task.isCancelled { throw CancellationError() }
-            guard data.count <= 5 * 1024 * 1024 else { throw URLError(.dataLengthExceedsMaximum) }
-            let statusCode = (response as? HTTPURLResponse)?.statusCode
-            if let statusCode, !(200..<300).contains(statusCode) {
-                throw URLError(.badServerResponse)
-            }
-
-            guard let image = Self.downsampledImage(from: data, maxPixelSize: maxPixelSize) else {
-                throw CocoaError(.fileReadCorruptFile)
-            }
-
-            let cost = Self.imageCost(for: image)
-            imageCache.setObject(image, forKey: cacheKey, cost: cost)
-            return ArtworkLoadResult(image: image, statusCode: statusCode, byteCount: data.count, cacheHit: false)
+            finish(key: key, loadID: loadID, result: result)
+            return result
+        } catch {
+            finish(key: key, loadID: loadID, result: nil)
+            throw error
         }
+    }
 
-        inflight[requestKey] = task
-        defer { inflight[requestKey] = nil }
-        return try await withTaskCancellationHandler {
-            try await task.value
-        } onCancel: {
-            task.cancel()
+    /// A view stopped waiting; the shared load is cancelled only when nobody is left.
+    private func leave(key: String, loadID: UInt64) {
+        guard var load = inflight[key], load.id == loadID else { return }
+        load.waiters -= 1
+        if load.waiters <= 0 {
+            load.task.cancel()
+            inflight[key] = nil
+        } else {
+            inflight[key] = load
         }
+    }
+
+    private func finish(key: String, loadID: UInt64, result: ArtworkLoadResult?) {
+        if let result, !result.cacheHit {
+            imageCache.setObject(result.image, forKey: key as NSString, cost: Self.imageCost(for: result.image))
+        }
+        if inflight[key]?.id == loadID {
+            inflight[key] = nil
+        }
+    }
+
+    private static func makeRequest(for url: URL) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.cachePolicy = .returnCacheDataElseLoad
+        request.timeoutInterval = 20
+        if url.path.hasPrefix("/api/artwork") || url.path.hasPrefix("/api/covers") {
+            // Upstream sends Cache-Control: max-age=86400,immutable — honor
+            // it so scrolling a 1000-track list never re-downloads covers.
+            request.cachePolicy = .useProtocolCachePolicy
+        } else if url.path.hasPrefix("/api/playlists/") && url.path.hasSuffix("/image") {
+            // Custom playlist covers can change; never serve a stale one.
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+        }
+        APICredentials.shared.authorize(&request)
+        return request
+    }
+
+    private static func fetchAndDecode(_ request: URLRequest, session: URLSession, maxPixelSize: Int) async throws -> ArtworkLoadResult {
+        try Task.checkCancellation()
+        let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard data.count <= 5 * 1024 * 1024 else { throw URLError(.dataLengthExceedsMaximum) }
+        let statusCode = (response as? HTTPURLResponse)?.statusCode
+        if let statusCode, !(200..<300).contains(statusCode) {
+            throw URLError(.badServerResponse)
+        }
+        guard let image = downsampledImage(from: data, maxPixelSize: maxPixelSize) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return ArtworkLoadResult(image: image, statusCode: statusCode, byteCount: data.count, cacheHit: false)
     }
 
     private static func downsampledImage(from data: Data, maxPixelSize: Int) -> PlatformImage? {
@@ -185,6 +236,15 @@ actor ArtworkPipeline {
         }
         return current
     }
+
+    /// Pixel sizes are bucketed so nearby display sizes share one cache entry.
+    static func bucketedPixelSize(for points: CGFloat, scale: CGFloat) -> Int {
+        let pixels = Int((points * max(scale, 1)).rounded(.up))
+        for bucket in [96, 160, 256, 384, 512, 768, 1024] where pixels <= bucket {
+            return bucket
+        }
+        return 1280
+    }
 }
 
 struct InspectableArtworkView<Placeholder: View>: View {
@@ -195,15 +255,16 @@ struct InspectableArtworkView<Placeholder: View>: View {
     let placeholder: () -> Placeholder
 
     @State private var image: PlatformImage?
-    @State private var loadedURL: String?
-    @State private var debugSnapshot = ArtworkDebugSnapshot()
-    #if DEBUG
-    @State private var showDebugSheet = false
-    #endif
+    @State private var loadedKey: LoadKey?
+
+    private struct LoadKey: Hashable {
+        let url: String
+        let maxPixelSize: Int
+    }
 
     init(
         urlString: String?,
-        debugLabel: String,
+        debugLabel: String = "",
         contentMode: ContentMode = .fill,
         maxPixelSize: Int = 720,
         @ViewBuilder placeholder: @escaping () -> Placeholder
@@ -213,6 +274,13 @@ struct InspectableArtworkView<Placeholder: View>: View {
         self.contentMode = contentMode
         self.maxPixelSize = maxPixelSize
         self.placeholder = placeholder
+    }
+
+    private var requestKey: LoadKey? {
+        guard let raw = urlString?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty, maxPixelSize > 0 else {
+            return nil
+        }
+        return LoadKey(url: raw, maxPixelSize: maxPixelSize)
     }
 
     var body: some View {
@@ -225,135 +293,42 @@ struct InspectableArtworkView<Placeholder: View>: View {
                 placeholder()
             }
         }
-        .task(id: urlString) {
-            if let currentURL = urlString?.trimmingCharacters(in: .whitespacesAndNewlines),
-               currentURL == loadedURL,
-               image != nil {
-                return
-            }
-            await loadArtwork()
+        .task(id: requestKey) {
+            await load(requestKey)
         }
     }
 
-    private func loadArtwork() async {
-        await MainActor.run {
-            debugSnapshot = ArtworkDebugSnapshot(rawURL: urlString)
-        }
-
-        guard let raw = urlString?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
-            await MainActor.run {
+    private func load(_ key: LoadKey?) async {
+        guard let key else {
+            // Unknown size (first layout pass) keeps whatever is shown.
+            if (urlString?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty {
                 image = nil
-                loadedURL = nil
-                debugSnapshot.phase = .missingURL
-                logDebugEvent()
+                loadedKey = nil
             }
             return
         }
-
-        guard let url = URL(string: raw) else {
-            await MainActor.run {
-                image = nil
-                loadedURL = nil
-                debugSnapshot.phase = .invalidURL
-                debugSnapshot.resolvedURL = raw
-                logDebugEvent()
-            }
+        guard key != loadedKey || image == nil else { return }
+        guard let url = URL(string: key.url) else {
+            image = nil
+            loadedKey = nil
             return
-        }
-
-        await MainActor.run {
-            debugSnapshot.resolvedURL = url.absoluteString
-        }
-
-        let isAlreadyLoaded = await MainActor.run {
-            url.absoluteString == loadedURL && image != nil
-        }
-
-        if isAlreadyLoaded {
-            await MainActor.run {
-                debugSnapshot.phase = .loaded
-            }
-            return
-        }
-
-        await MainActor.run {
-            debugSnapshot.phase = .loading
         }
 
         do {
-            let result = try await ArtworkPipeline.shared.loadImage(from: url, maxPixelSize: maxPixelSize)
+            let result = try await ArtworkPipeline.shared.loadImage(from: url, maxPixelSize: key.maxPixelSize)
             guard !Task.isCancelled else { return }
-
-            await MainActor.run {
-                image = result.image
-                loadedURL = url.absoluteString
-                debugSnapshot.statusCode = result.statusCode
-                debugSnapshot.byteCount = result.byteCount
-                debugSnapshot.phase = result.cacheHit ? .cached : .loaded
-                debugSnapshot.imageSize = imageSizeString(for: result.image)
-                logDebugEvent()
-            }
+            image = result.image
+            loadedKey = key
         } catch {
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
+            guard !Task.isCancelled, !error.isCancellation else { return }
+            // Keep a previously shown (e.g. smaller) image when only the size changed.
+            if loadedKey?.url != key.url {
                 image = nil
-                loadedURL = nil
-                debugSnapshot.phase = .failed
-                debugSnapshot.errorMessage = error.localizedDescription
-                logDebugEvent()
+                loadedKey = nil
             }
+            #if DEBUG
+            print("[Artwork] \(debugLabel) failed: \(key.url) — \(error.localizedDescription)")
+            #endif
         }
-    }
-
-    private func imageSizeString(for image: PlatformImage) -> String {
-        "\(Int(image.platformSize.width))x\(Int(image.platformSize.height))"
-    }
-
-    private func logDebugEvent() {
-        #if DEBUG
-        let status = debugSnapshot.statusCode.map(String.init) ?? "-"
-        let bytes = debugSnapshot.byteCount.map(String.init) ?? "-"
-        let raw = debugSnapshot.rawURL ?? "nil"
-        let resolved = debugSnapshot.resolvedURL ?? "nil"
-        let error = debugSnapshot.errorMessage ?? "nil"
-        print("[ArtworkDebug] \(debugLabel) phase=\(debugSnapshot.phase.label) status=\(status) bytes=\(bytes) raw=\(raw) resolved=\(resolved) error=\(error)")
-        #endif
     }
 }
-
-#if DEBUG
-private struct ArtworkDebugSheet: View {
-    let label: String
-    let snapshot: ArtworkDebugSnapshot
-
-    var body: some View {
-        NavigationStack {
-            List {
-                debugRow(title: "Item", value: label)
-                debugRow(title: "Phase", value: snapshot.phase.label)
-                debugRow(title: "Raw URL", value: snapshot.rawURL ?? "nil")
-                debugRow(title: "Resolved URL", value: snapshot.resolvedURL ?? "nil")
-                debugRow(title: "HTTP", value: snapshot.statusCode.map(String.init) ?? "n/a")
-                debugRow(title: "Bytes", value: snapshot.byteCount.map(String.init) ?? "n/a")
-                debugRow(title: "Image", value: snapshot.imageSize ?? "n/a")
-                debugRow(title: "Error", value: snapshot.errorMessage ?? "none")
-            }
-            .navigationTitle("Artwork Debug")
-            .navigationBarTitleDisplayModeCompat()
-        }
-    }
-
-    @ViewBuilder
-    private func debugRow(title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.system(size: 13, weight: .medium, design: .monospaced))
-                .textSelection(.enabled)
-        }
-        .padding(.vertical, 4)
-    }
-}
-#endif

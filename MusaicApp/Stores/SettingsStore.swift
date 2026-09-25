@@ -1,94 +1,75 @@
 import Foundation
-import SwiftUI
 
 // MARK: - Settings Store
 
-enum AppTheme: String, CaseIterable, Identifiable {
-    case auto
-    case dark
-    case light
-
-    var id: String { rawValue }
-
-    var colorScheme: ColorScheme? {
-        switch self {
-        case .auto: return nil
-        case .dark: return .dark
-        case .light: return .light
-        }
-    }
-
-    var localizedName: String {
-        switch self {
-        case .auto: return String(localized: "Auto")
-        case .dark: return String(localized: "Dark")
-        case .light: return String(localized: "Light")
-        }
-    }
-}
-
+/// Stored (hence observed) settings mirrored to UserDefaults. Computed
+/// properties over UserDefaults are invisible to `@Observable`, which left
+/// toggles and the onboarding flow without re-renders.
 @Observable
 @MainActor
 final class SettingsStore {
     static let shared = SettingsStore()
 
-    var onboardingComplete: Bool {
-        get { UserDefaults.standard.bool(forKey: "onboarding_complete") }
-        set { UserDefaults.standard.set(newValue, forKey: "onboarding_complete") }
+    private enum Keys {
+        static let onboardingComplete = "onboarding_complete"
+        static let sourceVK = "source_vk"
+        static let sourceSoundcloud = "source_soundcloud"
+        static let sourceYandex = "source_yandex"
+        static let sourceYoutube = "source_youtube"
+        static let vkAuthenticated = "vk_authenticated"
+        static let vkUsername = "vk_username"
+        static let yandexAuthenticated = "yandex_authenticated"
+        static let yandexUsername = "yandex_username"
+        static let streamQuality = "stream_quality"
+        static let crossfadeSec = "crossfade_sec"
+        static let gapless = "gapless"
+        static let normalization = "normalization"
+        static let authUserId = "auth_user_id"
+        static let authUsername = "auth_username"
+        static let authDisplayName = "auth_display_name"
+        static let authToken = "auth_token"
     }
-    var theme: AppTheme {
-        get { AppTheme(rawValue: UserDefaults.standard.string(forKey: "theme") ?? "") ?? .auto }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: "theme") }
+
+    var onboardingComplete: Bool {
+        didSet { UserDefaults.standard.set(onboardingComplete, forKey: Keys.onboardingComplete) }
     }
     var sourceVK: Bool {
-        get { UserDefaults.standard.bool(forKey: "source_vk") }
-        set { UserDefaults.standard.set(newValue, forKey: "source_vk") }
+        didSet { UserDefaults.standard.set(sourceVK, forKey: Keys.sourceVK) }
     }
     var sourceSoundcloud: Bool {
-        get { UserDefaults.standard.bool(forKey: "source_soundcloud") }
-        set { UserDefaults.standard.set(newValue, forKey: "source_soundcloud") }
+        didSet { UserDefaults.standard.set(sourceSoundcloud, forKey: Keys.sourceSoundcloud) }
     }
-    // New primary sources (default ON for first run). VK is intentionally NOT a
+    // Primary discovery sources (default ON). VK is intentionally NOT a
     // discovery source anymore — it stays only for already-liked tracks.
     var sourceYandex: Bool {
-        get { UserDefaults.standard.object(forKey: "source_yandex") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "source_yandex") }
+        didSet { UserDefaults.standard.set(sourceYandex, forKey: Keys.sourceYandex) }
     }
     var sourceYoutube: Bool {
-        get { UserDefaults.standard.object(forKey: "source_youtube") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "source_youtube") }
+        didSet { UserDefaults.standard.set(sourceYoutube, forKey: Keys.sourceYoutube) }
     }
     var vkAuthenticated: Bool {
-        get { UserDefaults.standard.bool(forKey: "vk_authenticated") }
-        set { UserDefaults.standard.set(newValue, forKey: "vk_authenticated") }
+        didSet { UserDefaults.standard.set(vkAuthenticated, forKey: Keys.vkAuthenticated) }
     }
     var vkUsername: String {
-        get { UserDefaults.standard.string(forKey: "vk_username") ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: "vk_username") }
+        didSet { UserDefaults.standard.set(vkUsername, forKey: Keys.vkUsername) }
     }
     var yandexAuthenticated: Bool {
-        get { UserDefaults.standard.bool(forKey: "yandex_authenticated") }
-        set { UserDefaults.standard.set(newValue, forKey: "yandex_authenticated") }
+        didSet { UserDefaults.standard.set(yandexAuthenticated, forKey: Keys.yandexAuthenticated) }
     }
     var yandexUsername: String {
-        get { UserDefaults.standard.string(forKey: "yandex_username") ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: "yandex_username") }
+        didSet { UserDefaults.standard.set(yandexUsername, forKey: Keys.yandexUsername) }
     }
     var streamQuality: String {
-        get { UserDefaults.standard.string(forKey: "stream_quality") ?? "high" }
-        set { UserDefaults.standard.set(newValue, forKey: "stream_quality") }
+        didSet { UserDefaults.standard.set(streamQuality, forKey: Keys.streamQuality) }
     }
     var crossfadeSec: Int {
-        get { UserDefaults.standard.integer(forKey: "crossfade_sec") }
-        set { UserDefaults.standard.set(newValue, forKey: "crossfade_sec") }
+        didSet { UserDefaults.standard.set(crossfadeSec, forKey: Keys.crossfadeSec) }
     }
     var gapless: Bool {
-        get { UserDefaults.standard.object(forKey: "gapless") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "gapless") }
+        didSet { UserDefaults.standard.set(gapless, forKey: Keys.gapless) }
     }
     var normalization: Bool {
-        get { UserDefaults.standard.object(forKey: "normalization") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "normalization") }
+        didSet { UserDefaults.standard.set(normalization, forKey: Keys.normalization) }
     }
 
     /// Comma-joined ENABLED discovery sources for search/artist/recs queries.
@@ -98,7 +79,7 @@ final class SettingsStore {
         if sourceYandex { sources.append("yandex") }
         if sourceYoutube { sources.append("youtube") }
         if sourceSoundcloud { sources.append("soundcloud") }
-        return sources // VK is intentionally excluded from recommendations.
+        return sources
     }
 
     var enabledSourcesParam: String {
@@ -107,51 +88,69 @@ final class SettingsStore {
 
     var serverConnected = false
 
-    // Auth
+    // MARK: Auth
+
+    /// Served from the in-memory credentials cache; Keychain is only read at launch.
     var authToken: String? {
-        get { Self.loadAuthToken() }
+        get { APICredentials.shared.token }
         set {
             if let newValue {
                 // Keep the legacy value if Keychain is unavailable so a later
                 // launch can retry the migration instead of losing the token.
-                guard KeychainService.shared.setString(newValue, forKey: Self.authTokenKey) else { return }
-                UserDefaults.standard.removeObject(forKey: Self.authTokenKey)
+                guard KeychainService.shared.setString(newValue, forKey: Keys.authToken) else { return }
+                UserDefaults.standard.removeObject(forKey: Keys.authToken)
             } else {
-                _ = KeychainService.shared.delete(forKey: Self.authTokenKey)
-                UserDefaults.standard.removeObject(forKey: Self.authTokenKey)
+                _ = KeychainService.shared.delete(forKey: Keys.authToken)
+                UserDefaults.standard.removeObject(forKey: Keys.authToken)
             }
+            APICredentials.shared.setToken(newValue)
         }
     }
     var authUserId: String? {
-        get { UserDefaults.standard.string(forKey: "auth_user_id") }
-        set { UserDefaults.standard.set(newValue, forKey: "auth_user_id") }
+        didSet { UserDefaults.standard.set(authUserId, forKey: Keys.authUserId) }
     }
     var authUsername: String {
-        get { UserDefaults.standard.string(forKey: "auth_username") ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: "auth_username") }
+        didSet { UserDefaults.standard.set(authUsername, forKey: Keys.authUsername) }
     }
     var authDisplayName: String {
-        get { UserDefaults.standard.string(forKey: "auth_display_name") ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: "auth_display_name") }
+        didSet { UserDefaults.standard.set(authDisplayName, forKey: Keys.authDisplayName) }
     }
     var isLoggedIn: Bool
     var sessionExpired = false
 
     private init() {
-        isLoggedIn = Self.loadAuthToken() != nil
+        let defaults = UserDefaults.standard
+        onboardingComplete = defaults.bool(forKey: Keys.onboardingComplete)
+        sourceVK = defaults.bool(forKey: Keys.sourceVK)
+        sourceSoundcloud = defaults.bool(forKey: Keys.sourceSoundcloud)
+        sourceYandex = defaults.object(forKey: Keys.sourceYandex) as? Bool ?? true
+        sourceYoutube = defaults.object(forKey: Keys.sourceYoutube) as? Bool ?? true
+        vkAuthenticated = defaults.bool(forKey: Keys.vkAuthenticated)
+        vkUsername = defaults.string(forKey: Keys.vkUsername) ?? ""
+        yandexAuthenticated = defaults.bool(forKey: Keys.yandexAuthenticated)
+        yandexUsername = defaults.string(forKey: Keys.yandexUsername) ?? ""
+        streamQuality = defaults.string(forKey: Keys.streamQuality) ?? "high"
+        crossfadeSec = defaults.integer(forKey: Keys.crossfadeSec)
+        gapless = defaults.object(forKey: Keys.gapless) as? Bool ?? true
+        normalization = defaults.object(forKey: Keys.normalization) as? Bool ?? true
+        authUserId = defaults.string(forKey: Keys.authUserId)
+        authUsername = defaults.string(forKey: Keys.authUsername) ?? ""
+        authDisplayName = defaults.string(forKey: Keys.authDisplayName) ?? ""
+
+        let token = Self.loadAuthToken()
+        APICredentials.shared.setToken(token)
+        isLoggedIn = token != nil
     }
 
-    private static let authTokenKey = "auth_token"
-
     private static func loadAuthToken() -> String? {
-        if let token = KeychainService.shared.string(forKey: authTokenKey) {
+        if let token = KeychainService.shared.string(forKey: Keys.authToken) {
             return token
         }
 
         // One-time migration for installations that stored the session in defaults.
-        guard let legacyToken = UserDefaults.standard.string(forKey: authTokenKey) else { return nil }
-        if KeychainService.shared.setString(legacyToken, forKey: authTokenKey) {
-            UserDefaults.standard.removeObject(forKey: authTokenKey)
+        guard let legacyToken = UserDefaults.standard.string(forKey: Keys.authToken) else { return nil }
+        if KeychainService.shared.setString(legacyToken, forKey: Keys.authToken) {
+            UserDefaults.standard.removeObject(forKey: Keys.authToken)
             return legacyToken
         }
         // Do not enter the authenticated UI when secure storage is unavailable.
@@ -181,11 +180,12 @@ final class SettingsStore {
 
     @discardableResult
     func setAuth(token: String, userId: String, username: String, displayName: String) -> Bool {
-        guard KeychainService.shared.setString(token, forKey: Self.authTokenKey) else {
+        guard KeychainService.shared.setString(token, forKey: Keys.authToken) else {
             isLoggedIn = false
             return false
         }
-        UserDefaults.standard.removeObject(forKey: Self.authTokenKey)
+        UserDefaults.standard.removeObject(forKey: Keys.authToken)
+        APICredentials.shared.setToken(token)
         authUserId = userId
         authUsername = username
         authDisplayName = displayName
@@ -194,8 +194,12 @@ final class SettingsStore {
         return true
     }
 
+    /// Local sign-out: stops playback, forgets the account's likes, caches and
+    /// token. Offline downloads are kept on purpose.
     func logout() {
+        PlayerStore.shared.resetForLogout()
         LibraryStore.shared.clearLocalLikes()
+        APIService.shared.clearSessionCaches()
         authToken = nil
         authUserId = nil
         authUsername = ""

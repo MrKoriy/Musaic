@@ -14,7 +14,8 @@ struct PlaylistPickerView: View {
             try await APIService.shared.addToPlaylist(playlistId: playlistId, trackId: track.id)
             dismiss()
         } catch {
-            actionError = "Couldn't add to playlist: \(error.localizedDescription)"
+            guard !error.isCancellation else { return }
+            actionError = String(localized: "Couldn't add to playlist: \(error.localizedDescription)")
         }
     }
 
@@ -34,16 +35,15 @@ struct PlaylistPickerView: View {
                                     Task { await addTrack(to: playlist.id) }
                                 } label: {
                                     HStack(spacing: 12) {
-                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                            .fill(Color.white.opacity(0.08))
+                                        PlaylistArtworkView(coverURL: APIService.shared.artworkURL(for: playlist.coverUrl))
                                             .frame(width: 52, height: 52)
-                                            .overlay(Image(systemName: "music.note.list").foregroundStyle(Color.textPrimary))
+                                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
                                         VStack(alignment: .leading, spacing: 4) {
                                             Text(playlist.name)
                                                 .font(.system(size: 15, weight: .semibold))
                                                 .foregroundStyle(Color.textPrimary)
-                                            Text("\(playlist.trackCount) tracks")
+                                            Text(String(localized: "\(playlist.trackCount) tracks"))
                                                 .font(.system(size: 12, weight: .medium))
                                                 .foregroundStyle(Color.textSecondary)
                                         }
@@ -60,20 +60,20 @@ struct PlaylistPickerView: View {
 
                     if showNew {
                         VStack(spacing: 12) {
-                            TextField("Playlist name", text: $newName)
+                            TextField(String(localized: "Playlist name"), text: $newName)
                                 .textFieldStyle(.plain)
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 14)
                                 .glassCard(cornerRadius: 20, intensity: 0.08)
 
-                            Button("Create and add track") {
+                            Button(String(localized: "Create and add track")) {
                                 Task {
                                     do {
                                         let id = try await APIService.shared.createPlaylist(name: newName)
                                         try await APIService.shared.addToPlaylist(playlistId: id, trackId: track.id)
                                         dismiss()
                                     } catch {
-                                        actionError = "Couldn't create playlist: \(error.localizedDescription)"
+                                        actionError = String(localized: "Couldn't create playlist: \(error.localizedDescription)")
                                     }
                                 }
                             }
@@ -92,7 +92,7 @@ struct PlaylistPickerView: View {
                         Button {
                             showNew = true
                         } label: {
-                            Label("New Playlist", systemImage: "plus")
+                            Label(String(localized: "New Playlist"), systemImage: "plus")
                                 .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(Color.textPrimary)
                                 .frame(maxWidth: .infinity)
@@ -106,29 +106,31 @@ struct PlaylistPickerView: View {
                 .padding(.bottom, 24)
             }
             .background(AppBackdrop())
-            .navigationTitle("Add to Playlist")
+            .navigationTitle(String(localized: "Add to Playlist"))
             .navigationBarTitleDisplayModeCompat()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(String(localized: "Cancel")) { dismiss() }
                         .foregroundStyle(Color.textPrimary)
                 }
             }
             .task {
                 do {
                     playlists = try await APIService.shared.getPlaylists()
+                } catch where error.isCancellation {
+                    return
                 } catch {
-                    actionError = "Couldn't load playlists: \(error.localizedDescription)"
+                    actionError = String(localized: "Couldn't load playlists: \(error.localizedDescription)")
                 }
                 loading = false
             }
         }
         .presentationDetents([.medium, .large])
         .alert(
-            "Something went wrong",
+            String(localized: "Something went wrong"),
             isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })
         ) {
-            Button("OK", role: .cancel) {}
+            Button(String(localized: "OK"), role: .cancel) {}
         } message: {
             Text(actionError ?? "")
         }

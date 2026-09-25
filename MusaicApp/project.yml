@@ -46,6 +46,8 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         UIStatusBarStyle: UIStatusBarStyleLightContent
+        # Dark-only app: system chrome and the launch screen must match.
+        UIUserInterfaceStyle: Dark
         LSApplicationCategoryType: public.app-category.music
         NSAppTransportSecurity:
           # Personal server over plain HTTP at a user-configurable address.

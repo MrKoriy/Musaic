@@ -28,21 +28,15 @@ final class ProfileAuthState {
             do {
                 let response = try await api.vkOAuthURL()
                 guard let url = URL(string: response.url) else {
-                    await MainActor.run {
-                        vkLoggingIn = false
-                        vkError = "Server returned an invalid VK login URL."
-                    }
+                    vkLoggingIn = false
+                    vkError = "Server returned an invalid VK login URL."
                     return
                 }
-                await MainActor.run {
-                    vkAuthURL = url
-                    showVKAuth = true
-                }
+                vkAuthURL = url
+                showVKAuth = true
             } catch {
-                await MainActor.run {
-                    vkLoggingIn = false
-                    vkError = "Could not open VK login. Check the server connection."
-                }
+                vkLoggingIn = false
+                vkError = "Could not open VK login. Check the server connection."
             }
         }
     }
@@ -56,15 +50,11 @@ final class ProfileAuthState {
             do {
                 try await api.vkSetToken(token: token, username: userId.map { "VK User \($0)" }, state: state)
                 let me = try await api.vkMe()
-                await MainActor.run {
-                    vkError = nil
-                    settings.setVkAuth(authenticated: me.authenticated, username: me.username)
-                }
+                vkError = nil
+                settings.setVkAuth(authenticated: me.authenticated, username: me.username)
             } catch {
-                await MainActor.run {
-                    settings.clearVkAuth()
-                    vkError = "This VK login cannot access music. Reconnect with a working VK audio client on the server."
-                }
+                settings.clearVkAuth()
+                vkError = "This VK login cannot access music. Reconnect with a working VK audio client on the server."
             }
         }
     }
@@ -73,12 +63,11 @@ final class ProfileAuthState {
         guard settings.sourceVK else { return }
         do {
             let me = try await api.vkMe()
-            await MainActor.run {
-                settings.setVkAuth(authenticated: me.authenticated, username: me.username)
-                if me.authenticated { vkError = nil }
-            }
+            settings.setVkAuth(authenticated: me.authenticated, username: me.username)
+            if me.authenticated { vkError = nil }
         } catch {
-            await MainActor.run {
+            // Only a definitive server answer clears the badge; offline keeps it.
+            if !error.isCancellation, (error as? APIError)?.statusCode != nil {
                 settings.clearVkAuth()
             }
         }
@@ -107,19 +96,15 @@ final class ProfileAuthState {
             defer { yandexConnecting = false }
             do {
                 let res = try await api.yandexConnect(token: token)
-                await MainActor.run {
-                    settings.setYandexAuth(authenticated: true, username: res.login)
-                    yandexToken = ""
-                    if res.plus == false {
-                        yandexPlusWarning = res.warning ?? "No active Yandex Plus — only 30s previews will play."
-                    }
+                settings.setYandexAuth(authenticated: true, username: res.login)
+                yandexToken = ""
+                if res.plus == false {
+                    yandexPlusWarning = res.warning ?? "No active Yandex Plus — only 30s previews will play."
                 }
                 importYandexLikes()
             } catch {
-                await MainActor.run {
-                    settings.clearYandexAuth()
-                    yandexError = "Could not connect Yandex. Check the token and that the server can reach Yandex."
-                }
+                settings.clearYandexAuth()
+                yandexError = "Could not connect Yandex. Check the token and that the server can reach Yandex."
             }
         }
     }
@@ -128,10 +113,8 @@ final class ProfileAuthState {
         guard settings.sourceYandex else { return }
         do {
             let me = try await api.yandexStatus()
-            await MainActor.run {
-                settings.setYandexAuth(authenticated: me.authenticated, username: me.username)
-                if me.authenticated { yandexError = nil }
-            }
+            settings.setYandexAuth(authenticated: me.authenticated, username: me.username)
+            if me.authenticated { yandexError = nil }
         } catch {
             // Leave existing state; a transient server error should not drop the badge.
         }
@@ -144,22 +127,16 @@ final class ProfileAuthState {
         Task {
             do {
                 let result = try await api.importYandexLikes()
-                await MainActor.run {
-                    yandexImporting = false
-                    yandexImportMessage = result.imported > 0
-                        ? "Added \(result.imported) likes"
-                        : "Likes are up to date"
-                }
+                yandexImporting = false
+                yandexImportMessage = result.imported > 0
+                    ? "Added \(result.imported) likes"
+                    : "Likes are up to date"
                 // Pull the merged server likes into the library so the imported
                 // tracks appear without an app restart.
-                if await LibraryStore.shared.syncLikesWithServer() {
-                    await LibraryStore.shared.hydrateLikedTracksIfNeeded(force: true)
-                }
+                await LibraryStore.shared.ensureSynced(force: true)
             } catch {
-                await MainActor.run {
-                    yandexImporting = false
-                    yandexImportMessage = "Could not sync likes"
-                }
+                yandexImporting = false
+                yandexImportMessage = "Could not sync likes"
             }
         }
     }

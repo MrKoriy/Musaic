@@ -76,7 +76,8 @@ struct PlaylistSearchCard: View {
                     if let url = playlist.coverUrl {
                         InspectableArtworkView(
                             urlString: APIService.shared.artworkURL(for: url),
-                            debugLabel: "playlist: \(playlist.title)"
+                            debugLabel: "playlist: \(playlist.title)",
+                            maxPixelSize: 512
                         ) {
                             Color.white.opacity(0.06)
                         }

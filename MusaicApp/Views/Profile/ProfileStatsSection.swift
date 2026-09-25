@@ -49,6 +49,12 @@ struct ProfileStatsSection: View {
     @State private var statsLoading = false
     @State private var statsError: String?
     @State private var statsUnauthorized = false
+    /// Period + time of the data on screen; tab switches reuse it while fresh.
+    @State private var loadedPeriod: StatsPeriod?
+    @State private var loadedAt: Date?
+    @State private var reloadToken = 0
+
+    private static let staleAfter: TimeInterval = 5 * 60
 
     private let api = APIService.shared
     private let settings = SettingsStore.shared
@@ -56,7 +62,7 @@ struct ProfileStatsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Your Stats")
+                Text(String(localized: "Your Stats"))
                     .font(.system(size: 22, weight: .bold, design: .rounded))
                     .foregroundStyle(Color.textPrimary)
                 Spacer()
@@ -74,7 +80,6 @@ struct ProfileStatsSection: View {
                     ForEach(StatsPeriod.allCases, id: \.self) { period in
                         Button {
                             statsPeriod = period
-                            Task { await loadStats() }
                         } label: {
                             Text(period.label)
                                 .font(.system(size: 13, weight: .semibold))
@@ -87,6 +92,7 @@ struct ProfileStatsSection: View {
                                 )
                         }
                         .buttonStyle(.plain)
+                        .accessibilityAddTraits(statsPeriod == period ? .isSelected : [])
                     }
                 }
                 .padding(.horizontal, 18)
@@ -97,7 +103,7 @@ struct ProfileStatsSection: View {
                     title: statsUnauthorized ? String(localized: "Session expired") : String(localized: "Stats unavailable"),
                     message: statsError,
                     isUnauthorized: statsUnauthorized,
-                    onRetry: { Task { await loadStats() } },
+                    onRetry: { reloadToken += 1 },
                     onSignIn: statsUnauthorized ? { settings.logout() } : nil
                 )
                 .padding(.horizontal, 18)
@@ -105,26 +111,26 @@ struct ProfileStatsSection: View {
                 HStack(spacing: 10) {
                     StatCard(
                         value: "\(statsPeriod.listens(from: overview))",
-                        label: "Listens",
+                        label: String(localized: "Listens"),
                         icon: "headphones"
                     )
                     StatCard(
                         value: formatListeningTime(statsPeriod.secs(from: overview)),
-                        label: "Time",
+                        label: String(localized: "Time"),
                         icon: "clock"
                     )
                     StatCard(
-                        value: "\(overview.streak)d",
-                        label: "Streak",
+                        value: String(localized: "\(overview.streak)d"),
+                        label: String(localized: "Streak"),
                         icon: "flame"
                     )
                 }
                 .padding(.horizontal, 18)
             } else if !statsLoading {
                 HStack(spacing: 10) {
-                    StatCard(value: "—", label: "Listens", icon: "headphones")
-                    StatCard(value: "—", label: "Time", icon: "clock")
-                    StatCard(value: "—", label: "Streak", icon: "flame")
+                    StatCard(value: "—", label: String(localized: "Listens"), icon: "headphones")
+                    StatCard(value: "—", label: String(localized: "Time"), icon: "clock")
+                    StatCard(value: "—", label: String(localized: "Streak"), icon: "flame")
                 }
                 .padding(.horizontal, 18)
             }
@@ -135,7 +141,7 @@ struct ProfileStatsSection: View {
                         Image(systemName: "music.note")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Color.accentStrong)
-                        Text("Top tracks")
+                        Text(String(localized: "Top tracks"))
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(Color.textPrimary)
                     }
@@ -164,7 +170,7 @@ struct ProfileStatsSection: View {
 
                             Spacer(minLength: 0)
 
-                            Text("\(track.playCount) plays")
+                            Text(String(localized: "\(track.playCount) plays"))
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(Color.textMuted)
                         }
@@ -184,7 +190,7 @@ struct ProfileStatsSection: View {
                         Image(systemName: "person.2")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Color.accentStrong)
-                        Text("Top artists")
+                        Text(String(localized: "Top artists"))
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(Color.textPrimary)
                     }
@@ -205,14 +211,14 @@ struct ProfileStatsSection: View {
                                     .font(.system(size: 14, weight: .medium))
                                     .foregroundStyle(Color.textPrimary)
                                     .lineLimit(1)
-                                Text("\(artist.uniqueTracks) tracks")
+                                Text(String(localized: "\(artist.uniqueTracks) tracks"))
                                     .font(.system(size: 12, weight: .regular))
                                     .foregroundStyle(Color.textSecondary)
                             }
 
                             Spacer(minLength: 0)
 
-                            Text("\(artist.playCount) plays")
+                            Text(String(localized: "\(artist.playCount) plays"))
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(Color.textMuted)
                         }
@@ -226,8 +232,9 @@ struct ProfileStatsSection: View {
                 .padding(.horizontal, 18)
             }
         }
-        .task {
-            await loadStats()
+        // Changing the period cancels the in-flight load (latest request wins).
+        .task(id: "\(statsPeriod.rawValue)#\(reloadToken)") {
+            await loadStatsIfNeeded()
         }
     }
 
@@ -241,26 +248,38 @@ struct ProfileStatsSection: View {
         return "\(hours)h \(remainingMins)m"
     }
 
-    private func loadStats() async {
+    private func loadStatsIfNeeded() async {
+        let period = statsPeriod
+        if statsError == nil, loadedPeriod == period, let loadedAt,
+           Date().timeIntervalSince(loadedAt) < Self.staleAfter {
+            return
+        }
         statsLoading = true
         statsError = nil
         statsUnauthorized = false
-        defer { statsLoading = false }
+        // A superseded load must not hide the spinner of the newer one.
+        defer { if !Task.isCancelled { statsLoading = false } }
 
         do {
             async let overview = api.getStatsOverview()
-            async let tracks = api.getTopTracks(period: statsPeriod.apiValue, limit: 5)
-            async let artists = api.getTopArtists(period: statsPeriod.apiValue, limit: 5)
+            async let tracks = api.getTopTracks(period: period.apiValue, limit: 5)
+            async let artists = api.getTopArtists(period: period.apiValue, limit: 5)
             let (ov, tr, ar) = try await (overview, tracks, artists)
+            guard !Task.isCancelled, period == statsPeriod else { return }
             statsOverview = ov
             topTracks = tr
             topArtists = ar
+            loadedPeriod = period
+            loadedAt = Date()
+        } catch where error.isCancellation {
+            return
         } catch {
+            guard period == statsPeriod else { return }
             statsOverview = nil
             topTracks = []
             topArtists = []
             statsError = error.localizedDescription
-            statsUnauthorized = (error as? APIError)?.statusCode == 401
+            statsUnauthorized = error.isUnauthorized
         }
     }
 }
