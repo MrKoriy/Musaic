@@ -9,7 +9,7 @@
 ## Правила работы
 
 - Сервер: Bun + Hono 4 + `bun:sqlite`. Миграции — только новыми версиями
-  (следующая **v24+**) в `server/src/db/migrations.ts`.
+  (следующая **v26+**) в `server/src/db/migrations.ts`, рекомендательные — v40+ в `migrations-reco.ts`.
 - Клиент: SwiftUI (iOS 17+/macOS 15+/watchOS 9), проект генерируется XcodeGen
   из `MusaicApp/project.yml` — новые файлы в `Models/ Services/ Stores/ Views/
   Widgets/ WatchApp/` подхватываются автоматически после `xcodegen generate`.
@@ -35,6 +35,21 @@
 - `TrackRow`: убрана кнопка в кнопке (тапы стабильны), stagger-вход один раз
   на строку, свайп-действия (лайк / в плейлист / в очередь) кастомным жестом.
 - Тесты lyrics обновлены под новую форму ответа.
+
+## Сделано 2026-09-25 (PR #1) — не переделывать
+
+- Durable-очередь `background_tasks` (v24, `server/src/jobs/tasks.ts`): воркер
+  стартует с сервером, при остановке возвращает прерванные задачи в очередь.
+  На ней AI-генерация текстов и `prefetch-all` (закрывает B1 для текстов;
+  downloads/import ещё на месте).
+- SSE `GET /api/lyrics/:id/events` вместо polling (B3 для текстов; стриминг
+  ответа чата — ещё нет).
+- Пер-трековая пользовательская юстировка смещения `PUT /api/lyrics/:id/offset`
+  (v25, `userOffsetSec` в ответе) — закрывает I4 (кроме таймингов raw-whisper).
+- Auth deny-by-default: публичны только login/register, обложки и VK OAuth
+  callback; `/audio/*` — всегда с сессией.
+- Полная en/ru локализация с русскими плюралами — закрывает I7.
+- Swift Testing таргет `MusaicTests` (macOS), job «Swift Unit Tests» в CI.
 
 ---
 
