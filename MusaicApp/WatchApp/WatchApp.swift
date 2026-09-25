@@ -1,13 +1,10 @@
 import SwiftUI
-import WatchConnectivity
 
 @main
 struct MusaicWatchApp: App {
     init() {
-        if WCSession.isSupported() {
-            WCSession.default.delegate = WatchSessionDelegate.shared
-            WCSession.default.activate()
-        }
+        // The one and only WCSession delegate on the watch.
+        WatchPhoneLink.shared.activate()
     }
 
     var body: some Scene {
@@ -15,10 +12,4 @@ struct MusaicWatchApp: App {
             WatchNowPlayingView()
         }
     }
-}
-
-final class WatchSessionDelegate: NSObject, WCSessionDelegate {
-    nonisolated(unsafe) static let shared = WatchSessionDelegate()
-
-    nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {}
 }

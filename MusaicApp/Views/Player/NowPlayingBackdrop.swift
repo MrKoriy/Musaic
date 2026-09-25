@@ -83,9 +83,8 @@ struct SleepTimerSheet: View {
     @Environment(\.dismiss) private var dismiss
     private let player = PlayerStore.shared
 
-    /// Drives the "remaining" countdown display. Re-reads PlayerStore every second.
-    @State private var now = Date()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
 
     private let presets: [(label: String, minutes: Int?)] = [
         (String(localized: "5 minutes"), 5),
@@ -152,12 +151,6 @@ struct SleepTimerSheet: View {
                 }
             }
         }
-        .task {
-            while !Task.isCancelled {
-                now = Date()
-                try? await Task.sleep(for: .seconds(1))
-            }
-        }
     }
 
     private var header: some View {
@@ -176,16 +169,16 @@ struct SleepTimerSheet: View {
                             endRadius: 60
                         )
                     )
-                if reduceMotion {
-                    Image(systemName: "moon.zzz.fill")
-                        .font(.system(size: 36, weight: .semibold))
-                        .foregroundStyle(Color.textPrimary)
-                } else {
-                    Image(systemName: "moon.zzz.fill")
-                        .font(.system(size: 36, weight: .semibold))
-                        .foregroundStyle(Color.textPrimary)
-                        .symbolEffect(.pulse, options: .repeating, value: player.sleepTimerActive)
-                }
+                // Pulses only while a timer is armed and the app is in the
+                // foreground; static under Reduce Motion.
+                Image(systemName: "moon.zzz.fill")
+                    .font(.system(size: 36, weight: .semibold))
+                    .foregroundStyle(Color.textPrimary)
+                    .symbolEffect(
+                        .pulse,
+                        options: .repeating,
+                        isActive: !reduceMotion && player.sleepTimerActive && scenePhase == .active
+                    )
             }
             .frame(width: 100, height: 100)
 
@@ -193,17 +186,29 @@ struct SleepTimerSheet: View {
                 .font(.system(size: 24, weight: .bold, design: .rounded))
                 .foregroundStyle(Color.textPrimary)
 
-            Text(statusLine)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Color.textSecondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
+            Group {
+                if player.sleepTimerDeadline != nil {
+                    // Counts down once per second, only while a countdown runs.
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        statusLineText
+                    }
+                } else {
+                    statusLineText
+                }
+            }
         }
         .padding(.top, 8)
     }
 
+    private var statusLineText: some View {
+        Text(statusLine)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(Color.textSecondary)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 24)
+    }
+
     private var statusLine: String {
-        _ = now // triggers re-render each second
         if player.sleepTimerEndOfTrack {
              return String(localized: "Pause at the end of this track.")
         }
@@ -217,12 +222,9 @@ struct SleepTimerSheet: View {
     }
 
     private func presetRow(label: String, minutes: Int?) -> some View {
-        let isActive: Bool = {
-            guard let minutes, let deadline = player.sleepTimerDeadline else { return false }
-            let remaining = deadline.timeIntervalSinceNow
-            let expected = TimeInterval(minutes * 60)
-            return abs(remaining - expected) < Double(minutes * 60) && minutes == activeMinutes
-        }()
+        let isActive = minutes != nil
+            && player.sleepTimerDeadline != nil
+            && player.sleepTimerPresetMinutes == minutes
 
         return Button {
             #if os(iOS)
@@ -272,15 +274,5 @@ struct SleepTimerSheet: View {
             .glassCard(cornerRadius: 18, intensity: player.sleepTimerEndOfTrack ? 0.14 : 0.06)
         }
         .buttonStyle(.plain)
-    }
-
-    /// Rough current-selection tracker; `setSleepTimer` is the source of truth.
-    private var activeMinutes: Int? {
-        guard let deadline = player.sleepTimerDeadline else { return nil }
-        let remaining = max(0, deadline.timeIntervalSinceNow)
-        let candidates = presets.compactMap(\.minutes)
-        return candidates.min { a, b in
-            abs(Double(a * 60) - remaining) < abs(Double(b * 60) - remaining)
-        }
     }
 }

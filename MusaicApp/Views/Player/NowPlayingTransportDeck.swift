@@ -1,35 +1,22 @@
 import SwiftUI
 
+/// Transport card of the Now Playing screen. Position-dependent UI lives in
+/// small leaf views (`TransportScrubSection`, `TransportPlayPauseButton`) so
+/// the 4 Hz playback ticks only redraw those, not the whole deck.
 struct NowPlayingTransportDeckView: View {
     private let player = PlayerStore.shared
-    private let audio = AudioPlayer.shared
 
     @State private var skipNextCounter = 0
     @State private var skipPrevCounter = 0
     @State private var repeatTapCounter = 0
     @State private var autoMixCounter = 0
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var scrubDuration: Double {
-        let d = audio.duration
-        if d > 0 && d.isFinite { return d }
-        return player.currentTrack?.duration ?? 0
-    }
 
     var body: some View {
         VStack(spacing: 16) {
-            ScrubBar(
-                progress: audio.progress,
-                currentTime: audio.currentTime,
-                duration: scrubDuration,
-                tint: Color.accentStrong,
-                onCommit: { fraction in
-                    audio.seek(to: fraction)
-                }
-            )
-            .padding(.horizontal, 16)
-            .padding(.vertical, 13)
-            .glassCard(cornerRadius: 28, tint: Color.accentStrong, intensity: 0.08, interactive: true)
+            TransportScrubSection()
+                .padding(.horizontal, 16)
+                .padding(.vertical, 13)
+                .glassCard(cornerRadius: 28, tint: Color.accentStrong, intensity: 0.08, interactive: true)
 
             HStack {
                 HStack(spacing: 12) {
@@ -64,7 +51,7 @@ struct NowPlayingTransportDeckView: View {
 
                 Spacer(minLength: 8)
 
-                playPauseButton
+                TransportPlayPauseButton()
 
                 Spacer(minLength: 8)
 
@@ -102,76 +89,6 @@ struct NowPlayingTransportDeckView: View {
             .glassCard(cornerRadius: 34, tint: Color.accentStrong, intensity: 0.09, interactive: true)
         }
         .padding(.bottom, 8)
-    }
-
-    private var playPauseButton: some View {
-        Button {
-            #if os(iOS)
-            UIImpactFeedbackGenerator(style: audio.isPlaying ? .medium : .rigid).impactOccurred()
-            #endif
-            player.togglePlayPause()
-        } label: {
-            ZStack {
-                Circle()
-                    .fill(Color.black.opacity(0.34))
-                    .blur(radius: 18)
-                    .offset(y: 10)
-
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(hex: "36271d"),
-                                Color(hex: "1b1410"),
-                                Color(hex: "110c09"),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [
-                                Color(hex: "d7ba8d").opacity(audio.isPlaying ? 0.58 : 0.40),
-                                .clear,
-                            ],
-                            center: .topTrailing,
-                            startRadius: 4,
-                            endRadius: 68
-                        )
-                    )
-                    .blur(radius: 12)
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: audio.isPlaying)
-
-                Circle()
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                .white.opacity(0.24),
-                                Color.accentStrong.opacity(0.34),
-                                .black.opacity(0.22),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 1
-                    )
-
-                Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 27, weight: .black))
-                    .foregroundStyle(Color.textPrimary)
-                    .offset(x: audio.isPlaying ? 0 : 2)
-                    .contentTransition(.symbolEffect(.replace.downUp))
-            }
-            .frame(width: 76, height: 76)
-            .scaleEffect(audio.isPlaying ? 1.0 : 0.97)
-            .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.7), value: audio.isPlaying)
-        }
-        .buttonStyle(PressableScale(scale: 0.93))
-        .sensoryFeedback(.impact(weight: .light), trigger: audio.isPlaying)
-        .accessibilityLabel(Text(audio.isPlaying ? String(localized: "Pause") : String(localized: "Play")))
     }
 
     private func transportButton(
@@ -232,6 +149,106 @@ struct NowPlayingTransportDeckView: View {
         }
         .buttonStyle(PressableScale(scale: 0.90))
         .accessibilityLabel(Text(accessibilityLabel))
+    }
+}
+
+/// The only part of the deck that follows the playback position.
+private struct TransportScrubSection: View {
+    private let player = PlayerStore.shared
+    private let audio = AudioPlayer.shared
+
+    var body: some View {
+        let duration = audio.duration > 0 && audio.duration.isFinite
+            ? audio.duration
+            : (player.currentTrack?.duration ?? 0)
+        ScrubBar(
+            progress: audio.progress,
+            currentTime: audio.currentTime,
+            duration: duration,
+            tint: Color.accentStrong,
+            onCommit: { fraction in
+                player.seekTo(fraction)
+            }
+        )
+    }
+}
+
+/// Reads only the play state, so progress ticks never redraw it.
+private struct TransportPlayPauseButton: View {
+    private let player = PlayerStore.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Pause glyph as soon as playback is requested (covers loading).
+    private var showsPause: Bool { player.isPlaybackIntended }
+
+    var body: some View {
+        Button {
+            #if os(iOS)
+            UIImpactFeedbackGenerator(style: showsPause ? .medium : .rigid).impactOccurred()
+            #endif
+            player.togglePlayPause()
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(Color.black.opacity(0.34))
+                    .blur(radius: 18)
+                    .offset(y: 10)
+
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(hex: "36271d"),
+                                Color(hex: "1b1410"),
+                                Color(hex: "110c09"),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                Color(hex: "d7ba8d").opacity(showsPause ? 0.58 : 0.40),
+                                .clear,
+                            ],
+                            center: .topTrailing,
+                            startRadius: 4,
+                            endRadius: 68
+                        )
+                    )
+                    .blur(radius: 12)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: showsPause)
+
+                Circle()
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                .white.opacity(0.24),
+                                Color.accentStrong.opacity(0.34),
+                                .black.opacity(0.22),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
+
+                Image(systemName: showsPause ? "pause.fill" : "play.fill")
+                    .font(.system(size: 27, weight: .black))
+                    .foregroundStyle(Color.textPrimary)
+                    .offset(x: showsPause ? 0 : 2)
+                    .contentTransition(.symbolEffect(.replace.downUp))
+            }
+            .frame(width: 76, height: 76)
+            .scaleEffect(showsPause ? 1.0 : 0.97)
+            .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.7), value: showsPause)
+        }
+        .buttonStyle(PressableScale(scale: 0.93))
+        .sensoryFeedback(.impact(weight: .light), trigger: showsPause)
+        .accessibilityLabel(Text(showsPause ? String(localized: "Pause") : String(localized: "Play")))
     }
 }
 

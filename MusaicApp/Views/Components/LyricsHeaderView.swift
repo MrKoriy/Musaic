@@ -9,6 +9,10 @@ struct LyricsHeaderView: View {
     @Binding var manualTitle: String
     @Binding var showManualSearch: Bool
     let onRetry: () -> Void
+    /// Shows the timing (offset) toggle when synced lyrics are on screen.
+    var canAdjustTiming: Bool = false
+    var timingActive: Bool = false
+    var onToggleTiming: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
 
@@ -22,6 +26,7 @@ struct LyricsHeaderView: View {
                     .background(Color.white.opacity(0.08), in: Circle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(Text(String(localized: "Close lyrics")))
 
             Spacer()
 
@@ -44,6 +49,19 @@ struct LyricsHeaderView: View {
             Spacer()
 
             HStack(spacing: 8) {
+                if canAdjustTiming, let onToggleTiming {
+                    Button(action: onToggleTiming) {
+                        Image(systemName: "timer")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(timingActive ? Color.accentStrong : Color.textSecondary)
+                            .frame(width: 36, height: 36)
+                            .background(Color.white.opacity(timingActive ? 0.14 : 0.08), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Text(String(localized: "Adjust lyrics timing")))
+                    .accessibilityAddTraits(timingActive ? .isSelected : [])
+                }
+
                 Button {
                     manualArtist = track.artist
                     manualTitle = track.title
@@ -56,6 +74,7 @@ struct LyricsHeaderView: View {
                         .background(Color.white.opacity(0.08), in: Circle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(Text(String(localized: "Search lyrics manually")))
 
                 if hasRawLyrics {
                     Button(action: onRetry) {

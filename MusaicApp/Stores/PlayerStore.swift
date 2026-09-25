@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 // MARK: - Player Store
 
@@ -24,6 +29,7 @@ final class PlayerStore {
 
     private let audio = AudioPlayer.shared
     private let api = APIService.shared
+    private let publisher = NowPlayingPublisher.shared
 
     var currentTrack: Track?
     var queue: [Track] = []
@@ -54,11 +60,28 @@ final class PlayerStore {
     private var activeListeningContext: ActiveListeningContext?
     private var queueSurface = "organic"
 
+    // Failed tracks auto-skip ahead, but only a few times in a row so a dead
+    // connection doesn't burn through the whole queue.
+    private static let maxConsecutiveFailureSkips = 3
+    @ObservationIgnored private var consecutiveFailureSkips = 0
+    @ObservationIgnored private var failureSkipTask: Task<Void, Never>?
+
+    /// Position of a restored (not yet loaded) current track.
+    @ObservationIgnored private var restoredPosition: TimeInterval?
+    @ObservationIgnored private var persistTask: Task<Void, Never>?
+    @ObservationIgnored private var lastPersistedPositionBucket = -1
+    @ObservationIgnored private var lastMailboxCheck = Date.distantPast
+    @ObservationIgnored private var lifecycleObservers: [NSObjectProtocol] = []
+
     var isPlaying: Bool { audio.isPlaying }
     var playbackState: PlaybackState { audio.playbackState }
     var progress: Double { audio.progress }
     var currentTime: TimeInterval { audio.currentTime }
     var duration: TimeInterval { audio.duration }
+    /// Playing or about to play (loading/buffering after a play request).
+    var isPlaybackIntended: Bool { audio.isPlaying || audio.isPlaybackIntended }
+    /// In-app volume 0...1 (iPod wheel, watch crown).
+    var volume: Float { audio.userVolume }
     var isMyVibeActive: Bool { stationMode == .myVibe }
     var isAutoMixActive: Bool { stationMode == .autoMix }
     var currentMyVibeFilters: MyVibeFilters? { stationMode == .myVibe ? stationFilters : nil }
@@ -74,6 +97,8 @@ final class PlayerStore {
     }
     /// When true, pause automatically at the end of the currently playing track.
     var sleepTimerEndOfTrack: Bool = false
+    /// Preset (minutes) the active countdown was started with.
+    private(set) var sleepTimerPresetMinutes: Int?
 
     /// Seconds remaining on the active countdown (0 when inactive). Computed fresh for UI.
     var sleepTimerRemaining: TimeInterval {
@@ -88,10 +113,12 @@ final class PlayerStore {
     private init() {
         audio.onRemoteNext = { [weak self] in self?.skipNext() }
         audio.onRemotePrevious = { [weak self] in self?.skipPrevious() }
+        audio.onRemotePlay = { [weak self] in self?.resumePlayback() }
+        audio.onRemotePause = { [weak self] in self?.pausePlayback() }
+        audio.onRemoteTogglePlayPause = { [weak self] in self?.togglePlayPause() }
+        audio.onRemoteSeek = { [weak self] fraction in self?.seekTo(fraction) }
         audio.onPlaybackProgress = { [weak self] position in
-            self?.recordPlaybackProgress(position)
-            self?.pushProgressToWatch(position)
-            self?.processPendingWidgetCommands()
+            self?.handlePlaybackTick(position)
         }
         audio.onPlaybackPaused = { [weak self] in
             self?.handlePlaybackPaused()
@@ -100,24 +127,57 @@ final class PlayerStore {
             self?.handlePlaybackResumed()
         }
         audio.onPlaybackFailed = { [weak self] in
-            self?.finalizeCurrentPlayback(action: "pause")
+            self?.handlePlaybackFailure()
+        }
+        audio.onPlaybackStateChange = { [weak self] state in
+            self?.handlePlaybackStateChange(state)
+        }
+        audio.onPlaybackSeeked = { [weak self] _ in
+            self?.publishNowPlaying(force: true)
+        }
+        audio.onTrackEnd { [weak self] in self?.handleTrackEnd() }
+
+        restoreQueueIfAvailable()
+        observeLifecycle()
+
+        // Publishing touches other singletons (watch link, library), so it
+        // runs after this initializer has returned.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            // Router first: commands mailed before launch act on the restored queue.
+            NowPlayingCommandRouter.install { [weak self] command in
+                self?.perform(remoteCommand: command)
+            }
+            self.publishNowPlaying(force: true)
         }
     }
 
     // MARK: - Playback
 
     func playTrack(_ track: Track, restartIfCurrent: Bool = true) {
+        startPlayback(of: track, restartIfCurrent: restartIfCurrent, startAt: 0)
+    }
+
+    private func startPlayback(of track: Track, restartIfCurrent: Bool, startAt: TimeInterval) {
         let normalizedTrack = api.normalizedTrack(track)
         finalizeCurrentPlayback(action: "skip")
+        failureSkipTask?.cancel()
+        failureSkipTask = nil
+        restoredPosition = nil
 
+        #if os(iOS)
+        if currentTrack?.id != normalizedTrack.id {
+            WatchControlHandler.shared.trackDidChange(normalizedTrack)
+        }
+        #endif
         currentTrack = normalizedTrack
-        audio.play(track: normalizedTrack, restartIfSame: restartIfCurrent)
+        audio.play(track: normalizedTrack, restartIfSame: restartIfCurrent, startAt: startAt)
         audio.updateNowPlayingInfo(track: normalizedTrack)
-        publishNowPlayingSnapshot(track: normalizedTrack)
-        audio.onTrackEnd { [weak self] in self?.handleTrackEnd() }
+        publishNowPlaying(force: true)
 
-        // Tell AudioPlayer what track comes next for crossfade
+        // Tell AudioPlayer what track comes next for preload / crossfade.
         updateCrossfadeNext()
+        schedulePersist()
 
         if audio.lastErrorMessage == nil {
             activeListeningContext = ActiveListeningContext(
@@ -138,19 +198,37 @@ final class PlayerStore {
         }
     }
 
+    /// Index of the track that plays after the current one, honoring repeat.
+    private var upcomingIndex: Int? {
+        guard !queue.isEmpty, repeatMode != .track else { return nil }
+        if queueIndex + 1 < queue.count { return queueIndex + 1 }
+        if repeatMode == .queue, queue.count > 1 { return 0 }
+        return nil
+    }
+
     private func updateCrossfadeNext() {
-        let nextTrack = queue[safe: queueIndex + 1].map { api.normalizedTrack($0) }
-        if let next = nextTrack {
-            let url: String
-            if let localURL = DownloadManager.shared.localFileURL(for: next.id) {
-                url = localURL.absoluteString
-            } else {
-                url = next.url
-            }
-            audio.setCrossfadeNextURL(url, loudnessLufs: next.loudnessLufs)
-        } else {
+        // Repeat-one and "pause after this track" must never fade into
+        // another item.
+        guard !sleepTimerEndOfTrack,
+              let index = upcomingIndex,
+              let next = queue[safe: index].map({ api.normalizedTrack($0) }) else {
             audio.setCrossfadeNextURL(nil)
+            return
         }
+        let url = DownloadManager.shared.localFileURL(for: next.id)?.absoluteString ?? next.url
+        audio.setCrossfadeNextURL(url, loudnessLufs: next.loudnessLufs)
+    }
+
+    /// Call after every queue / index / repeat mutation: refreshes the
+    /// preloaded next item and persists the queue.
+    private func queueDidChange() {
+        if queue.isEmpty {
+            queueIndex = 0
+        } else if !queue.indices.contains(queueIndex) {
+            queueIndex = max(0, min(queueIndex, queue.count - 1))
+        }
+        updateCrossfadeNext()
+        schedulePersist()
     }
 
     @discardableResult
@@ -163,6 +241,7 @@ final class PlayerStore {
         guard tracks.indices.contains(index) else { return false }
         let shouldOpenNowPlaying = currentTrack == nil
         clearDynamicStation()
+        consecutiveFailureSkips = 0
         queueSurface = surface
         recommendationRequestIds.removeAll()
         recommendationPositions.removeAll()
@@ -192,8 +271,10 @@ final class PlayerStore {
 
     @MainActor
     func startMyVibe(from likedTracks: [Track], filters: MyVibeFilters = .default, knownTrackIds: Set<String> = []) async {
+        // Liked lists can contain the same track twice; keep the first.
         let dedupedSeeds = Array(Dictionary(
-            uniqueKeysWithValues: likedTracks.map { ($0.id, api.normalizedTrack($0)) }
+            likedTracks.map { ($0.id, api.normalizedTrack($0)) },
+            uniquingKeysWith: { first, _ in first }
         ).values)
         var seeds = dedupedSeeds.shuffled()
         if let currentTrack {
@@ -220,6 +301,7 @@ final class PlayerStore {
         queue = []
         originalQueue = []
         queueIndex = 0
+        consecutiveFailureSkips = 0
 
         await extendDynamicStationIfNeeded(force: true, minimumUpcoming: 18)
         if let first = queue.first {
@@ -280,46 +362,64 @@ final class PlayerStore {
             queue = [currentTrack]
             originalQueue = [currentTrack]
             queueIndex = 0
+            queueDidChange()
         }
 
         await extendDynamicStationIfNeeded(force: true, minimumUpcoming: 10)
     }
 
     func togglePlayPause() {
+        if loadRestoredTrackIfNeeded() { return }
         audio.togglePlayPause()
-        if let track = currentTrack {
-            audio.updateNowPlayingInfo(track: track)
-            publishNowPlayingSnapshot(track: track)
-        }
     }
 
     func resumePlayback() {
+        if loadRestoredTrackIfNeeded() { return }
         audio.resume()
-        if let track = currentTrack { publishNowPlayingSnapshot(track: track) }
     }
 
     func pausePlayback() {
         audio.pause()
-        if let track = currentTrack { publishNowPlayingSnapshot(track: track) }
     }
 
-    /// Execute pending control commands mailed in by widget / Live Activity
-    /// buttons. Those run in another process and can only drop a note into the
-    /// App Group mailbox, so we drain it on every playback tick and on
-    /// activation.
-    func processPendingWidgetCommands() {
-        while let command = NowPlayingShared.drainCommand() {
-            switch command {
-            case "toggle": togglePlayPause()
-            case "play": resumePlayback()
-            case "pause": pausePlayback()
-            case "next": skipNext()
-            case "previous": skipPrevious()
-            case "like":
-                if let track = currentTrack { LibraryStore.shared.toggleLike(track: track) }
-            default: break
+    /// After launch the restored track isn't loaded into the engine yet; the
+    /// first play request loads it at the saved position.
+    private func loadRestoredTrackIfNeeded() -> Bool {
+        guard !audio.hasLoadedItem, let track = currentTrack else { return false }
+        startPlayback(of: track, restartIfCurrent: true, startAt: restoredPosition ?? 0)
+        return true
+    }
+
+    /// Executes a control command from the widget, Live Activity, watch or
+    /// intents. `value` carries the fraction for "seek" and the level for
+    /// "volume".
+    func perform(remoteCommand command: String, value: Double? = nil) {
+        switch command {
+        case "toggle": togglePlayPause()
+        case "play": resumePlayback()
+        case "pause": pausePlayback()
+        case "next": skipNext()
+        case "previous": skipPrevious()
+        case "like":
+            if let track = currentTrack {
+                LibraryStore.shared.toggleLike(track: track)
+                publishNowPlaying(force: true)
             }
+        case "seek":
+            if let value { seekTo(value) }
+        case "volume":
+            if let value { setVolume(Float(value)) }
+        case "sync":
+            publishNowPlaying(force: true)
+        default:
+            break
         }
+    }
+
+    /// Drains commands mailed by the widget / Live Activity while the intent
+    /// couldn't run in-process. Safe to call any time.
+    func processPendingWidgetCommands() {
+        NowPlayingCommandRouter.drainMailbox()
     }
 
     // MARK: - Sleep timer
@@ -327,13 +427,17 @@ final class PlayerStore {
     /// Set a countdown timer in minutes, or nil to cancel.
     @MainActor
     func setSleepTimer(minutes: Int?) {
+        let hadEndOfTrack = sleepTimerEndOfTrack
         sleepTimerEndOfTrack = false
         audio.cancelVolumeFade()
-        guard let minutes, minutes > 0 else {
+        if let minutes, minutes > 0 {
+            sleepTimerDeadline = Date().addingTimeInterval(TimeInterval(minutes * 60))
+            sleepTimerPresetMinutes = minutes
+        } else {
             sleepTimerDeadline = nil
-            return
+            sleepTimerPresetMinutes = nil
         }
-        sleepTimerDeadline = Date().addingTimeInterval(TimeInterval(minutes * 60))
+        if hadEndOfTrack { updateCrossfadeNext() }
     }
 
     /// Arm pause-at-end-of-current-track.
@@ -341,7 +445,9 @@ final class PlayerStore {
     func setSleepTimerEndOfTrack() {
         audio.cancelVolumeFade()
         sleepTimerDeadline = nil
+        sleepTimerPresetMinutes = nil
         sleepTimerEndOfTrack = true
+        updateCrossfadeNext()
     }
 
     /// Cancel / clear the sleep timer. `silent=true` is used by AudioPlayer's
@@ -350,11 +456,26 @@ final class PlayerStore {
     @MainActor
     func clearSleepTimer(silent: Bool = false) {
         if !silent { audio.cancelVolumeFade() }
+        let hadEndOfTrack = sleepTimerEndOfTrack
         sleepTimerDeadline = nil
+        sleepTimerPresetMinutes = nil
         sleepTimerEndOfTrack = false
+        if hadEndOfTrack { updateCrossfadeNext() }
     }
 
     func seekTo(_ fraction: Double) {
+        guard fraction.isFinite else { return }
+        if !audio.hasLoadedItem, let track = currentTrack {
+            // Restored but not loaded: move the resume position.
+            let dur = resolvedDuration > 0 ? resolvedDuration : (track.duration ?? 0)
+            guard dur > 0 else { return }
+            let position = max(0, min(1, fraction)) * dur
+            restoredPosition = position
+            audio.presentRestoredPosition(position, duration: dur)
+            schedulePersist()
+            publishNowPlaying(force: true)
+            return
+        }
         audio.seek(to: fraction)
         if var context = activeListeningContext {
             context.lastPosition = audio.currentTime
@@ -362,41 +483,39 @@ final class PlayerStore {
         }
     }
 
+    /// Manual "next": always advances, even in repeat-one (only a natural
+    /// track end repeats the track).
     func skipNext() {
         finalizeCurrentPlayback(action: "skip")
-        guard !queue.isEmpty else { return }
-        if repeatMode == .track {
-            restartCurrentTrack()
+        guard !queue.isEmpty else {
+            handleQueueFinished()
             return
         }
 
-        if queueIndex >= queue.count - 1 {
-            if isMyVibeActive || isAutoMixActive {
-                Task { @MainActor in
-                    await extendDynamicStationIfNeeded(force: true, minimumUpcoming: 6)
-                    if queueIndex < queue.count - 1 {
-                        queueIndex += 1
-                        if let track = queue[safe: queueIndex] {
-                            playTrack(track)
-                        }
-                    } else {
-                        audio.pause()
+        if queueIndex >= queue.count - 1, isMyVibeActive || isAutoMixActive {
+            Task { @MainActor in
+                await extendDynamicStationIfNeeded(force: true, minimumUpcoming: 6)
+                if queueIndex < queue.count - 1 {
+                    queueIndex += 1
+                    if let track = queue[safe: queueIndex] {
+                        playTrack(track)
                     }
+                } else {
+                    handleQueueFinished()
                 }
-                return
             }
+            return
         }
 
-        queueIndex += 1
-        if queueIndex >= queue.count {
-            if repeatMode == .queue {
-                queueIndex = 0
-            } else {
-                queueIndex = queue.count - 1
-                audio.pause()
+        var nextIndex = queueIndex + 1
+        if nextIndex >= queue.count {
+            guard repeatMode == .queue else {
+                handleQueueFinished()
                 return
             }
+            nextIndex = 0
         }
+        queueIndex = nextIndex
         if let track = queue[safe: queueIndex] {
             playTrack(track)
         }
@@ -410,12 +529,13 @@ final class PlayerStore {
 
     func skipPrevious() {
         guard !queue.isEmpty else { return }
-        // Double-tap to go to previous track, single tap restarts if >3s in
-        if audio.currentTime > 3 {
+        // Single tap restarts once we're >3 s in; otherwise go back a track.
+        let atStart = queueIndex == 0 && repeatMode != .queue
+        if audio.livePlaybackTime() > 3 || atStart {
             restartCurrentTrack()
             return
         }
-        queueIndex = max(0, queueIndex - 1)
+        queueIndex = queueIndex > 0 ? queueIndex - 1 : queue.count - 1
         if let track = queue[safe: queueIndex] {
             playTrack(track)
         }
@@ -423,6 +543,13 @@ final class PlayerStore {
 
     func restartCurrentTrack() {
         guard let track = currentTrack else { return }
+        guard audio.hasLoadedItem else {
+            restoredPosition = 0
+            audio.presentRestoredPosition(0, duration: track.duration ?? 0)
+            schedulePersist()
+            publishNowPlaying(force: true)
+            return
+        }
         if activeListeningContext != nil {
             recordPlaybackProgress(audio.currentTime)
             let listenedRatio = audio.duration > 0
@@ -442,15 +569,21 @@ final class PlayerStore {
             surface: currentPlaybackSurface,
             position: recommendationPositions[normalizedTrack.id] ?? queueIndex,
             playedSeconds: 0,
-            lastPosition: audio.currentTime
+            lastPosition: 0
         )
     }
 
+    /// Jump to a queue row without rebuilding the queue (keeps stations,
+    /// shuffle order and recommendation context intact).
     func selectQueueTrack(at index: Int) {
         guard queue.indices.contains(index) else { return }
         let track = queue[index]
         let isSameSelection = index == queueIndex && currentTrack?.id == track.id
-        if isSameSelection { return }
+        if isSameSelection {
+            if !isPlaybackIntended { resumePlayback() }
+            return
+        }
+        consecutiveFailureSkips = 0
         queueIndex = index
         playTrack(track)
     }
@@ -458,6 +591,22 @@ final class PlayerStore {
     func addToQueue(_ track: Track) {
         queue.append(track)
         originalQueue.append(track)
+        queueDidChange()
+    }
+
+    /// Inserts `track` right after the current one.
+    func playNext(_ track: Track) {
+        guard !queue.isEmpty else {
+            addToQueue(track)
+            return
+        }
+        queue.insert(track, at: min(queueIndex + 1, queue.count))
+        if let current = currentTrack, let originalIndex = originalQueue.firstIndex(where: { $0.id == current.id }) {
+            originalQueue.insert(track, at: originalIndex + 1)
+        } else {
+            originalQueue.append(track)
+        }
+        queueDidChange()
     }
 
     /// Records an explicit negative signal, removes the current item, and
@@ -473,28 +622,87 @@ final class PlayerStore {
             queue.remove(at: queueIndex)
         }
         guard !queue.isEmpty else {
-            currentTrack = nil
-            queueIndex = 0
-            audio.pauseAll()
+            stopAndClearNowPlaying()
+            queueDidChange()
             return
         }
         queueIndex = min(queueIndex, queue.count - 1)
         playTrack(queue[queueIndex])
+        queueDidChange()
     }
 
     func removeFromQueue(at index: Int) {
-        guard queue.indices.contains(index) else { return }
-        queue.remove(at: index)
-        if index < queueIndex { queueIndex -= 1 }
+        removeFromQueue(atOffsets: IndexSet(integer: index))
+    }
+
+    /// Removes queue rows. Removing the playing row moves on to the track that
+    /// followed it (or parks on the new last row / stops when nothing is left).
+    func removeFromQueue(atOffsets offsets: IndexSet) {
+        let indices = offsets.filter { queue.indices.contains($0) }.sorted(by: >)
+        guard !indices.isEmpty else { return }
+        let removingCurrent = indices.contains(queueIndex)
+        let wasPlaying = isPlaybackIntended
+        // Descending order keeps the remaining indices valid while removing.
+        for index in indices {
+            let removed = queue.remove(at: index)
+            if let originalIndex = originalQueue.firstIndex(where: { $0.id == removed.id }) {
+                originalQueue.remove(at: originalIndex)
+            }
+            if index < queueIndex { queueIndex -= 1 }
+        }
+
+        if removingCurrent {
+            finalizeCurrentPlayback(action: "skip")
+            if queue.isEmpty {
+                stopAndClearNowPlaying()
+            } else if queueIndex >= queue.count {
+                queueIndex = queue.count - 1
+                parkOnCurrentIndex()
+            } else if wasPlaying {
+                playTrack(queue[queueIndex])
+            } else {
+                parkOnCurrentIndex()
+            }
+        }
+        queueDidChange()
+    }
+
+    /// Reorders the queue (List `onMove` semantics); the playing track keeps
+    /// playing and `queueIndex` follows it.
+    func moveQueue(fromOffsets source: IndexSet, toOffset destination: Int) {
+        let moving = source.filter { queue.indices.contains($0) }.sorted()
+        guard !moving.isEmpty, (0...queue.count).contains(destination) else { return }
+        let movingSet = Set(moving)
+        var order = queue.indices.filter { !movingSet.contains($0) }
+        let insertAt = destination - moving.filter { $0 < destination }.count
+        order.insert(contentsOf: moving, at: max(0, min(insertAt, order.count)))
+        guard order != Array(queue.indices) else { return }
+
+        let previousQueue = queue
+        let previousIndex = queueIndex
+        queue = order.map { previousQueue[$0] }
+        queueIndex = order.firstIndex(of: previousIndex) ?? 0
+        // A manual order becomes the base order unless shuffle is on (turning
+        // shuffle off restores the pre-shuffle order).
+        if !isShuffled { originalQueue = queue }
+        queueDidChange()
     }
 
     func clearQueue() {
-        queue.removeAll()
-        originalQueue.removeAll()
-        queueIndex = 0
+        clearDynamicStation()
         recommendationRequestIds.removeAll()
         recommendationPositions.removeAll()
-        clearDynamicStation()
+        // The playing track stays as the only entry so the queue and the
+        // player never disagree.
+        if let currentTrack {
+            queue = [currentTrack]
+            originalQueue = [currentTrack]
+        } else {
+            queue = []
+            originalQueue = []
+        }
+        queueIndex = 0
+        queueDidChange()
     }
 
     // MARK: - Modes
@@ -505,16 +713,14 @@ final class PlayerStore {
         case .queue: repeatMode = .track
         case .track: repeatMode = .off
         }
+        queueDidChange()
     }
 
     func toggleShuffle() {
         isShuffled.toggle()
         if isShuffled {
-            let current = queue[safe: queueIndex]
             var rest = queue
-            if let idx = rest.firstIndex(where: { $0.id == current?.id }) {
-                rest.remove(at: idx)
-            }
+            let current = rest.indices.contains(queueIndex) ? rest.remove(at: queueIndex) : nil
             rest.shuffle()
             if let current { rest.insert(current, at: 0) }
             queue = rest
@@ -524,23 +730,269 @@ final class PlayerStore {
             queue = originalQueue
             queueIndex = queue.firstIndex(where: { $0.id == currentId }) ?? 0
         }
+        queueDidChange()
+    }
+
+    /// In-app volume 0...1.
+    func setVolume(_ value: Float) {
+        audio.setUserVolume(value)
+        #if os(iOS)
+        WatchControlHandler.shared.pushVolume(audio.userVolume)
+        #endif
+    }
+
+    // MARK: - Logout
+
+    /// Stops playback and wipes every trace of the session: queue (memory and
+    /// disk), lock-screen info, Live Activity, widget/watch snapshot.
+    func resetForLogout() {
+        failureSkipTask?.cancel()
+        failureSkipTask = nil
+        persistTask?.cancel()
+        persistTask = nil
+        // No play logging: the session (and its token) is going away.
+        activeListeningContext = nil
+        // Cleared before stopping so the resulting state change publishes
+        // "nothing playing" rather than the old track.
+        currentTrack = nil
+        queue = []
+        originalQueue = []
+        queueIndex = 0
+        audio.sleepDeadline = nil
+        sleepTimerEndOfTrack = false
+        sleepTimerPresetMinutes = nil
+        audio.setCrossfadeNextURL(nil)
+        audio.stop()
+        audio.clearNowPlayingInfo()
+        clearDynamicStation()
+        recommendationRequestIds.removeAll()
+        recommendationPositions.removeAll()
+        recentPlaybackHistory.removeAll()
+        djIntroMessage = nil
+        djIntroVisibleUntil = nil
+        restoredPosition = nil
+        consecutiveFailureSkips = 0
+        organicListeningSessionId = UUID().uuidString
+        QueuePersistence.delete()
+        // A save already in flight must not resurrect the file.
+        let previousWrite = persistWriteTask
+        persistWriteTask = Task.detached(priority: .utility) {
+            await previousWrite?.value
+            QueuePersistence.delete()
+        }
+        publisher.clear()
+        NowPlayingShared.clearPendingCommands()
+        #if os(iOS)
+        WatchControlHandler.shared.trackDidChange(nil)
+        #endif
     }
 
     // MARK: - Private
 
     private func handleTrackEnd() {
-        Task { @MainActor in
-            finalizeCurrentPlayback(action: "complete", forceComplete: true)
-            // Honour end-of-track sleep timer before advancing
-            if sleepTimerEndOfTrack {
-                sleepTimerEndOfTrack = false
-                audio.pauseAll()
-                return
-            }
-            if isMyVibeActive || isAutoMixActive {
+        finalizeCurrentPlayback(action: "complete", forceComplete: true)
+        // Honour end-of-track sleep timer before advancing
+        if sleepTimerEndOfTrack {
+            sleepTimerEndOfTrack = false
+            audio.pauseAll()
+            updateCrossfadeNext()
+            publisher.endActivity(dismissAfter: 60)
+            return
+        }
+        if repeatMode == .track {
+            restartCurrentTrack()
+            return
+        }
+        if isMyVibeActive || isAutoMixActive {
+            Task { @MainActor in
                 await extendDynamicStationIfNeeded(minimumUpcoming: 6)
+                skipNext()
             }
-            skipNext()
+            return
+        }
+        skipNext()
+    }
+
+    /// End of the queue: stop, rewind the last track so Play works again, and
+    /// let the Live Activity go.
+    private func handleQueueFinished() {
+        audio.pause()
+        audio.restartCurrentTrack()
+        publisher.endActivity(dismissAfter: 60)
+        schedulePersist()
+    }
+
+    /// Shows `queue[queueIndex]` as the current track without playing it.
+    private func parkOnCurrentIndex() {
+        guard let track = queue[safe: queueIndex].map({ api.normalizedTrack($0) }) else { return }
+        audio.stop()
+        currentTrack = track
+        restoredPosition = 0
+        audio.presentRestoredPosition(0, duration: track.duration ?? 0)
+        audio.updateNowPlayingInfo(track: track)
+        publishNowPlaying(force: true)
+        #if os(iOS)
+        WatchControlHandler.shared.trackDidChange(track)
+        #endif
+    }
+
+    private func stopAndClearNowPlaying() {
+        audio.stop()
+        audio.clearNowPlayingInfo()
+        currentTrack = nil
+        queueIndex = 0
+        restoredPosition = nil
+        publisher.clear()
+        #if os(iOS)
+        WatchControlHandler.shared.trackDidChange(nil)
+        #endif
+    }
+
+    private func handlePlaybackTick(_ position: TimeInterval) {
+        recordPlaybackProgress(position)
+        #if os(iOS)
+        WatchControlHandler.shared.playbackTimeDidChange(position, duration: resolvedDuration, isPlaying: audio.isPlaying)
+        #endif
+        let bucket = Int(position / 10)
+        if bucket != lastPersistedPositionBucket {
+            lastPersistedPositionBucket = bucket
+            schedulePersist()
+        }
+        let now = Date()
+        if now.timeIntervalSince(lastMailboxCheck) >= 5 {
+            lastMailboxCheck = now
+            NowPlayingCommandRouter.drainMailbox()
+        }
+    }
+
+    private func handlePlaybackStateChange(_ state: PlaybackState) {
+        switch state {
+        case .playing:
+            consecutiveFailureSkips = 0
+        case .paused, .idle:
+            schedulePersist()
+        case .loading, .buffering, .failed:
+            break
+        }
+        publishNowPlaying()
+    }
+
+    private func handlePlaybackFailure() {
+        finalizeCurrentPlayback(action: "pause")
+        publishNowPlaying(force: true)
+        let hasNext = queueIndex + 1 < queue.count
+            || (repeatMode == .queue && queue.count > 1)
+            || isMyVibeActive || isAutoMixActive
+        guard hasNext, consecutiveFailureSkips < Self.maxConsecutiveFailureSkips else { return }
+        consecutiveFailureSkips += 1
+        let failedTrackID = currentTrack?.id
+        failureSkipTask?.cancel()
+        failureSkipTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard let self, !Task.isCancelled, self.currentTrack?.id == failedTrackID,
+                  case .failed = self.audio.playbackState else { return }
+            self.skipNext()
+        }
+    }
+
+    // MARK: - Queue persistence
+
+    private func schedulePersist() {
+        persistTask?.cancel()
+        persistTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard let self, !Task.isCancelled else { return }
+            self.persistTask = nil
+            self.writePersistedQueue(synchronously: false)
+        }
+    }
+
+    /// Immediate save (backgrounding / termination).
+    private func flushPersistence() {
+        persistTask?.cancel()
+        persistTask = nil
+        writePersistedQueue(synchronously: true)
+    }
+
+    @ObservationIgnored private var persistWriteTask: Task<Void, Never>?
+
+    private func writePersistedQueue(synchronously: Bool) {
+        guard let snapshot = makePersistedQueue() else {
+            QueuePersistence.delete()
+            return
+        }
+        if synchronously {
+            QueuePersistence.save(snapshot)
+            return
+        }
+        let previous = persistWriteTask
+        persistWriteTask = Task.detached(priority: .utility) {
+            await previous?.value
+            QueuePersistence.save(snapshot)
+        }
+    }
+
+    private func makePersistedQueue() -> PersistedQueue? {
+        guard SettingsStore.shared.isLoggedIn, queue.indices.contains(queueIndex) else { return nil }
+        // Long station queues are trimmed around the current position.
+        let lower = max(0, queueIndex - 100)
+        let upper = min(queue.count, queueIndex + 400)
+        let window = Array(queue[lower..<upper])
+        let position = restoredPosition ?? audio.currentTime
+        return PersistedQueue(
+            queue: window,
+            originalQueue: isShuffled ? Array(originalQueue.prefix(600)) : window,
+            queueIndex: queueIndex - lower,
+            position: position.isFinite ? max(0, position) : 0,
+            isShuffled: isShuffled,
+            repeatMode: repeatMode.rawValue,
+            surface: queueSurface,
+            savedAt: Date().timeIntervalSince1970
+        )
+    }
+
+    private func restoreQueueIfAvailable() {
+        guard SettingsStore.shared.isLoggedIn,
+              let saved = QueuePersistence.load(),
+              saved.queue.indices.contains(saved.queueIndex) else { return }
+        queue = saved.queue.map { api.normalizedTrack($0) }
+        let base = saved.originalQueue.isEmpty ? saved.queue : saved.originalQueue
+        originalQueue = base.map { api.normalizedTrack($0) }
+        queueIndex = saved.queueIndex
+        isShuffled = saved.isShuffled
+        repeatMode = RepeatMode(rawValue: saved.repeatMode) ?? .off
+        queueSurface = saved.surface
+        let track = queue[queueIndex]
+        currentTrack = track
+        let position = saved.position.isFinite ? max(0, saved.position) : 0
+        restoredPosition = position
+        lastPersistedPositionBucket = Int(position / 10)
+        audio.presentRestoredPosition(position, duration: track.duration ?? 0)
+        updateCrossfadeNext()
+    }
+
+    private func observeLifecycle() {
+        #if canImport(UIKit)
+        let names: [Notification.Name] = [
+            UIApplication.didEnterBackgroundNotification,
+            UIApplication.willTerminateNotification,
+        ]
+        #elseif canImport(AppKit)
+        let names: [Notification.Name] = [
+            NSApplication.didResignActiveNotification,
+            NSApplication.willTerminateNotification,
+        ]
+        #else
+        let names: [Notification.Name] = []
+        #endif
+        for name in names {
+            let token = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                // Synchronous on purpose: termination won't wait for a Task hop.
+                MainActor.assumeIsolated {
+                    PlayerStore.shared.flushPersistence()
+                }
+            }
+            lifecycleObservers.append(token)
         }
     }
 
@@ -654,7 +1106,7 @@ final class PlayerStore {
                 }
             }
             stationSkipStreak = 0
-            updateCrossfadeNext()
+            queueDidChange()
         } catch {
             stationLastReactionRefreshAt = nil
         }
@@ -724,12 +1176,14 @@ final class PlayerStore {
                 }
                 queue.append(contentsOf: freshTracks)
                 originalQueue.append(contentsOf: freshTracks)
+                queueDidChange()
             }
         } catch {
             if queue.isEmpty {
                 let fallbackTracks = stationSeedTracks.filter { rememberStationTrack($0) }
                 queue.append(contentsOf: fallbackTracks)
                 originalQueue.append(contentsOf: fallbackTracks)
+                queueDidChange()
             }
         }
     }
@@ -850,52 +1304,34 @@ final class PlayerStore {
         logPlaybackSnapshot(context: context, action: action, eventId: context.eventId)
     }
 
-    /// Write the current track to the App Group so the widget/watch can render
-    /// it without a network round-trip.
-    private func publishNowPlayingSnapshot(track: Track) {
-        NowPlayingShared.save(NowPlayingSnapshot(
-            trackId: track.id,
-            title: track.title,
-            artist: track.artist,
-            artworkURL: track.artwork,
-            isPlaying: audio.isPlaying,
-            updatedAt: Int(Date().timeIntervalSince1970)
-        ))
-        pushSnapshotToWatch()
-        #if os(iOS)
-        NowPlayingActivityController.shared.update(
-            trackId: track.id,
-            title: track.title,
-            artist: track.artist,
-            artworkURL: track.artwork,
-            isPlaying: audio.isPlaying,
-            progress: audio.duration > 0 ? audio.currentTime / audio.duration : 0
-        )
-        #endif
+    // MARK: - System surfaces (widget, Live Activity, watch)
+
+    private var resolvedDuration: TimeInterval {
+        audio.duration > 0 ? audio.duration : (currentTrack?.duration ?? 0)
     }
 
-    private func pushSnapshotToWatch() {
-        #if os(iOS)
-        guard let snapshot = NowPlayingShared.load() else { return }
-        let liked = LibraryStore.shared.likedTrackIds.contains(snapshot.trackId)
-        WatchControlHandler.shared.pushSnapshotToWatch(snapshot, liked: liked)
-        #endif
-    }
-
-    private func pushProgressToWatch(_ position: TimeInterval) {
-        #if os(iOS)
-        guard let track = currentTrack, let duration = track.duration, duration > 0 else { return }
-        let fraction = position / duration
-        // Throttle to ~1Hz to keep the radio quiet.
-        if Int(fraction * 100) != Int(lastWatchProgressPercent) {
-            lastWatchProgressPercent = fraction * 100
-            WatchControlHandler.shared.pushProgressToWatch(fraction)
-            NowPlayingActivityController.shared.updateProgress(fraction)
+    /// Pushes the settled playback state to the widget, Live Activity and
+    /// watch. Cheap to call often: the publisher de-duplicates and throttles.
+    private func publishNowPlaying(force: Bool = false) {
+        guard let track = currentTrack else {
+            publisher.clear()
+            return
         }
-        #endif
+        publisher.publish(
+            track: track,
+            isPlaying: isPlaybackIntended,
+            position: restoredPosition ?? audio.currentTime,
+            duration: resolvedDuration,
+            force: force
+        )
     }
 
-    private var lastWatchProgressPercent: Double = -1
+    /// Re-sends the current state to every surface (e.g. when the watch app
+    /// becomes reachable).
+    func republishNowPlaying() {
+        publishNowPlaying(force: true)
+    }
+
 
     #if DEBUG
     func seedDebugNowPlayingIfNeeded(autoplay: Bool = true) {
@@ -919,8 +1355,11 @@ final class PlayerStore {
             playTrack(sampleTrack)
         } else {
             currentTrack = sampleTrack
+            restoredPosition = 0
             audio.updateNowPlayingInfo(track: sampleTrack)
+            publishNowPlaying(force: true)
         }
+        queueDidChange()
     }
     #endif
 }

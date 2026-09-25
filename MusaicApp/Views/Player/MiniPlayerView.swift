@@ -7,6 +7,9 @@ struct MiniPlayerView: View {
     private let player = PlayerStore.shared
     private let audio = AudioPlayer.shared
 
+    /// Pause glyph as soon as playback is requested (covers loading).
+    private var showsPause: Bool { player.isPlaybackIntended }
+
     var body: some View {
         if let track = player.currentTrack {
             surface {
@@ -35,17 +38,17 @@ struct MiniPlayerView: View {
                         }
 
                         HStack(spacing: 8) {
-                             controlButton(
-                                 systemName: audio.isPlaying ? "pause.fill" : "play.fill",
-                                 prominent: true,
-                                 accessibilityLabel: audio.isPlaying ? String(localized: "Pause") : String(localized: "Play")
-                             ) {
+                            controlButton(
+                                systemName: showsPause ? "pause.fill" : "play.fill",
+                                prominent: true,
+                                accessibilityLabel: showsPause ? String(localized: "Pause") : String(localized: "Play")
+                            ) {
                                 #if os(iOS)
                                 UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
                                 #endif
                                 player.togglePlayPause()
                             }
-                             controlButton(systemName: "forward.fill", accessibilityLabel: String(localized: "Next Track")) {
+                            controlButton(systemName: "forward.fill", accessibilityLabel: String(localized: "Next Track")) {
                                 #if os(iOS)
                                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                 #endif
@@ -53,34 +56,10 @@ struct MiniPlayerView: View {
                             }
                         }
                         .fixedSize()
-                        .sensoryFeedback(.impact(weight: .light), trigger: audio.isPlaying)
+                        .sensoryFeedback(.impact(weight: .light), trigger: showsPause)
                     }
 
-                    GeometryReader { geo in
-                        let safeProgress = max(0, min(1, audio.progress.isFinite ? audio.progress : 0))
-                        let trackWidth = max(0, geo.size.width)
-                        ZStack(alignment: .leading) {
-                            Capsule()
-                                .fill(Color.white.opacity(0.12))
-                                .frame(height: 3)
-
-                            Capsule()
-                                .fill(
-                                    LinearGradient(
-                                        colors: [
-                                            Color.accentStrong.opacity(0.96),
-                                            Color.textPrimary.opacity(0.98),
-                                        ],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
-                                    )
-                                )
-                                .frame(width: max(0, min(trackWidth, trackWidth * safeProgress)), height: 3)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .clipped()
-                    }
-                    .frame(height: 3)
+                    MiniPlayerProgressBar()
                 }
                 .frame(maxWidth: .infinity, minHeight: 60, alignment: .center)
             }
@@ -161,5 +140,39 @@ struct MiniPlayerView: View {
                         .glassCard(cornerRadius: 16, tint: .white, intensity: 0.06)
                 }
             }
+    }
+}
+
+/// Thin progress line; the only mini-player piece that follows the position.
+private struct MiniPlayerProgressBar: View {
+    private let audio = AudioPlayer.shared
+
+    var body: some View {
+        GeometryReader { geo in
+            let safeProgress = max(0, min(1, audio.progress.isFinite ? audio.progress : 0))
+            let trackWidth = max(0, geo.size.width)
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.white.opacity(0.12))
+                    .frame(height: 3)
+
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.accentStrong.opacity(0.96),
+                                Color.textPrimary.opacity(0.98),
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: max(0, min(trackWidth, trackWidth * safeProgress)), height: 3)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .clipped()
+        }
+        .frame(height: 3)
+        .accessibilityHidden(true)
     }
 }

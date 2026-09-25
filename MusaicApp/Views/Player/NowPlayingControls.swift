@@ -10,8 +10,6 @@ struct NowPlayingTopBarView: View {
     private let audio = AudioPlayer.shared
     private let player = PlayerStore.shared
 
-    @State private var sleepTick = Date()
-
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
@@ -46,21 +44,28 @@ struct NowPlayingTopBarView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .tracking(3)
                     .foregroundStyle(Color.textSecondary)
-                Text(trackStateLine)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(audio.isBuffering ? Color.accentStrong : Color.textMuted)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .contentTransition(.numericText())
+                Group {
+                    if player.sleepTimerDeadline != nil {
+                        // Ticks only while a countdown runs; TimelineView pauses
+                        // itself when the screen isn't visible.
+                        TimelineView(.periodic(from: .now, by: 1)) { _ in
+                            stateLineText
+                        }
+                    } else {
+                        stateLineText
+                    }
+                }
             }
         }
-        .task(id: player.sleepTimerActive) {
-            guard player.sleepTimerActive else { return }
-            while !Task.isCancelled, player.sleepTimerActive {
-                sleepTick = Date()
-                try? await Task.sleep(for: .seconds(1))
-            }
-        }
+    }
+
+    private var stateLineText: some View {
+        Text(trackStateLine)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(audio.isBuffering ? Color.accentStrong : Color.textMuted)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .contentTransition(.numericText())
     }
 
     private var sleepIcon: String {
@@ -68,7 +73,6 @@ struct NowPlayingTopBarView: View {
     }
 
     private var trackStateLine: String {
-        _ = sleepTick
         let source = player.currentTrack?.source.displayTag ?? "MUSAIC"
         let resolvedDuration = audio.duration > 0 ? audio.duration : (player.currentTrack?.duration ?? 0)
         let time = resolvedDuration > 0 ? formatDuration(resolvedDuration) : "--:--"
@@ -90,6 +94,7 @@ struct NowPlayingArtworkView: View {
     let side: CGFloat
 
     private let audio = AudioPlayer.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let scale: CGFloat = audio.isPlaying ? 1.0 : 0.88
@@ -103,7 +108,7 @@ struct NowPlayingArtworkView: View {
             }
             .shadow(color: .black.opacity(audio.isPlaying ? 0.38 : 0.18), radius: audio.isPlaying ? 36 : 18, y: audio.isPlaying ? 20 : 10)
             .scaleEffect(scale)
-            .animation(.spring(response: 0.5, dampingFraction: 0.72), value: audio.isPlaying)
+            .animation(reduceMotion ? nil : .spring(response: 0.5, dampingFraction: 0.72), value: audio.isPlaying)
     }
 }
 
