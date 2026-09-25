@@ -121,6 +121,22 @@ jobs:
           -configuration ${{ matrix.configuration }}
           -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
 
+  app-tests-macos:
+    name: Swift Unit Tests
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        working-directory: MusaicApp
+        run: xcodegen generate
+      - name: Run unit tests
+        working-directory: MusaicApp
+        run: >-
+          xcodebuild test -project Musaic.xcodeproj -scheme MusaicMac -configuration Debug
+          -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+
   app-build-ios:
     name: iOS App Build
     runs-on: macos-26

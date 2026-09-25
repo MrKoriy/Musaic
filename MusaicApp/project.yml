@@ -107,6 +107,9 @@ targets:
         CODE_SIGN_STYLE: Automatic
         PRODUCT_BUNDLE_IDENTIFIER: com.leonid.musaic.mac.dev
         ENABLE_APP_SANDBOX: NO
+    scheme:
+      testTargets:
+        - MusaicTests
     postBuildScripts:
       - name: Patch Liquid Glass app icon (macOS 26)
         script: |
@@ -177,3 +180,19 @@ targets:
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_IDENTITY: "Apple Development"
         TARGETED_DEVICE_FAMILY: 4
+
+  # Swift Testing unit tests, hosted by the macOS app (`@testable import MusaicMac`).
+  MusaicTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests
+    dependencies:
+      - target: MusaicMac
+    settings:
+      base:
+        SWIFT_STRICT_CONCURRENCY: complete
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.leonid.musaic.tests
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/MusaicMac.app/Contents/MacOS/MusaicMac
+        BUNDLE_LOADER: $(TEST_HOST)

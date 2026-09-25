@@ -10,6 +10,7 @@ clients (`MusaicApp/`: iOS 17+, macOS 15+, watchOS 9+, widget + Live Activity).
 cd server && bun run typecheck && bun test src/__tests__ && bun run lint
 cd server/sidecar && python3 -m unittest discover -s tests      # sidecar changes
 cd MusaicApp && xcodegen generate && xcodebuild -scheme Musaic -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
+cd MusaicApp && xcodebuild test -scheme MusaicMac -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO   # Swift unit tests (Tests/)
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same plus macOS Debug/Release, watchOS,
@@ -33,8 +34,9 @@ APIs only behind `#if compiler(>=6.3)` / `if #available(iOS 27, macOS 27, *)`.
 
 - The Xcode project is generated: edit `MusaicApp/project.yml`, never
   `Musaic.xcodeproj` (it is not committed). New files under `Models/`,
-  `Services/`, `Stores/`, `Views/`, `Widgets/`, `WatchApp/` are picked up on the
-  next `xcodegen generate`.
+  `Services/`, `Stores/`, `Views/`, `Widgets/`, `WatchApp/`, `Tests/` are picked
+  up on the next `xcodegen generate`. Unit tests use Swift Testing and
+  `@testable import MusaicMac`.
 - Swift 6 with `SWIFT_STRICT_CONCURRENCY=complete` on every target.
 - API contract: don't break an endpoint without updating
   `MusaicApp/Services/APIService.swift` in the same branch.
