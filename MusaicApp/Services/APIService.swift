@@ -1315,19 +1315,24 @@ enum APIError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidURL(let endpoint):
-            return "Invalid request path: \(Self.safeEndpoint(endpoint))"
+            let path = Self.safeEndpoint(endpoint)
+            return String(localized: "Invalid request path: \(path)")
         case .invalidResponse(let endpoint):
-            return "Invalid server response from \(Self.safeEndpoint(endpoint))"
+            let path = Self.safeEndpoint(endpoint)
+            return String(localized: "Invalid server response from \(path)")
         case .unauthorized(let endpoint):
-            return "Authentication required for \(Self.safeEndpoint(endpoint))."
+            let path = Self.safeEndpoint(endpoint)
+            return String(localized: "Authentication required for \(path).")
         case .httpStatus(let statusCode, let endpoint, let message):
+            let path = Self.safeEndpoint(endpoint)
             let suffix = message.map { ": \($0)" } ?? ""
-            return "HTTP \(statusCode) for \(Self.safeEndpoint(endpoint))\(suffix)"
+            return String(localized: "HTTP \(statusCode) for \(path)\(suffix)")
         case .network(_, let endpoint):
             return String(localized: "Can't reach the server. Check your connection and try again.")
                 + " (\(Self.safeEndpoint(endpoint)))"
         case .requestFailed(let path):
-            return "Request failed: \(Self.safeEndpoint(path))"
+            let safePath = Self.safeEndpoint(path)
+            return String(localized: "Request failed: \(safePath)")
         case .unsupportedImage:
             return String(localized: "This image format isn't supported.")
         }

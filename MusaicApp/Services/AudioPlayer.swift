@@ -295,7 +295,7 @@ final class AudioPlayer {
         let normalizedURL = Self.normalizedPlaybackURLString(url) ?? url
 
         guard let audioURL = URL(string: normalizedURL) else {
-            registerPlaybackFailure(nil, fallback: "Invalid audio URL.")
+            registerPlaybackFailure(nil, fallback: String(localized: "Invalid audio URL."))
             return
         }
 
@@ -616,7 +616,7 @@ final class AudioPlayer {
                         self.updatePlaybackState(for: player, item: item)
                     }
                 case .failed:
-                    self.registerPlaybackFailure(item.error ?? player.currentItem?.error, fallback: "Couldn't load the stream.")
+                    self.registerPlaybackFailure(item.error ?? player.currentItem?.error, fallback: String(localized: "Couldn't load the stream."))
                 case .unknown:
                     if self.wantsPlayback { self.transition(to: .loading) }
                 @unknown default:
@@ -678,7 +678,7 @@ final class AudioPlayer {
             let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
             Task { @MainActor [weak self] in
                 guard let self, self.isCurrentItem(item) else { return }
-                self.registerPlaybackFailure(error, fallback: "Playback stopped unexpectedly.")
+                self.registerPlaybackFailure(error, fallback: String(localized: "Playback stopped unexpectedly."))
             }
         }
 
@@ -753,7 +753,7 @@ final class AudioPlayer {
         guard stallRetryTask == nil else { return }
 
         guard stallRetryCount < maxStallRetries else {
-            registerPlaybackFailure(item.error, fallback: "Playback stalled after two retries.")
+            registerPlaybackFailure(item.error, fallback: String(localized: "Playback stalled after two retries."))
             return
         }
 
@@ -994,7 +994,7 @@ final class AudioPlayer {
             updatePlaybackState(for: fadePlayer, item: item)
             syncNowPlayingProgressIfNeeded(force: true)
         } else {
-            registerPlaybackFailure(nil, fallback: "Could not promote the next track.")
+            registerPlaybackFailure(nil, fallback: String(localized: "Could not promote the next track."))
         }
     }
 
@@ -1037,9 +1037,9 @@ final class AudioPlayer {
             if nsError.domain == NSURLErrorDomain {
                 switch nsError.code {
                 case NSURLErrorNotConnectedToInternet, NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost:
-                    message = "Server unreachable."
+                    message = String(localized: "Server unreachable.")
                 case NSURLErrorTimedOut:
-                    message = "Stream timed out."
+                    message = String(localized: "Stream timed out.")
                 default:
                     break
                 }

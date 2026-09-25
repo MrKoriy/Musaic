@@ -29,14 +29,14 @@ final class ProfileAuthState {
                 let response = try await api.vkOAuthURL()
                 guard let url = URL(string: response.url) else {
                     vkLoggingIn = false
-                    vkError = "Server returned an invalid VK login URL."
+                    vkError = String(localized: "Server returned an invalid VK login URL.")
                     return
                 }
                 vkAuthURL = url
                 showVKAuth = true
             } catch {
                 vkLoggingIn = false
-                vkError = "Could not open VK login. Check the server connection."
+                vkError = String(localized: "Could not open VK login. Check the server connection.")
             }
         }
     }
@@ -54,7 +54,7 @@ final class ProfileAuthState {
                 settings.setVkAuth(authenticated: me.authenticated, username: me.username)
             } catch {
                 settings.clearVkAuth()
-                vkError = "This VK login cannot access music. Reconnect with a working VK audio client on the server."
+                vkError = String(localized: "This VK login cannot access music. Reconnect with a working VK audio client on the server.")
             }
         }
     }
@@ -99,12 +99,12 @@ final class ProfileAuthState {
                 settings.setYandexAuth(authenticated: true, username: res.login)
                 yandexToken = ""
                 if res.plus == false {
-                    yandexPlusWarning = res.warning ?? "No active Yandex Plus — only 30s previews will play."
+                    yandexPlusWarning = res.warning ?? String(localized: "No active Yandex Plus — only 30s previews will play.")
                 }
                 importYandexLikes()
             } catch {
                 settings.clearYandexAuth()
-                yandexError = "Could not connect Yandex. Check the token and that the server can reach Yandex."
+                yandexError = String(localized: "Could not connect Yandex. Check the token and that the server can reach Yandex.")
             }
         }
     }
@@ -129,14 +129,14 @@ final class ProfileAuthState {
                 let result = try await api.importYandexLikes()
                 yandexImporting = false
                 yandexImportMessage = result.imported > 0
-                    ? "Added \(result.imported) likes"
-                    : "Likes are up to date"
+                    ? String(localized: "Added \(result.imported) likes")
+                    : String(localized: "Likes are up to date")
                 // Pull the merged server likes into the library so the imported
                 // tracks appear without an app restart.
                 await LibraryStore.shared.ensureSynced(force: true)
             } catch {
                 yandexImporting = false
-                yandexImportMessage = "Could not sync likes"
+                yandexImportMessage = String(localized: "Could not sync likes")
             }
         }
     }
@@ -159,11 +159,11 @@ struct ProfileVKSection: View {
     private let settings = SettingsStore.shared
 
     var body: some View {
-        ProfileSettingsCard(title: "VK Music") {
+        ProfileSettingsCard(title: String(localized: "VK Music")) {
             if settings.vkAuthenticated {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(settings.vkUsername.isEmpty ? "VK User" : settings.vkUsername)
+                        Text(settings.vkUsername.isEmpty ? String(localized: "VK User") : settings.vkUsername)
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(Color.textPrimary)
                         Text("Token is stored on the server.")
@@ -228,11 +228,11 @@ struct ProfileYandexSection: View {
     private let settings = SettingsStore.shared
 
     var body: some View {
-        ProfileSettingsCard(title: "Yandex Music") {
+        ProfileSettingsCard(title: String(localized: "Yandex Music")) {
             if settings.yandexAuthenticated {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(settings.yandexUsername.isEmpty ? "Yandex account" : settings.yandexUsername)
+                        Text(settings.yandexUsername.isEmpty ? String(localized: "Yandex account") : settings.yandexUsername)
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(Color.textPrimary)
                         Text("Token is stored encrypted on the server.")
@@ -293,10 +293,11 @@ struct ProfileYandexSection: View {
                         .padding(.vertical, 14)
                         .glassCard(cornerRadius: 16, intensity: 0.08)
                     if let url = URL(string: auth.yandexVerificationURL) {
+                        let host = auth.yandexVerificationURL.replacingOccurrences(of: "https://", with: "")
                         Link(destination: url) {
                             HStack(spacing: 10) {
                                 Image(systemName: "safari")
-                                Text("Open \(auth.yandexVerificationURL.replacingOccurrences(of: "https://", with: ""))")
+                                Text("Open \(host)")
                             }
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(Color.bgPrimary)

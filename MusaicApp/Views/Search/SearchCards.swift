@@ -57,10 +57,10 @@ struct ArtistSearchCard: View {
 
 private func sourceBadge(_ source: String) -> String {
     switch source {
-    case "local": return "LOCAL"
+    case "local": return String(localized: "LOCAL")
     case "vk": return "VK"
     case "soundcloud": return "SC"
-    case "mixed": return "ALL"
+    case "mixed": return String(localized: "ALL")
     default: return source.uppercased()
     }
 }

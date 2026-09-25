@@ -20,7 +20,7 @@ struct SearchMoodsView: View {
                         VStack(alignment: .leading, spacing: 18) {
                             Image(systemName: moodIcon(mood))
                                 .font(.system(size: 22, weight: .semibold))
-                            Text(mood)
+                            Text(moodDisplayName(mood))
                                 .font(.system(size: 15, weight: .semibold))
                             Spacer(minLength: 0)
                         }
@@ -49,5 +49,21 @@ struct SearchMoodsView: View {
         case "Sleep": return "moon.fill"
         default: return "music.note"
         }
+    }
+}
+
+/// Mood names double as API values, so only the rendered label is localized.
+func moodDisplayName(_ mood: String) -> String {
+    switch mood {
+    case "Energise": return String(localized: "Energise")
+    case "Feel good": return String(localized: "Feel good")
+    case "Relax": return String(localized: "Relax")
+    case "Workout": return String(localized: "Workout")
+    case "Sad": return String(localized: "Sad")
+    case "Party": return String(localized: "Party")
+    case "Focus": return String(localized: "Focus")
+    case "Romance": return String(localized: "Romance")
+    case "Sleep": return String(localized: "Sleep")
+    default: return mood
     }
 }

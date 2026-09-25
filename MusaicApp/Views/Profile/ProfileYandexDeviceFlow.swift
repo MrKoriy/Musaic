@@ -17,7 +17,7 @@ extension ProfileAuthState {
             } catch {
                 yandexConnecting = false
                 yandexUserCode = ""
-                yandexError = "Could not start Yandex authorization. Check the server connection."
+                yandexError = String(localized: "Could not start Yandex authorization. Check the server connection.")
                 return
             }
             // Light status polling — server holds the real state, so a paused/
@@ -30,7 +30,7 @@ extension ProfileAuthState {
             if !yandexUserCode.isEmpty {
                 yandexConnecting = false
                 yandexUserCode = ""
-                yandexError = "The code expired. Tap Connect to get a new one."
+                yandexError = String(localized: "The code expired. Tap Connect to get a new one.")
             }
         }
     }
@@ -45,19 +45,19 @@ extension ProfileAuthState {
             yandexConnecting = false
             yandexUserCode = ""
             if status.plus == false {
-                yandexPlusWarning = "Connected, but no active Yandex Plus — only 30s previews will play."
+                yandexPlusWarning = String(localized: "Connected, but no active Yandex Plus — only 30s previews will play.")
             }
             importYandexLikes()
             return true
         case "expired":
             yandexConnecting = false
             yandexUserCode = ""
-            yandexError = "The code expired. Tap Connect to get a new one."
+            yandexError = String(localized: "The code expired. Tap Connect to get a new one.")
             return true
         case "error":
             yandexConnecting = false
             yandexUserCode = ""
-            yandexError = "Yandex rejected the authorization. Tap Connect to try again."
+            yandexError = String(localized: "Yandex rejected the authorization. Tap Connect to try again.")
             return true
         default:
             return false // pending

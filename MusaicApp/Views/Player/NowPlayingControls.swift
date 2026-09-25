@@ -83,7 +83,8 @@ struct NowPlayingTopBarView: View {
         if remaining > 0 {
             let mins = Int(remaining) / 60
             let secs = Int(remaining) % 60
-            return String(localized: "\(source) • \(time) • SLEEP \(mins):\(String(format: "%02d", secs))")
+            let countdown = String(format: "%d:%02d", mins, secs)
+            return String(localized: "\(source) • \(time) • SLEEP \(countdown)")
         }
         return String(localized: "\(source) • \(time)")
     }

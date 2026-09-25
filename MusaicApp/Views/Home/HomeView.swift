@@ -61,7 +61,7 @@ struct HomeView: View {
 
                         ChipSelector(
                             options: moods,
-                            label: { $0 },
+                            label: { moodDisplayName($0) },
                             isSelected: { selectedMood == $0 },
                             onSelect: selectMood,
                             style: .mood
@@ -189,7 +189,8 @@ struct HomeView: View {
 
     private var heroSubtitle: String {
         if let selectedMood {
-            return String(localized: "Recommendations shifted to \(selectedMood.lowercased()) mood.")
+            let mood = moodDisplayName(selectedMood).lowercased()
+            return String(localized: "Recommendations shifted to \(mood) mood.")
         }
         return String(localized: "Your infinite wave from liked tracks and quick filters.")
     }
@@ -502,7 +503,7 @@ struct HomeView: View {
         } else if !tracks.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 LiquidSectionHeader(
-                    title: selectedMood ?? String(localized: "For You"),
+                    title: selectedMood.map(moodDisplayName) ?? String(localized: "For You"),
                     subtitle: selectedMood == nil
                         ? String(localized: "Recommendations pulled from your library and history.")
                         : String(localized: "Mood-weighted picks.")

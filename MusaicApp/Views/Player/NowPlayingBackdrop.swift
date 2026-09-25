@@ -216,7 +216,8 @@ struct SleepTimerSheet: View {
         if remaining > 0 {
             let mins = Int(remaining) / 60
             let secs = Int(remaining) % 60
-             return String(localized: "Playback will fade out in \(mins):\(String(format: "%02d", secs)).")
+             let countdown = String(format: "%d:%02d", mins, secs)
+             return String(localized: "Playback will fade out in \(countdown).")
         }
          return String(localized: "Pick how long you'd like Musaic to keep playing.")
     }

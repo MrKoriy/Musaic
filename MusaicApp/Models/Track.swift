@@ -28,12 +28,12 @@ struct Track: Identifiable, Codable, Hashable {
 
         var displayTag: String {
             switch self {
-            case .local: return "LOCAL"
+            case .local: return String(localized: "LOCAL")
             case .vk: return "VK"
             case .soundcloud: return "SC"
             case .yandex: return "YANDEX"
             case .youtube: return "YT"
-            case .unknown: return "OTHER"
+            case .unknown: return String(localized: "OTHER")
             }
         }
     }
@@ -78,8 +78,8 @@ struct Track: Identifiable, Codable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
         id = try container.decode(String.self, forKey: .id)
-        title = try container.decodeIfPresent(String.self, forKey: .title) ?? "Unknown Title"
-        artist = try container.decodeIfPresent(String.self, forKey: .artist) ?? "Unknown Artist"
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? String(localized: "Unknown Title")
+        artist = try container.decodeIfPresent(String.self, forKey: .artist) ?? String(localized: "Unknown Artist")
         album = try container.decodeIfPresent(String.self, forKey: .album)
         canonicalFamilyId = try container.decodeIfPresent(String.self, forKey: .canonicalFamilyId)
         artwork = try container.decodeIfPresent(String.self, forKey: .artwork)
@@ -166,12 +166,12 @@ struct SearchArtist: Identifiable, Codable, Hashable {
 
     var sourceLabel: String {
         switch source {
-        case "local": return "Local"
+        case "local": return String(localized: "Local")
         case "vk": return "VK"
         case "soundcloud": return "SoundCloud"
-        case "yandex": return "Yandex"
+        case "yandex": return String(localized: "Yandex")
         case "youtube": return "YouTube"
-        case "mixed": return "All sources"
+        case "mixed": return String(localized: "All sources")
         default: return source.capitalized
         }
     }
@@ -183,13 +183,13 @@ func normalizedArtistText(_ value: String?) -> String {
 
 func artistSourceDisplayName(_ source: String?) -> String {
     switch source ?? "all" {
-    case "all": return "All"
-    case "local": return "Local"
+    case "all": return String(localized: "All")
+    case "local": return String(localized: "Local")
     case "vk": return "VK"
     case "soundcloud": return "SoundCloud"
-    case "yandex": return "Yandex"
+    case "yandex": return String(localized: "Yandex")
     case "youtube": return "YouTube"
-    case "mixed": return "Mixed"
+    case "mixed": return String(localized: "Mixed")
     default: return (source ?? "All").capitalized
     }
 }

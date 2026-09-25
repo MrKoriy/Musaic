@@ -239,13 +239,13 @@ struct ProfileStatsSection: View {
     }
 
     private func formatListeningTime(_ secs: Int) -> String {
-        if secs < 60 { return "\(secs)s" }
+        if secs < 60 { return String(localized: "\(secs)s") }
         let mins = secs / 60
-        if mins < 60 { return "\(mins)m" }
+        if mins < 60 { return String(localized: "\(mins)m") }
         let hours = mins / 60
         let remainingMins = mins % 60
-        if remainingMins == 0 { return "\(hours)h" }
-        return "\(hours)h \(remainingMins)m"
+        if remainingMins == 0 { return String(localized: "\(hours)h") }
+        return String(localized: "\(hours)h \(remainingMins)m")
     }
 
     private func loadStatsIfNeeded() async {

@@ -67,14 +67,14 @@ struct WatchNowPlayingView: View {
             progressBar(isPlaying: snapshot.isPlaying)
 
             HStack(spacing: 18) {
-                controlButton("backward.end.fill", label: "Previous track") {
+                controlButton("backward.end.fill", label: String(localized: "Previous track")) {
                     link.send(command: "previous")
                 }
-                controlButton(snapshot.isPlaying ? "pause.fill" : "play.fill", size: 24, label: snapshot.isPlaying ? "Pause" : "Play") {
+                controlButton(snapshot.isPlaying ? "pause.fill" : "play.fill", size: 24, label: snapshot.isPlaying ? String(localized: "Pause") : String(localized: "Play")) {
                     WKInterfaceDevice.current().play(.click)
                     link.send(command: snapshot.isPlaying ? "pause" : "play")
                 }
-                controlButton("forward.end.fill", label: "Next track") {
+                controlButton("forward.end.fill", label: String(localized: "Next track")) {
                     link.send(command: "next")
                 }
             }
@@ -163,7 +163,7 @@ struct WatchNowPlayingView: View {
         case .volume:
             return "\(Int((link.volume * 100).rounded()))%"
         case .scrub:
-            return pendingScrub.map { timeString($0 * link.duration) } ?? "Scrub"
+            return pendingScrub.map { timeString($0 * link.duration) } ?? String(localized: "Scrub")
         }
     }
 

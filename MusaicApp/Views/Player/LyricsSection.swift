@@ -41,8 +41,8 @@ struct LyricsSheet: View {
     private var effectiveOffset: Double { sourceOffset + userOffset }
 
     private var lyricsSourceLabel: String {
-        if !lines.isEmpty { return "Synced" }
-        if let raw = rawLrc, !raw.isEmpty { return "Plain text" }
+        if !lines.isEmpty { return String(localized: "Synced") }
+        if let raw = rawLrc, !raw.isEmpty { return String(localized: "Plain text") }
         return ""
     }
 
@@ -587,8 +587,9 @@ private struct LyricsOffsetControl: View {
 
     private static func format(_ value: Double) -> String {
         let rounded = (value * 100).rounded() / 100
-        if rounded == 0 { return "0.0 s" }
-        return String(format: "%+.2f s", rounded)
+        if rounded == 0 { return String(localized: "0.0 s") }
+        let signed = String(format: "%+.2f", rounded)
+        return String(localized: "\(signed) s")
     }
 }
 

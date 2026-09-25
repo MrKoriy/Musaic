@@ -307,7 +307,7 @@ struct ContentView: View {
                 }
                 .frame(width: 36, height: 36)
 
-                Text("Musaic")
+                Text(verbatim: "Musaic")
                     .font(.system(size: 20, weight: .bold, design: .rounded))
                     .foregroundStyle(Color.textPrimary)
             }
@@ -383,7 +383,7 @@ struct ContentView: View {
                     macSourceBadge("SC", active: settings.sourceSoundcloud)
                     macSourceBadge("YA", active: settings.sourceYandex)
                     macSourceBadge("YT", active: settings.sourceYoutube)
-                    macSourceBadge("LOCAL", active: true)
+                    macSourceBadge(String(localized: "LOCAL"), active: true)
                 }
             }
             .padding(12)
@@ -694,10 +694,10 @@ struct ContentView: View {
     }
 
     private var enabledSourcesLine: String {
-        var sources = ["Local"]
+        var sources = [String(localized: "Local")]
         if settings.sourceVK { sources.append("VK") }
         if settings.sourceSoundcloud { sources.append("SoundCloud") }
-        if settings.sourceYandex { sources.append("Yandex") }
+        if settings.sourceYandex { sources.append(String(localized: "Yandex")) }
         if settings.sourceYoutube { sources.append("YouTube") }
         return sources.joined(separator: " • ")
     }

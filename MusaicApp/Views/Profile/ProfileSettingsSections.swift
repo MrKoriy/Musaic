@@ -85,7 +85,7 @@ struct ProfileStatusSection: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     statusChip(title: String(localized: "Server"), state: connectionLabel, showsConnectionDot: true)
-                    statusChip(title: "Yandex", state: yandexState)
+                    statusChip(title: String(localized: "Yandex"), state: yandexState)
                     statusChip(title: "VK", state: vkState)
                     statusChip(title: String(localized: "Cache"), state: cacheSize)
                 }
@@ -161,7 +161,7 @@ struct ProfilePlaybackSection: View {
             }
             ProfileSettingRow(
                 title: String(localized: "Crossfade"),
-                value: crossfadeSeconds == 0 ? String(localized: "Off") : "\(crossfadeSeconds)s"
+                value: crossfadeSeconds == 0 ? String(localized: "Off") : String(localized: "\(crossfadeSeconds)s")
             ) {
                 let options = [0, 2, 5, 10]
                 let index = options.firstIndex(of: crossfadeSeconds) ?? 0
@@ -346,7 +346,7 @@ struct ProfileAboutSection: View {
     var body: some View {
         ProfileSettingsCard(title: String(localized: "About")) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Musaic")
+                Text(verbatim: "Musaic")
                     .font(.system(size: 18, weight: .bold, design: .rounded))
                     .foregroundStyle(Color.textPrimary)
                 Text(appVersionLabel)

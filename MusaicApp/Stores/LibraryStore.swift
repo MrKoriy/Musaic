@@ -379,7 +379,7 @@ final class LibraryStore {
         let album = normalizedLibraryValue(track.album)
         if !album.isEmpty { return album }
         let title = normalizedLibraryValue(track.title)
-        return title.isEmpty ? "Untitled Single" : title
+        return title.isEmpty ? String(localized: "Untitled Single") : title
     }
 
     private nonisolated static func computeAlbums(from tracks: [Track]) -> [Album] {
