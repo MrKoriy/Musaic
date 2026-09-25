@@ -505,6 +505,34 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE lyrics_cache ADD COLUMN words TEXT;
     `,
   },
+  {
+    version: 24,
+    description: "Durable background task queue",
+    up: `
+      CREATE TABLE IF NOT EXISTS background_tasks (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        dedupe_key TEXT,
+        payload TEXT NOT NULL DEFAULT '{}',
+        status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'done', 'failed')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 3,
+        run_after INTEGER NOT NULL DEFAULT (unixepoch()),
+        lease_until INTEGER,
+        last_error TEXT,
+        result TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      CREATE INDEX IF NOT EXISTS idx_background_tasks_claim
+        ON background_tasks(status, type, run_after);
+      CREATE INDEX IF NOT EXISTS idx_background_tasks_dedupe
+        ON background_tasks(dedupe_key, created_at);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_background_tasks_active_dedupe
+        ON background_tasks(dedupe_key)
+        WHERE dedupe_key IS NOT NULL AND status IN ('queued', 'running');
+    `,
+  },
 ];
 
 const ALL_MIGRATIONS: Migration[] = (() => {
