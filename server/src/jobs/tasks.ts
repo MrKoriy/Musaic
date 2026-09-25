@@ -55,6 +55,14 @@ export interface EnqueueOptions {
   maxAttempts?: number;
 }
 
+/** Thrown by a handler when retrying cannot help (bad input, missing setup). */
+export class PermanentTaskError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PermanentTaskError";
+  }
+}
+
 interface RegisteredHandler {
   handler: TaskHandler;
   concurrency: number;
@@ -164,6 +172,16 @@ export function latestTask(dedupeKey: string): TaskRecord | null {
     LIMIT 1
   `).get({ $key: dedupeKey }) as TaskRow | null;
   return row ? toRecord(row) : null;
+}
+
+/** Queued or running tasks of one type, oldest first. */
+export function listActiveTasks(type: string): TaskRecord[] {
+  const rows = getDb().prepare(`
+    SELECT * FROM background_tasks
+    WHERE type = $type AND status IN ('queued', 'running')
+    ORDER BY created_at, rowid
+  `).all({ $type: type }) as TaskRow[];
+  return rows.map(toRecord);
 }
 
 export function enqueueTask(type: string, payload: unknown, options: EnqueueOptions = {}): TaskRecord {
@@ -297,7 +315,7 @@ async function execute(row: TaskRow, entry: RegisteredHandler): Promise<void> {
       `).run({ $id: task.id, $now: nowSec() });
       return;
     }
-    if (task.attempts < task.maxAttempts) {
+    if (task.attempts < task.maxAttempts && !(error instanceof PermanentTaskError)) {
       const delay = Math.min(RETRY_MAX_SECONDS, RETRY_BASE_SECONDS * 2 ** Math.max(0, task.attempts - 1));
       log.warn("tasks", `${task.type} attempt ${task.attempts}/${task.maxAttempts} failed, retrying in ${delay}s:`, message);
       finish(task.id, "queued", { error: message, retryAt: nowSec() + delay });

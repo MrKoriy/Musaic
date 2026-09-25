@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { app } from "../index.js";
+import { app, isPublicRoute } from "../index.js";
 import { getDb } from "../db/index.js";
 import { hashSessionToken } from "../db/migrations.js";
 import { seedTrack, setupTestDb, teardownTestDb } from "./setup.js";
@@ -19,6 +19,18 @@ async function register(): Promise<string> {
   return body.token;
 }
 
+/** Session straight in the DB: keeps these tests under the register rate limit. */
+function seedSession(): string {
+  const userId = crypto.randomUUID();
+  const token = crypto.randomUUID();
+  const db = getDb();
+  db.prepare("INSERT INTO users (id, username, password_hash) VALUES ($id, $name, 'x')")
+    .run({ $id: userId, $name: `seeded_${userId.slice(0, 8)}` });
+  db.prepare("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($hash, $uid, unixepoch() + 3600)")
+    .run({ $hash: hashSessionToken(token), $uid: userId });
+  return token;
+}
+
 function bearer(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}` };
 }
@@ -27,7 +39,7 @@ describe("application authentication", () => {
   beforeEach(setupTestDb);
   afterEach(teardownTestDb);
 
-  test("requires authentication for mutations while leaving reads open", async () => {
+  test("denies every API route without a session except the public list", async () => {
     const anonymousHistory = await request("/api/history", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -42,9 +54,49 @@ describe("application authentication", () => {
     });
     expect(anonymousScan.status).toBe(401);
 
-    seedTrack({ id: "public-track" });
-    const publicRead = await request("/api/tracks");
-    expect(publicRead.status).toBe(200);
+    seedTrack({ id: "private-track" });
+    for (const path of [
+      "/api/tracks",
+      "/api/search?q=x",
+      "/api/lyrics/private-track",
+      "/api/stats/overview",
+      "/api/playlists",
+      "/api/recommendations/home",
+      "/api/covers/private-track/fetch",
+      "/api/some/future/route",
+      "/audio/local/private-track",
+    ]) {
+      const response = await request(path);
+      expect({ path, status: response.status }).toEqual({ path, status: 401 });
+    }
+
+    const authed = await request("/api/tracks", { headers: bearer(seedSession()) });
+    expect(authed.status).toBe(200);
+  });
+
+  test("keeps artwork, login and preflight reachable without a session", async () => {
+    expect(isPublicRoute("/api/auth/login", "POST")).toBe(true);
+    expect(isPublicRoute("/api/auth/register", "POST")).toBe(true);
+    expect(isPublicRoute("/api/auth/me", "GET")).toBe(false);
+    expect(isPublicRoute("/api/covers/abc", "GET")).toBe(true);
+    expect(isPublicRoute("/api/covers/abc/fetch", "GET")).toBe(false);
+    expect(isPublicRoute("/api/artwork", "HEAD")).toBe(true);
+    expect(isPublicRoute("/api/artwork", "POST")).toBe(false);
+    expect(isPublicRoute("/api/vk/oauth-callback", "GET")).toBe(true);
+
+    const cover = await request("/api/covers/no-such-track");
+    expect(cover.status).not.toBe(401);
+    const preflight = await request("/api/tracks", { method: "OPTIONS" });
+    expect(preflight.status).toBe(204);
+
+    process.env.REQUIRE_AUTH_READS = "1";
+    try {
+      expect(isPublicRoute("/api/covers/abc", "GET")).toBe(false);
+      expect((await request("/api/covers/no-such-track")).status).toBe(401);
+      expect(isPublicRoute("/api/auth/login", "POST")).toBe(true);
+    } finally {
+      delete process.env.REQUIRE_AUTH_READS;
+    }
   });
 
   test("rejects legacy tokens and expired sessions", async () => {
@@ -199,7 +251,7 @@ describe("application authentication", () => {
     const trackId = seedTrack({ id: "private-path-track" });
     getDb().prepare("UPDATE tracks SET local_path = '/srv/music/private/song.flac' WHERE id = $id").run({ $id: trackId });
 
-    const response = await request("/api/tracks");
+    const response = await request("/api/tracks", { headers: bearer(seedSession()) });
     expect(response.status).toBe(200);
     const body = await response.json() as { tracks: Array<Record<string, unknown>> };
     expect(body.tracks[0]).not.toHaveProperty("local_path");

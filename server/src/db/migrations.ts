@@ -533,6 +533,19 @@ const MIGRATIONS: Migration[] = [
         WHERE dedupe_key IS NOT NULL AND status IN ('queued', 'running');
     `,
   },
+  {
+    version: 25,
+    description: "Per-user lyrics highlight offset",
+    up: `
+      CREATE TABLE IF NOT EXISTS lyrics_user_offsets (
+        user_id TEXT NOT NULL,
+        track_id TEXT NOT NULL,
+        offset_sec REAL NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        PRIMARY KEY (user_id, track_id)
+      );
+    `,
+  },
 ];
 
 const ALL_MIGRATIONS: Migration[] = (() => {

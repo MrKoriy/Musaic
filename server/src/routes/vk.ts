@@ -135,14 +135,14 @@ router.get("/oauth-callback", (c) => {
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    body { font-family: -apple-system, sans-serif; background: #0d0d14; color: #fff; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    body { font-family: -apple-system, sans-serif; background: #090807; color: #fbf7f1; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
     .card { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12); border-radius: 16px; padding: 32px; text-align: center; max-width: 360px; }
     h2 { margin: 0 0 8px; }
     p { color: rgba(255,255,255,0.6); margin: 0; }
-    .spinner { width: 32px; height: 32px; border: 3px solid rgba(255,255,255,0.1); border-top-color: #e91e8c; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 16px auto; }
+    .spinner { width: 32px; height: 32px; border: 3px solid rgba(255,255,255,0.1); border-top-color: #cdb69a; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 16px auto; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .success { color: #4ade80; }
-    .error { color: #e91e8c; }
+    .error { color: #e8907f; }
   </style>
 </head>
 <body>
