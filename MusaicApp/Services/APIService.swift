@@ -111,7 +111,7 @@ final class APIService {
         return url
     }
 
-    func get<T: Decodable>(_ path: String) async throws -> T {
+    func get<T: Decodable & SendableMetatype>(_ path: String) async throws -> T {
         let url = try makeURL(path)
         let request = authenticatedRequest(for: url)
         let data = try await inFlightGETRequests.value(for: getRequestKey(for: path)) { [self] in
@@ -132,7 +132,7 @@ final class APIService {
 
     /// Generic POST for ad-hoc client calls. Prefer `postJSON` for Sendable
     /// bodies so encoding happens off the main actor.
-    func post<T: Decodable>(_ path: String, body: Encodable) async throws -> T {
+    func post<T: Decodable & SendableMetatype>(_ path: String, body: Encodable) async throws -> T {
         let url = try makeURL(path)
         var request = authenticatedRequest(for: url, method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -141,22 +141,22 @@ final class APIService {
         return try await Self.decode(data)
     }
 
-    func postJSON<B: Encodable & Sendable, T: Decodable>(_ path: String, body: B, timeout: TimeInterval? = nil) async throws -> T {
+    func postJSON<B: Encodable & Sendable, T: Decodable & SendableMetatype>(_ path: String, body: B, timeout: TimeInterval? = nil) async throws -> T {
         try await sendJSON(method: "POST", path, body: body, timeout: timeout)
     }
 
-    private func patchJSON<B: Encodable & Sendable, T: Decodable>(_ path: String, body: B) async throws -> T {
+    private func patchJSON<B: Encodable & Sendable, T: Decodable & SendableMetatype>(_ path: String, body: B) async throws -> T {
         try await sendJSON(method: "PATCH", path, body: body, timeout: nil)
     }
 
-    private func delete<T: Decodable>(_ path: String) async throws -> T {
+    private func delete<T: Decodable & SendableMetatype>(_ path: String) async throws -> T {
         let url = try makeURL(path)
         let request = authenticatedRequest(for: url, method: "DELETE")
         let data = try await requestData(path, request: request)
         return try await Self.decode(data)
     }
 
-    private func sendJSON<B: Encodable & Sendable, T: Decodable>(
+    private func sendJSON<B: Encodable & Sendable, T: Decodable & SendableMetatype>(
         method: String,
         _ path: String,
         body: B,
@@ -173,7 +173,7 @@ final class APIService {
 
     // Nonisolated async functions run on the global executor, keeping large
     // library/playlist payloads off the main thread.
-    nonisolated private static func decode<T: Decodable>(_ data: Data) async throws -> sending T {
+    nonisolated private static func decode<T: Decodable & SendableMetatype>(_ data: Data) async throws -> sending T {
         try JSONDecoder().decode(T.self, from: data)
     }
 
