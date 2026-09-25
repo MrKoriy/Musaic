@@ -6,114 +6,149 @@ on:
     paths:
       - "server/**"
       - "MusaicApp/**"
-      - "deploy-server.sh"
       - "deploy/**"
-      - ".github/workflows/ci.yml"
+      - "deploy-server.sh"
+      - ".github/**"
   pull_request:
     branches: [main]
     paths:
       - "server/**"
       - "MusaicApp/**"
-      - "deploy-server.sh"
       - "deploy/**"
-      - ".github/workflows/ci.yml"
+      - "deploy-server.sh"
+      - ".github/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # Pin the toolchain for macOS jobs (ignored on Linux): the Liquid Glass .icon
+  # format needs actool from Xcode 26.6+, and Swift 6.2 concurrency rules must
+  # match local dev.
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
 
 jobs:
-  test:
+  server-test:
     name: Server Tests
     runs-on: ubuntu-latest
-
     defaults:
       run:
         working-directory: server
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
+          bun-version-file: server/.bun-version
+      - run: bun install --frozen-lockfile
       - name: Type check
         run: bun run typecheck
-
-      - name: Run tests
+      - name: Tests
         run: bun run test:coverage
 
-  lint:
+  server-lint:
     name: Server Lint
     runs-on: ubuntu-latest
-
     defaults:
       run:
         working-directory: server
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version-file: server/.bun-version
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+  sidecar:
+    name: Sidecar Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server/sidecar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: server/sidecar/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Byte-compile
+        run: python -m py_compile ./*.py
+      - name: Unit tests
+        run: |
+          if [ -d tests ]; then
+            python -m unittest discover -s tests -v
+          else
+            echo "No sidecar tests directory; skipping."
+          fi
 
-      - name: Lint
-        run: bun run lint
+  shell:
+    name: Shell & Workflow Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: |
+          shopt -s nullglob
+          shellcheck --severity=warning deploy-server.sh server/scripts/*.sh server/sidecar/*.sh
+      - name: actionlint
+        uses: raven-actions/actionlint@v2
 
   app-build-macos:
-    name: macOS App Build
+    name: macOS App Build (${{ matrix.configuration }})
     runs-on: macos-26
-    env:
-      # Pin the toolchain: the Liquid Glass .icon format needs actool from Xcode 26.6+,
-      # and Swift 6.2 concurrency rules must match local dev.
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
-
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Install XcodeGen
         run: brew install xcodegen
-
       - name: Generate Xcode project
         working-directory: MusaicApp
         run: xcodegen generate
-
       - name: Build macOS app
         working-directory: MusaicApp
         run: >-
-          xcodebuild -project Musaic.xcodeproj -scheme MusaicMac -configuration Debug
+          xcodebuild -project Musaic.xcodeproj -scheme MusaicMac
+          -configuration ${{ matrix.configuration }}
           -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
 
   app-build-ios:
     name: iOS App Build
     runs-on: macos-26
-    env:
-      # Pin the toolchain: the Liquid Glass .icon format needs actool from Xcode 26.6+,
-      # and Swift 6.2 concurrency rules must match local dev.
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Install XcodeGen
         run: brew install xcodegen
-
       - name: Generate Xcode project
         working-directory: MusaicApp
         run: xcodegen generate
-
-      - name: Build iOS app
+      - name: Build iOS app (with widget extension)
         working-directory: MusaicApp
         run: >-
           xcodebuild -project Musaic.xcodeproj -scheme Musaic -configuration Debug
           -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
+
+  app-build-watchos:
+    name: watchOS App Build
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        working-directory: MusaicApp
+        run: xcodegen generate
+      - name: Build watch app
+        working-directory: MusaicApp
+        run: >-
+          xcodebuild -project Musaic.xcodeproj -scheme MusaicWatch -configuration Debug
+          -destination 'generic/platform=watchOS' CODE_SIGNING_ALLOWED=NO build

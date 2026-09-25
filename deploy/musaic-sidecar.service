@@ -2,6 +2,8 @@
 Description=Musaic media sidecar (Yandex/YouTube/yt-dlp)
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 WorkingDirectory=/opt/musaic-server/current/server/sidecar
@@ -11,6 +13,15 @@ Environment=MUSAIC_SECRET_PATH=/opt/musaic-server/shared/.musaic.secret
 ExecStart=/opt/musaic-server/current/server/sidecar/.venv/bin/python app.py
 Restart=always
 RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=10
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
 
 [Install]
 WantedBy=multi-user.target

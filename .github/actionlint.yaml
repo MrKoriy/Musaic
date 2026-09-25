@@ -1,0 +1,4 @@
+self-hosted-runner:
+  # GitHub-hosted macOS 26 image (newer than actionlint's built-in label list).
+  labels:
+    - macos-26

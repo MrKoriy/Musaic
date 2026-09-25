@@ -4,4 +4,7 @@ After=musaic-server.service
 
 [Service]
 Type=oneshot
+EnvironmentFile=-/opt/musaic-server/shared/.env
 ExecStart=/bin/bash /opt/musaic-server/current/server/scripts/backup-db.sh
+Nice=10
+IOSchedulingClass=idle

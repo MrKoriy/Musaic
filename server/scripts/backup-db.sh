@@ -7,6 +7,11 @@
 #   MUSAIC_DB_PATH   source database (default: /opt/musaic-server/shared/musaic.db)
 #   MUSAIC_BACKUP_DIR destination directory (default: /opt/musaic-server/backups)
 #   MUSAIC_BACKUP_KEEP how many dated backups to keep (default: 14)
+#   MUSAIC_BACKUP_REMOTE optional off-site target for the dated copy:
+#                     "rclone:<remote>:<path>" uses rclone, anything else is an
+#                     rsync destination such as user@host:/srv/musaic-backups
+#   MUSAIC_BACKUP_REMOTE_SECRETS=1 also ship .env and .musaic.secret off-site
+#                     (off by default: the secret decrypts stored provider tokens)
 
 set -Eeuo pipefail
 
@@ -70,3 +75,24 @@ done
 
 size="$(du -h "$dest_db" | cut -f1)"
 echo "Backup complete: $dest_db ($size), keeping $keep dated backups."
+
+remote="${MUSAIC_BACKUP_REMOTE:-}"
+if [[ -n "$remote" ]]; then
+  offsite=("$dest_db")
+  if [[ "${MUSAIC_BACKUP_REMOTE_SECRETS:-0}" == "1" ]]; then
+    for extra in "$backup_dir/env-latest" "$backup_dir/musaic.secret-latest"; do
+      [[ -f "$extra" ]] && offsite+=("$extra")
+    done
+  fi
+  # A failed off-site copy fails the unit so `systemctl --failed` surfaces it.
+  if [[ "$remote" == rclone:* ]]; then
+    command -v rclone >/dev/null 2>&1 || { echo "rclone is not installed" >&2; exit 1; }
+    for item in "${offsite[@]}"; do
+      rclone copy --no-traverse "$item" "${remote#rclone:}"
+    done
+  else
+    command -v rsync >/dev/null 2>&1 || { echo "rsync is not installed" >&2; exit 1; }
+    rsync -a --timeout=120 -- "${offsite[@]}" "$remote/"
+  fi
+  echo "Off-site copy complete: $remote"
+fi
