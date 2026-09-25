@@ -16,6 +16,7 @@
 import type { Database } from "bun:sqlite";
 import fs from "node:fs";
 import path from "node:path";
+import { RECO_MIGRATIONS } from "./migrations-reco.js";
 
 const configuredSessionDays = Number(process.env.SESSION_TTL_DAYS ?? 90);
 const SESSION_TTL_SECONDS = Math.floor(
@@ -27,7 +28,7 @@ export function hashSessionToken(token: string): string {
   return new Bun.CryptoHasher("sha256").update(token).digest("hex");
 }
 
-interface Migration {
+export interface Migration {
   version: number;
   description: string;
   up: string;
@@ -506,6 +507,16 @@ const MIGRATIONS: Migration[] = [
   },
 ];
 
+const ALL_MIGRATIONS: Migration[] = (() => {
+  const all = [...MIGRATIONS, ...RECO_MIGRATIONS].sort((a, b) => a.version - b.version);
+  for (let i = 1; i < all.length; i++) {
+    if (all[i]!.version === all[i - 1]!.version) {
+      throw new Error(`Duplicate migration version v${all[i]!.version}`);
+    }
+  }
+  return all;
+})();
+
 /**
  * Run all pending migrations against the given database.
  * Safe to call on every startup — skips already-applied migrations.
@@ -525,7 +536,7 @@ export function runMigrations(db: Database): void {
       .map((r) => r.version)
   );
 
-  const pending = MIGRATIONS.filter((m) => !applied.has(m.version));
+  const pending = ALL_MIGRATIONS.filter((m) => !applied.has(m.version));
 
   if (pending.length === 0) {
     return; // Nothing to do
