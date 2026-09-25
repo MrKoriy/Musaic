@@ -134,6 +134,9 @@ targets:
       - path: Services/NowPlayingShared.swift
       - path: Resources/Localizable.xcstrings
         buildPhase: resources
+      # Localized CFBundleDisplayName (compiled to InfoPlist.strings).
+      - path: Resources/Widget/InfoPlist.xcstrings
+        buildPhase: resources
     info:
       path: Resources/Widget-Info.plist
       properties:

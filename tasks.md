@@ -40,15 +40,16 @@
 
 - Durable-очередь `background_tasks` (v24, `server/src/jobs/tasks.ts`): воркер
   стартует с сервером, при остановке возвращает прерванные задачи в очередь.
-  На ней AI-генерация текстов и `prefetch-all` (закрывает B1 для текстов;
-  downloads/import ещё на месте).
+  На ней AI-генерация текстов и `prefetch-all`. B1 закрыт: импорт плейлиста
+  синхронный (ответ в том же запросе), `cacheLocks` в downloads — мьютекс, а
+  не очередь, eviction — плановый job.
 - SSE `GET /api/lyrics/:id/events` вместо polling (B3 для текстов; стриминг
-  ответа чата — ещё нет).
+  чата отложен — клиент чат пока не использует).
 - Пер-трековая пользовательская юстировка смещения `PUT /api/lyrics/:id/offset`
   (v25, `userOffsetSec` в ответе) — закрывает I4 (кроме таймингов raw-whisper).
 - Auth deny-by-default: публичны только login/register, обложки и VK OAuth
   callback; `/audio/*` — всегда с сессией.
-- Полная en/ru локализация с русскими плюралами — закрывает I7.
+- Полная en/ru локализация с русскими плюралами, включая имя виджета — закрывает I7.
 - Swift Testing таргет `MusaicTests` (macOS), job «Swift Unit Tests» в CI.
 
 ---
