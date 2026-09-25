@@ -15,7 +15,7 @@
     "test:watch": "bun test --watch src/__tests__"
   },
   "dependencies": {
-    "@hono/node-server": "^1.19.11",
+    "@hono/node-server": "^2.1.1",
     "hono": "^4.12.8",
     "music-metadata": "^11.12.3"
   },
