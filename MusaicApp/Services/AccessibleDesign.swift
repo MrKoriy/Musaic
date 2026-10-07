@@ -1,7 +1,7 @@
 import SwiftUI
 
 private struct MusaicScaledFont: ViewModifier {
-    @ScaledMetric(relativeTo: .body) private var size: CGFloat
+    @ScaledMetric(relativeTo: .body) private var size: CGFloat = 14
     let weight: Font.Weight
     let design: Font.Design
 

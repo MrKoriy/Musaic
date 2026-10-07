@@ -341,7 +341,7 @@ struct SearchView: View {
                 let result = try await api.searchPage(query: q, sources: src, limit: pageSize)
                 guard !Task.isCancelled, generation == searchGeneration, q == query, src == currentSources else { return }
                 results = result.tracks.map(api.toAppTrack)
-                versionsByTrack = Dictionary(uniqueKeysWithValues: result.tracks.map { ($0.id, ($0.versions ?? []).map(api.toAppTrack)) })
+                versionsByTrack = Dictionary(result.tracks.map { ($0.id, ($0.versions ?? []).map(api.toAppTrack)) }, uniquingKeysWith: { first, _ in first })
                 searchErrors = result.errors ?? [:]
                 searchError = nil
                 searchUnauthorized = false

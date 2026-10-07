@@ -331,21 +331,11 @@ private struct DownloadProgressRing: View {
 }
 
 extension View {
-    /// Opts a scroll container into the system swipe actions so its rows can
-    /// declare `.swipeActions` (iOS 27 / macOS 27). On older SDKs or OS versions
-    /// this is a no-op and the rows fall back to their context menu.
-    @ViewBuilder
-    func musaicSwipeContainer() -> some View {
-        #if compiler(>=6.3)
-        if #available(iOS 27.0, macOS 27.0, *) {
-            swipeActionsContainer()
-        } else {
-            self
-        }
-        #else
-        self
-        #endif
-    }
+    /// Compatibility hook. Swift compiler versions are not SDK feature tests:
+    /// the pinned SDK does not provide swipeActionsContainer(). ScrollView rows
+    /// retain their accessible buttons and context menus without a conflicting
+    /// custom drag recognizer. List-native swipeActions remain on the row.
+    func musaicSwipeContainer() -> some View { self }
 }
 
 /// Process-wide registry so the entrance stagger plays once per row even
