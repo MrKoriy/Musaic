@@ -1,338 +1,142 @@
-/**
- * Stats Routes — listening analytics aggregation
- *
- * GET /api/stats/overview   — totals, streaks, top track/artist
- * GET /api/stats/top-tracks — top tracks by play count
- * GET /api/stats/top-artists — top artists by play count
- * GET /api/stats/top-albums  — top albums by play count
- * GET /api/stats/heatmap     — play counts by hour of day
- * GET /api/stats/monthly     — daily play counts for current month
- */
-
-import { Hono } from "hono";
+/** Timezone-aware analytics over retention-independent rollups. */
+import { Hono, type Context } from "hono";
 import { getDb } from "../db/index.js";
 
 const router = new Hono();
+type Period = "today" | "week" | "month" | "alltime";
+const periods = new Set<Period>(["today", "week", "month", "alltime"]);
 
-const VALID_PERIODS = ["today", "week", "month", "alltime"] as const;
-type Period = (typeof VALID_PERIODS)[number];
-
-const QUALIFIED_LISTEN = "((action = 'play' AND played_ratio IS NULL) OR (action IN ('play', 'complete', 'skip') AND played_ratio >= 0.5))";
-const QUALIFIED_LISTEN_LH = "((lh.action = 'play' AND lh.played_ratio IS NULL) OR (lh.action IN ('play', 'complete', 'skip') AND lh.played_ratio >= 0.5))";
-
-function validatePeriod(raw: string | undefined): Period {
-  const p = raw ?? "alltime";
-  return VALID_PERIODS.includes(p as Period) ? (p as Period) : "alltime";
+export function validTimezone(raw?: string): string {
+  const timezone = raw ?? "UTC";
+  try { new Intl.DateTimeFormat("en", { timeZone: timezone }).format(); return timezone; }
+  catch { return "UTC"; }
 }
-
-function startOfDayUnix(daysAgo = 0): number {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() - daysAgo);
-  return Math.floor(d.getTime() / 1000);
-}
-
-function startOfMonthUnix(): number {
-  const d = new Date();
-  d.setDate(1);
-  d.setHours(0, 0, 0, 0);
-  return Math.floor(d.getTime() / 1000);
-}
-
-/** Returns the unix timestamp cutoff for a given period, or null for alltime */
-function periodCutoff(period: Period): number | null {
-  if (period === "today") return startOfDayUnix(0);
-  if (period === "week") return startOfDayUnix(6);
-  if (period === "month") return startOfMonthUnix();
-  return null;
-}
-
-// ─── Overview ─────────────────────────────────────────────────────────────────
-
-/** User-scoped filter: returns SQL clause + params for user_id filtering */
-function userScope(c: unknown): { clause: string; params: Record<string, string | null> } {
-  const uid = (c as any).get("userId") as string | undefined;
-  return uid
-    ? { clause: "AND user_id = $uid", params: { $uid: uid } }
-    : { clause: "AND user_id IS NULL", params: { $uid: null } };
-}
-
-router.get("/overview", (c) => {
-  const db = getDb();
-  const { clause: uc, params: up } = userScope(c);
-
-  const todayStart = startOfDayUnix(0);
-  const weekStart = startOfDayUnix(6);
-  const monthStart = startOfMonthUnix();
-
-  const counts = db.prepare(`
-    SELECT
-      COUNT(*) as total,
-      SUM(CASE WHEN played_at >= $today THEN 1 ELSE 0 END) as today,
-      SUM(CASE WHEN played_at >= $week THEN 1 ELSE 0 END) as week,
-      SUM(CASE WHEN played_at >= $month THEN 1 ELSE 0 END) as month
-    FROM listening_history WHERE ${QUALIFIED_LISTEN} ${uc}
-  `).get({ $today: todayStart, $week: weekStart, $month: monthStart, ...up }) as
-    { total: number; today: number; week: number; month: number } | undefined;
-
-  const totalCount = counts?.total ?? 0;
-  const todayCount = counts?.today ?? 0;
-  const weekCount = counts?.week ?? 0;
-  const monthCount = counts?.month ?? 0;
-
-  const times = db.prepare(`
-    SELECT
-      COALESCE(SUM(COALESCE(lh.played_ms / 1000.0, t.duration)), 0) as total,
-      COALESCE(SUM(CASE WHEN lh.played_at >= $today THEN COALESCE(lh.played_ms / 1000.0, t.duration) ELSE 0 END), 0) as today,
-      COALESCE(SUM(CASE WHEN lh.played_at >= $week THEN COALESCE(lh.played_ms / 1000.0, t.duration) ELSE 0 END), 0) as week,
-      COALESCE(SUM(CASE WHEN lh.played_at >= $month THEN COALESCE(lh.played_ms / 1000.0, t.duration) ELSE 0 END), 0) as month
-    FROM listening_history lh
-    JOIN tracks t ON t.id = lh.track_id
-    WHERE ${QUALIFIED_LISTEN_LH} ${uc}
-  `).get({ $today: todayStart, $week: weekStart, $month: monthStart, ...up }) as
-    { total: number; today: number; week: number; month: number } | undefined;
-
-  const totalSecs = times?.total ?? 0;
-  const todaySecs = times?.today ?? 0;
-  const weekSecs = times?.week ?? 0;
-  const monthSecs = times?.month ?? 0;
-
-  // Streak: consecutive days with at least one play (capped at 365 for performance)
-  const dailyDates = db.prepare(`
-    SELECT DISTINCT date(played_at, 'unixepoch') as day
-    FROM listening_history
-    WHERE ${QUALIFIED_LISTEN} ${uc}
-    ORDER BY day DESC
-    LIMIT 365
-  `).all({ ...up }) as { day: string }[];
-
-  let streak = 0;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  for (let i = 0; i < dailyDates.length; i++) {
-    const expected = new Date(today);
-    expected.setDate(expected.getDate() - i);
-    const expectedStr = expected.toISOString().slice(0, 10);
-    if (dailyDates[i]?.day === expectedStr) streak++;
-    else break;
-  }
-
-  const topTrack = db.prepare(`
-    SELECT lh.track_id, t.title, t.artist, COUNT(*) as play_count
-    FROM listening_history lh
-    JOIN tracks t ON t.id = lh.track_id
-    WHERE ${QUALIFIED_LISTEN_LH} ${uc}
-    GROUP BY lh.track_id
-    ORDER BY play_count DESC
-    LIMIT 1
-  `).get({ ...up }) as { track_id: string; title: string; artist: string; play_count: number } | undefined;
-
-  const topArtist = db.prepare(`
-    SELECT t.artist, COUNT(*) as play_count
-    FROM listening_history lh
-    JOIN tracks t ON t.id = lh.track_id
-    WHERE ${QUALIFIED_LISTEN_LH} ${uc}
-    GROUP BY t.artist
-    ORDER BY play_count DESC
-    LIMIT 1
-  `).get({ ...up }) as { artist: string; play_count: number } | undefined;
-
-  return c.json({
-    listens: { today: todayCount, week: weekCount, month: monthCount, allTime: totalCount },
-    listeningTime: { todaySecs, weekSecs, monthSecs, allTimeSecs: totalSecs },
-    streak,
-    topTrack: topTrack ?? null,
-    topArtist: topArtist ?? null,
+function formatter(timezone: string): Intl.DateTimeFormat {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
   });
-});
-
-// ─── Top Tracks ───────────────────────────────────────────────────────────────
-
-router.get("/top-tracks", (c) => {
-  const db = getDb();
-  const { clause: uc, params: up } = userScope(c);
-  const limit = Math.min(Math.max(1, Number(c.req.query("limit") ?? 20)), 50);
-  const period = validatePeriod(c.req.query("period"));
-  const cutoff = periodCutoff(period);
-
-  const rows = cutoff != null
-    ? db.prepare(`
-        SELECT lh.track_id, t.title, t.artist, t.album, t.cover_url, t.duration, COUNT(*) as play_count
-        FROM listening_history lh
-        JOIN tracks t ON t.id = lh.track_id
-        WHERE ${QUALIFIED_LISTEN_LH} AND lh.played_at >= $from ${uc}
-        GROUP BY lh.track_id
-        ORDER BY play_count DESC
-        LIMIT $limit
-      `).all({ $from: cutoff, $limit: limit, ...up })
-    : db.prepare(`
-        SELECT lh.track_id, t.title, t.artist, t.album, t.cover_url, t.duration, COUNT(*) as play_count
-        FROM listening_history lh
-        JOIN tracks t ON t.id = lh.track_id
-        WHERE ${QUALIFIED_LISTEN_LH} ${uc}
-        GROUP BY lh.track_id
-        ORDER BY play_count DESC
-        LIMIT $limit
-      `).all({ $limit: limit, ...up });
-
-  return c.json({ tracks: rows });
-});
-
-// ─── Top Artists ──────────────────────────────────────────────────────────────
-
-router.get("/top-artists", (c) => {
-  const db = getDb();
-  const { clause: uc, params: up } = userScope(c);
-  const limit = Math.min(Math.max(1, Number(c.req.query("limit") ?? 10)), 50);
-  const period = validatePeriod(c.req.query("period"));
-  const cutoff = periodCutoff(period);
-
-  const rows = cutoff != null
-    ? db.prepare(`
-        SELECT t.artist, COUNT(*) as play_count, COUNT(DISTINCT lh.track_id) as unique_tracks,
-               MAX(t.cover_url) as cover_url
-        FROM listening_history lh
-        JOIN tracks t ON t.id = lh.track_id
-        WHERE ${QUALIFIED_LISTEN_LH} AND lh.played_at >= $from ${uc}
-        GROUP BY t.artist
-        ORDER BY play_count DESC
-        LIMIT $limit
-      `).all({ $from: cutoff, $limit: limit, ...up })
-    : db.prepare(`
-        SELECT t.artist, COUNT(*) as play_count, COUNT(DISTINCT lh.track_id) as unique_tracks,
-               MAX(t.cover_url) as cover_url
-        FROM listening_history lh
-        JOIN tracks t ON t.id = lh.track_id
-        WHERE ${QUALIFIED_LISTEN_LH} ${uc}
-        GROUP BY t.artist
-        ORDER BY play_count DESC
-        LIMIT $limit
-      `).all({ $limit: limit, ...up });
-
-  return c.json({ artists: rows });
-});
-
-// ─── Top Albums ───────────────────────────────────────────────────────────────
-
-router.get("/top-albums", (c) => {
-  const db = getDb();
-  const { clause: uc, params: up } = userScope(c);
-  const limit = Math.min(Math.max(1, Number(c.req.query("limit") ?? 10)), 50);
-  const period = validatePeriod(c.req.query("period"));
-  const cutoff = periodCutoff(period);
-
-  const rows = cutoff != null
-    ? db.prepare(`
-        SELECT t.album, t.artist, COUNT(*) as play_count, MAX(t.cover_url) as cover_url
-        FROM listening_history lh
-        JOIN tracks t ON t.id = lh.track_id
-        WHERE ${QUALIFIED_LISTEN_LH} AND t.album IS NOT NULL AND lh.played_at >= $from ${uc}
-        GROUP BY t.album, t.artist
-        ORDER BY play_count DESC
-        LIMIT $limit
-      `).all({ $from: cutoff, $limit: limit, ...up })
-    : db.prepare(`
-        SELECT t.album, t.artist, COUNT(*) as play_count, MAX(t.cover_url) as cover_url
-        FROM listening_history lh
-        JOIN tracks t ON t.id = lh.track_id
-        WHERE ${QUALIFIED_LISTEN_LH} AND t.album IS NOT NULL ${uc}
-        GROUP BY t.album, t.artist
-        ORDER BY play_count DESC
-        LIMIT $limit
-      `).all({ $limit: limit, ...up });
-
-  return c.json({ albums: rows });
-});
-
-// ─── Heatmap ──────────────────────────────────────────────────────────────────
-
-router.get("/heatmap", (c) => {
-  const db = getDb();
-  const { clause: uc, params: up } = userScope(c);
-  const period = validatePeriod(c.req.query("period") ?? "month");
-  const cutoff = periodCutoff(period);
-
-  const rows = cutoff != null
-    ? db.prepare(`
-        SELECT CAST(strftime('%H', played_at, 'unixepoch') AS INTEGER) as hour,
-               COUNT(*) as play_count
-        FROM listening_history
-        WHERE ${QUALIFIED_LISTEN} AND played_at >= $from ${uc}
-        GROUP BY hour
-        ORDER BY hour ASC
-      `).all({ $from: cutoff, ...up })
-    : db.prepare(`
-        SELECT CAST(strftime('%H', played_at, 'unixepoch') AS INTEGER) as hour,
-               COUNT(*) as play_count
-        FROM listening_history
-        WHERE ${QUALIFIED_LISTEN} ${uc}
-        GROUP BY hour
-        ORDER BY hour ASC
-      `).all({ ...up });
-
-  const heatmap: { hour: number; play_count: number }[] = [];
-  for (let h = 0; h < 24; h++) {
-    const found = (rows as { hour: number; play_count: number }[]).find((r) => r.hour === h);
-    heatmap.push({ hour: h, play_count: found?.play_count ?? 0 });
+}
+export function calendarParts(epoch: number, timezone: string): Record<string, string> {
+  return Object.fromEntries(formatter(timezone).formatToParts(new Date(epoch * 1000)).map(p => [p.type, p.value]));
+}
+function calendarDay(epoch: number, fmt: Intl.DateTimeFormat): string {
+  const p = Object.fromEntries(fmt.formatToParts(new Date(epoch * 1000)).map(p => [p.type, p.value]));
+  return `${p.year}-${p.month}-${p.day}`;
+}
+function shiftDay(day: string, delta: number): string {
+  const d = new Date(`${day}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString().slice(0, 10);
+}
+/** Resolve local midnight by iterating the offset; handles DST and fractional offsets. */
+export function localMidnight(day: string, timezone: string): number {
+  const target = Date.parse(`${day}T00:00:00Z`) / 1000;
+  let guess = target;
+  for (let i = 0; i < 5; i++) {
+    const p = calendarParts(guess, timezone);
+    const wall = Date.parse(`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}Z`) / 1000;
+    const next = guess + target - wall;
+    if (next === guess) break;
+    guess = next;
   }
+  return guess;
+}
+function scope(c: Context) {
+  const uid = (c as any).get("userId") as string | undefined;
+  const timezone = validTimezone(c.req.query("timezone"));
+  const now = Math.floor(Date.now() / 1000);
+  const fmt = formatter(timezone);
+  const today = calendarDay(now, fmt);
+  const period = periods.has(c.req.query("period") as Period) ? c.req.query("period") as Period : "alltime";
+  return { uid: uid ?? "", timezone, now, fmt, today, period };
+}
+function cutoff(period: Period, today: string, timezone: string): number {
+  if (period === "alltime") return 0;
+  const day = period === "month" ? `${today.slice(0, 7)}-01` : period === "week" ? shiftDay(today, -6) : today;
+  return localMidnight(day, timezone);
+}
+function boundedLimit(raw: string | undefined, fallback: number): number {
+  const n = Number(raw ?? fallback);
+  return Number.isFinite(n) ? Math.min(50, Math.max(1, Math.floor(n))) : fallback;
+}
+function aggregateSource(period: Period): { table: string; timeFilter: string } {
+  return period === "alltime"
+    ? { table: "listening_stats_totals", timeFilter: "" }
+    : { table: "listening_stats_minutes", timeFilter: "AND s.bucket >= $from" };
+}
+function topRows(c: Context, kind: "tracks" | "artists" | "albums" | "genres", overridePeriod?: Period, overrideLimit?: number) {
+  const s = scope(c); const period = overridePeriod ?? s.period;
+  const { table, timeFilter } = aggregateSource(period);
+  const fields = {
+    tracks: "s.track_id, t.title, t.artist, t.album, t.cover_url, t.duration",
+    artists: "t.artist, COUNT(DISTINCT s.track_id) AS unique_tracks, MAX(t.cover_url) AS cover_url",
+    albums: "t.album, t.artist, MAX(t.cover_url) AS cover_url",
+    genres: "COALESCE(t.genre, 'Unknown') AS genre",
+  };
+  const groups = { tracks: "s.track_id", artists: "t.artist", albums: "t.album, t.artist", genres: "COALESCE(t.genre, 'Unknown')" };
+  const limit = overrideLimit ?? boundedLimit(c.req.query("limit"), kind === "tracks" ? 20 : 10);
+  const params: Record<string, string | number> = { $uid: s.uid, $limit: limit };
+  if (timeFilter) params.$from = cutoff(period, s.today, s.timezone);
+  return getDb().prepare(`
+    SELECT ${fields[kind]}, SUM(s.listens) AS play_count
+    FROM ${table} s JOIN tracks t ON t.id = s.track_id
+    WHERE s.user_key = $uid ${timeFilter} ${kind === "albums" ? "AND t.album IS NOT NULL" : ""}
+    GROUP BY ${groups[kind]} ORDER BY play_count DESC, ${groups[kind]} ASC LIMIT $limit
+  `).all(params) as Array<Record<string, any>>;
+}
 
+router.get("/overview", c => {
+  const s = scope(c); const db = getDb();
+  const totals = db.prepare("SELECT COALESCE(SUM(listens), 0) AS listens, COALESCE(SUM(seconds), 0) AS seconds FROM listening_stats_totals WHERE user_key = ?")
+    .get(s.uid) as { listens: number; seconds: number };
+  const todayStart = cutoff("today", s.today, s.timezone);
+  const weekStart = cutoff("week", s.today, s.timezone);
+  const monthStart = cutoff("month", s.today, s.timezone);
+  const from = localMidnight(shiftDay(s.today, -365), s.timezone);
+  // At most one row per occupied UTC minute, rather than scanning play events.
+  const rows = db.prepare("SELECT bucket, SUM(listens) AS listens, SUM(seconds) AS seconds FROM listening_stats_minutes WHERE user_key = ? AND bucket >= ? GROUP BY bucket ORDER BY bucket DESC")
+    .all(s.uid, from) as Array<{ bucket: number; listens: number; seconds: number }>;
+  const listens = { today: 0, week: 0, month: 0, allTime: totals.listens };
+  const listeningTime = { todaySecs: 0, weekSecs: 0, monthSecs: 0, allTimeSecs: totals.seconds };
+  const days = new Set<string>();
+  for (const row of rows) {
+    days.add(calendarDay(row.bucket, s.fmt));
+    if (row.bucket >= todayStart) { listens.today += row.listens; listeningTime.todaySecs += row.seconds; }
+    if (row.bucket >= weekStart) { listens.week += row.listens; listeningTime.weekSecs += row.seconds; }
+    if (row.bucket >= monthStart) { listens.month += row.listens; listeningTime.monthSecs += row.seconds; }
+  }
+  let streak = 0;
+  for (let i = 0; i < 365 && days.has(shiftDay(s.today, -i)); i++) streak++;
+  return c.json({ listens, listeningTime, streak, topTrack: topRows(c, "tracks", "alltime", 1)[0] ?? null,
+    topArtist: topRows(c, "artists", "alltime", 1)[0] ?? null });
+});
+router.get("/top-tracks", c => c.json({ tracks: topRows(c, "tracks") }));
+router.get("/top-artists", c => c.json({ artists: topRows(c, "artists") }));
+router.get("/top-albums", c => c.json({ albums: topRows(c, "albums") }));
+router.get("/heatmap", c => {
+  const s = scope(c); const period = c.req.query("period") ? s.period : "month";
+  const rows = getDb().prepare("SELECT bucket, SUM(listens) AS listens FROM listening_stats_minutes WHERE user_key = ? AND bucket >= ? GROUP BY bucket")
+    .all(s.uid, cutoff(period, s.today, s.timezone)) as Array<{ bucket: number; listens: number }>;
+  const heatmap = Array.from({ length: 24 }, (_, hour) => ({ hour, play_count: 0 }));
+  for (const row of rows) {
+    const p = Object.fromEntries(s.fmt.formatToParts(new Date(row.bucket * 1000)).map(p => [p.type, p.value]));
+    heatmap[Number(p.hour)]!.play_count += row.listens;
+  }
   return c.json({ heatmap });
 });
-
-// ─── Monthly breakdown ────────────────────────────────────────────────────────
-
-router.get("/monthly", (c) => {
-  const db = getDb();
-  const { clause: uc, params: up } = userScope(c);
-  const monthStart = startOfMonthUnix();
-
-  const rows = db.prepare(`
-    SELECT date(played_at, 'unixepoch') as day, COUNT(*) as play_count
-    FROM listening_history
-    WHERE ${QUALIFIED_LISTEN} AND played_at >= $from ${uc}
-    GROUP BY day
-    ORDER BY day ASC
-  `).all({ $from: monthStart, ...up });
-
-  return c.json({ days: rows });
+router.get("/monthly", c => {
+  const s = scope(c);
+  const rows = getDb().prepare("SELECT bucket, SUM(listens) AS listens FROM listening_stats_minutes WHERE user_key = ? AND bucket >= ? GROUP BY bucket")
+    .all(s.uid, cutoff("month", s.today, s.timezone)) as Array<{ bucket: number; listens: number }>;
+  const days = new Map<string, number>();
+  for (const row of rows) {
+    const day = calendarDay(row.bucket, s.fmt); days.set(day, (days.get(day) ?? 0) + row.listens);
+  }
+  return c.json({ days: [...days].sort(([a], [b]) => a.localeCompare(b)).map(([day, play_count]) => ({ day, play_count })) });
 });
-
-// ─── Genre distribution ───────────────────────────────────────────────────────
-
-router.get("/genres", (c) => {
-  const db = getDb();
-  const { clause: uc, params: up } = userScope(c);
-  const period = validatePeriod(c.req.query("period"));
-  const cutoff = periodCutoff(period);
-
-  const rows = cutoff != null
-    ? db.prepare(`
-        SELECT COALESCE(t.genre, 'Unknown') as genre, COUNT(*) as play_count
-        FROM listening_history lh
-        JOIN tracks t ON t.id = lh.track_id
-        WHERE ${QUALIFIED_LISTEN_LH} AND lh.played_at >= $from ${uc}
-        GROUP BY genre
-        ORDER BY play_count DESC
-        LIMIT 8
-      `).all({ $from: cutoff, ...up })
-    : db.prepare(`
-        SELECT COALESCE(t.genre, 'Unknown') as genre, COUNT(*) as play_count
-        FROM listening_history lh
-        JOIN tracks t ON t.id = lh.track_id
-        WHERE ${QUALIFIED_LISTEN_LH} ${uc}
-        GROUP BY genre
-        ORDER BY play_count DESC
-        LIMIT 8
-      `).all({ ...up });
-
-  const typed = rows as { genre: string; play_count: number }[];
-  const total = typed.reduce((s, r) => s + r.play_count, 0);
-  const genres = typed.map((r) => ({
-    ...r,
-    percentage: total > 0 ? Math.round((r.play_count / total) * 100) : 0,
-  }));
-
-  return c.json({ genres });
+router.get("/genres", c => {
+  const rows = topRows(c, "genres", undefined, 8);
+  const total = rows.reduce((sum, row) => sum + Number(row.play_count), 0);
+  return c.json({ genres: rows.map(row => ({ ...row, percentage: total > 0 ? Math.round(row.play_count / total * 100) : 0 })) });
 });
-
 export default router;

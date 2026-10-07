@@ -7,10 +7,10 @@ struct LiquidSectionHeader: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.system(size: 24, weight: .bold, design: .rounded))
+                .musaicFont(size: 24, weight: .bold, design: .rounded)
                 .foregroundStyle(Color.textPrimary)
             Text(subtitle)
-                .font(.system(size: 13, weight: .medium))
+                .musaicFont(size: 13, weight: .medium)
                 .foregroundStyle(Color.textSecondary)
         }
     }

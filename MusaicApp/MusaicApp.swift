@@ -191,9 +191,23 @@ struct ContentView: View {
         .task {
             player.processPendingWidgetCommands()
             await libraryStore.ensureSynced()
+            await PlaybackOutbox.shared.flush()
             #if os(iOS)
             await ReleaseNotificationService.shared.checkForNewReleasesIfNeeded()
             #endif
+        }
+        .onOpenURL { url in
+            guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  components.scheme == "musaic", components.host == "track",
+                  let id = String(components.percentEncodedPath.dropFirst()).removingPercentEncoding,
+                  !id.isEmpty else { return }
+            Task {
+                if let offline = DownloadManager.shared.offlineTracks.first(where: { $0.id == id }) {
+                    if player.setQueue([offline], startAt: 0) { showNowPlaying = true }
+                } else if let track = try? await APIService.shared.getTracks(ids: [id]).first {
+                    if player.setQueue([APIService.shared.toAppTrack(track)], startAt: 0) { showNowPlaying = true }
+                }
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
@@ -202,6 +216,7 @@ struct ContentView: View {
                     player.processPendingWidgetCommands()
                     // Throttled inside: only pending changes or a stale list hit the server.
                     await libraryStore.ensureSynced()
+                    await PlaybackOutbox.shared.flush()
                     #if os(iOS)
                     await ReleaseNotificationService.shared.checkForNewReleasesIfNeeded()
                     #endif
@@ -302,13 +317,13 @@ struct ContentView: View {
                             )
                         )
                     Image(systemName: "waveform")
-                        .font(.system(size: 14, weight: .bold))
+                        .musaicFont(size: 14, weight: .bold)
                         .foregroundStyle(Color.bgPrimary)
                 }
                 .frame(width: 36, height: 36)
 
                 Text(verbatim: "Musaic")
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .musaicFont(size: 20, weight: .bold, design: .rounded)
                     .foregroundStyle(Color.textPrimary)
             }
             .padding(.horizontal, 18)
@@ -323,14 +338,14 @@ struct ContentView: View {
                     } label: {
                         HStack(spacing: 10) {
                             Image(systemName: tab.icon)
-                                .font(.system(size: 14, weight: .medium))
+                                .musaicFont(size: 14, weight: .medium)
                                 .frame(width: 20)
                             Text(tab.title)
-                                .font(.system(size: 14, weight: selectedTab == tab ? .semibold : .medium))
+                                .musaicFont(size: 14, weight: selectedTab == tab ? .semibold : .medium)
                             Spacer()
                             if selectedTab == tab {
                                 Image(systemName: "chevron.right")
-                                    .font(.system(size: 10, weight: .bold))
+                                    .musaicFont(size: 10, weight: .bold)
                                     .foregroundStyle(Color.textMuted)
                             }
                         }
@@ -350,7 +365,7 @@ struct ContentView: View {
             // Session metrics
             VStack(alignment: .leading, spacing: 10) {
                 Text(String(localized: "Session"))
-                    .font(.system(size: 11, weight: .semibold))
+                    .musaicFont(size: 11, weight: .semibold)
                     .foregroundStyle(Color.textMuted)
                     .padding(.leading, 4)
 
@@ -369,12 +384,12 @@ struct ContentView: View {
             // User info
             VStack(alignment: .leading, spacing: 6) {
                 Text(settings.authDisplayName.isEmpty ? settings.authUsername : settings.authDisplayName)
-                    .font(.system(size: 14, weight: .semibold))
+                    .musaicFont(size: 14, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
                     .lineLimit(1)
 
                 Text(enabledSourcesLine)
-                    .font(.system(size: 10, weight: .medium))
+                    .musaicFont(size: 10, weight: .medium)
                     .foregroundStyle(Color.textSecondary)
                     .lineLimit(1)
 
@@ -422,7 +437,7 @@ struct ContentView: View {
                         // Track info
                         VStack(spacing: 6) {
                             Text(track.title)
-                                .font(.system(size: 18, weight: .bold, design: .rounded))
+                                .musaicFont(size: 18, weight: .bold, design: .rounded)
                                 .foregroundStyle(Color.textPrimary)
                                 .lineLimit(2)
                                 .multilineTextAlignment(.center)
@@ -430,7 +445,7 @@ struct ContentView: View {
                                 .animation(.easeOut(duration: 0.28), value: track.id)
 
                             Text(track.artist)
-                                .font(.system(size: 13, weight: .medium))
+                                .musaicFont(size: 13, weight: .medium)
                                 .foregroundStyle(Color.textSecondary)
                                 .lineLimit(1)
                                 .contentTransition(.opacity)
@@ -438,7 +453,7 @@ struct ContentView: View {
 
                             HStack(spacing: 8) {
                                 Text(track.source.displayTag)
-                                    .font(.system(size: 10, weight: .bold))
+                                    .musaicFont(size: 10, weight: .bold)
                                     .foregroundStyle(Color.textPrimary)
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 6)
@@ -448,12 +463,12 @@ struct ContentView: View {
                                     library.toggleLike(track: track)
                                 } label: {
                                     Image(systemName: liked ? "heart.fill" : "heart")
-                                        .font(.system(size: 13, weight: .semibold))
+                                        .musaicFont(size: 13, weight: .semibold)
                                         .foregroundStyle(liked ? Color.accentStrong : Color.textPrimary)
                                         .frame(width: 30, height: 30)
                                         .background(Color.white.opacity(0.08), in: Circle())
                                         .contentTransition(.symbolEffect(.replace.downUp))
-                                        .symbolEffect(.bounce.up.byLayer, value: liked)
+                                        .musaicBounce(value: liked)
                                 }
                                 .buttonStyle(PressableScale(scale: 0.90))
                                  .help(liked ? String(localized: "Unlike") : String(localized: "Like"))
@@ -497,7 +512,7 @@ struct ContentView: View {
 
                             Button { player.togglePlayPause() } label: {
                                 Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
-                                    .font(.system(size: 24, weight: .semibold))
+                                    .musaicFont(size: 24, weight: .semibold)
                                     .foregroundStyle(Color.textPrimary)
                                     .frame(width: 48, height: 48)
                                     .background(Circle().fill(Color.white.opacity(0.11)))
@@ -541,11 +556,11 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack {
                                  Text(String(localized: "Queue"))
-                                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                                    .musaicFont(size: 16, weight: .bold, design: .rounded)
                                     .foregroundStyle(Color.textPrimary)
                                 Spacer()
                                  Text(String(localized: "\(player.queue.count) up next"))
-                                    .font(.system(size: 12, weight: .medium))
+                                    .musaicFont(size: 12, weight: .medium)
                                     .foregroundStyle(Color.textSecondary)
                             }
 
@@ -555,7 +570,7 @@ struct ContentView: View {
                                 } label: {
                                     HStack(spacing: 10) {
                                         Text("\(idx + 2)")
-                                            .font(.system(size: 12, weight: .medium))
+                                            .musaicFont(size: 12, weight: .medium)
                                             .foregroundStyle(Color.textMuted)
                                             .frame(width: 18)
 
@@ -565,11 +580,11 @@ struct ContentView: View {
 
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text(track.title)
-                                                .font(.system(size: 13, weight: .medium))
+                                                .musaicFont(size: 13, weight: .medium)
                                                 .foregroundStyle(Color.textPrimary)
                                                 .lineLimit(1)
                                             Text(track.artist)
-                                                .font(.system(size: 11, weight: .medium))
+                                                .musaicFont(size: 11, weight: .medium)
                                                 .foregroundStyle(Color.textSecondary)
                                                 .lineLimit(1)
                                         }
@@ -578,7 +593,7 @@ struct ContentView: View {
 
                                         if let dur = track.duration {
                                             Text(formatDuration(dur))
-                                                .font(.system(size: 11, weight: .medium))
+                                                .musaicFont(size: 11, weight: .medium)
                                                 .foregroundStyle(Color.textMuted)
                                         }
                                     }
@@ -612,7 +627,7 @@ struct ContentView: View {
     private var macNowPlayingHeader: some View {
         HStack(spacing: 8) {
              Text(String(localized: "Now Playing"))
-                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .musaicFont(size: 18, weight: .bold, design: .rounded)
                 .foregroundStyle(Color.textPrimary)
             Spacer()
 
@@ -621,7 +636,7 @@ struct ContentView: View {
                 macSleepMenuContent
             } label: {
                 Image(systemName: player.sleepTimerActive ? "moon.zzz.fill" : "moon")
-                    .font(.system(size: 13, weight: .semibold))
+                    .musaicFont(size: 13, weight: .semibold)
                     .foregroundStyle(player.sleepTimerActive ? Color.accentStrong : Color.textSecondary)
                     .frame(width: 32, height: 32)
                     .background(Color.white.opacity(0.08), in: Circle())
@@ -635,7 +650,7 @@ struct ContentView: View {
 
             Button { showLyricsMac = true } label: {
                 Image(systemName: "quote.bubble")
-                    .font(.system(size: 13, weight: .semibold))
+                    .musaicFont(size: 13, weight: .semibold)
                     .foregroundStyle(Color.textSecondary)
                     .frame(width: 32, height: 32)
                     .background(Color.white.opacity(0.08), in: Circle())
@@ -647,7 +662,7 @@ struct ContentView: View {
 
              Button { showNowPlaying = true } label: {
                 Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 12, weight: .semibold))
+                    .musaicFont(size: 12, weight: .semibold)
                     .foregroundStyle(Color.textSecondary)
                     .frame(width: 32, height: 32)
                     .background(Color.white.opacity(0.08), in: Circle())
@@ -704,7 +719,7 @@ struct ContentView: View {
 
     private func macSourceBadge(_ label: String, active: Bool) -> some View {
         Text(label)
-            .font(.system(size: 9, weight: .bold))
+            .musaicFont(size: 9, weight: .bold)
             .foregroundStyle(active ? Color.textPrimary : Color.textMuted)
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
@@ -723,12 +738,12 @@ struct ContentView: View {
         bounceTrigger: Int = 0
     ) -> some View {
         Image(systemName: systemName)
-            .font(.system(size: size, weight: .semibold))
+            .musaicFont(size: size, weight: .semibold)
             .foregroundStyle(active ? Color.accentStrong : Color.textPrimary)
             .frame(width: 42, height: 42)
             .background(Color.white.opacity(active ? 0.12 : 0.07), in: Circle())
             .contentTransition(.symbolEffect(.replace))
-            .symbolEffect(.bounce, value: bounceTrigger)
+            .musaicBounce(value: bounceTrigger)
     }
     #endif
 

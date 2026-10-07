@@ -20,7 +20,7 @@ struct ArtworkTile: View {
                     .fill(Color.white.opacity(0.08))
                     .overlay(
                         Image(systemName: icon)
-                            .font(.system(size: min(28, max(side * 0.3, 12))))
+                            .musaicFont(size: min(28, max(side * 0.3, 12)))
                             .foregroundStyle(Color.textSecondary)
                     )
             }

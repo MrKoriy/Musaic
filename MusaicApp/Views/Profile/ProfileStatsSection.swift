@@ -63,7 +63,7 @@ struct ProfileStatsSection: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Text(String(localized: "Your Stats"))
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .musaicFont(size: 22, weight: .bold, design: .rounded)
                     .foregroundStyle(Color.textPrimary)
                 Spacer()
                 if statsLoading {
@@ -82,7 +82,7 @@ struct ProfileStatsSection: View {
                             statsPeriod = period
                         } label: {
                             Text(period.label)
-                                .font(.system(size: 13, weight: .semibold))
+                                .musaicFont(size: 13, weight: .semibold)
                                 .foregroundStyle(statsPeriod == period ? Color.bgPrimary : Color.textSecondary)
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 8)
@@ -139,17 +139,17 @@ struct ProfileStatsSection: View {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
                         Image(systemName: "music.note")
-                            .font(.system(size: 13, weight: .semibold))
+                            .musaicFont(size: 13, weight: .semibold)
                             .foregroundStyle(Color.accentStrong)
                         Text(String(localized: "Top tracks"))
-                            .font(.system(size: 15, weight: .semibold))
+                            .musaicFont(size: 15, weight: .semibold)
                             .foregroundStyle(Color.textPrimary)
                     }
 
                     ForEach(Array(topTracks.enumerated()), id: \.element.id) { idx, track in
                         HStack(spacing: 12) {
                             Text("\(idx + 1)")
-                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                .musaicFont(size: 13, weight: .semibold, design: .monospaced)
                                 .foregroundStyle(Color.textMuted)
                                 .frame(width: 18, alignment: .trailing)
 
@@ -159,11 +159,11 @@ struct ProfileStatsSection: View {
 
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(track.title)
-                                    .font(.system(size: 14, weight: .medium))
+                                    .musaicFont(size: 14, weight: .medium)
                                     .foregroundStyle(Color.textPrimary)
                                     .lineLimit(1)
                                 Text(track.artist)
-                                    .font(.system(size: 12, weight: .regular))
+                                    .musaicFont(size: 12, weight: .regular)
                                     .foregroundStyle(Color.textSecondary)
                                     .lineLimit(1)
                             }
@@ -171,7 +171,7 @@ struct ProfileStatsSection: View {
                             Spacer(minLength: 0)
 
                             Text(String(localized: "\(track.playCount) plays"))
-                                .font(.system(size: 12, weight: .medium))
+                                .musaicFont(size: 12, weight: .medium)
                                 .foregroundStyle(Color.textMuted)
                         }
                         .padding(.horizontal, 12)
@@ -188,17 +188,17 @@ struct ProfileStatsSection: View {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
                         Image(systemName: "person.2")
-                            .font(.system(size: 13, weight: .semibold))
+                            .musaicFont(size: 13, weight: .semibold)
                             .foregroundStyle(Color.accentStrong)
                         Text(String(localized: "Top artists"))
-                            .font(.system(size: 15, weight: .semibold))
+                            .musaicFont(size: 15, weight: .semibold)
                             .foregroundStyle(Color.textPrimary)
                     }
 
                     ForEach(Array(topArtists.enumerated()), id: \.element.id) { idx, artist in
                         HStack(spacing: 12) {
                             Text("\(idx + 1)")
-                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                .musaicFont(size: 13, weight: .semibold, design: .monospaced)
                                 .foregroundStyle(Color.textMuted)
                                 .frame(width: 18, alignment: .trailing)
 
@@ -208,18 +208,18 @@ struct ProfileStatsSection: View {
 
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(artist.artist)
-                                    .font(.system(size: 14, weight: .medium))
+                                    .musaicFont(size: 14, weight: .medium)
                                     .foregroundStyle(Color.textPrimary)
                                     .lineLimit(1)
                                 Text(String(localized: "\(artist.uniqueTracks) tracks"))
-                                    .font(.system(size: 12, weight: .regular))
+                                    .musaicFont(size: 12, weight: .regular)
                                     .foregroundStyle(Color.textSecondary)
                             }
 
                             Spacer(minLength: 0)
 
                             Text(String(localized: "\(artist.playCount) plays"))
-                                .font(.system(size: 12, weight: .medium))
+                                .musaicFont(size: 12, weight: .medium)
                                 .foregroundStyle(Color.textMuted)
                         }
                         .padding(.horizontal, 12)

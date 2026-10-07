@@ -15,7 +15,7 @@ struct PlayShuffleButtons: View {
                 start(tracks)
             } label: {
                 Label(String(localized: "Play All"), systemImage: "play.fill")
-                    .font(.system(size: 14, weight: .semibold))
+                    .musaicFont(size: 14, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
                     .padding(.horizontal, 20)
                     .padding(.vertical, 13)
@@ -31,7 +31,7 @@ struct PlayShuffleButtons: View {
                 start(tracks.shuffled())
             } label: {
                 Label(String(localized: "Shuffle"), systemImage: "shuffle")
-                    .font(.system(size: 14, weight: .semibold))
+                    .musaicFont(size: 14, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
                     .padding(.horizontal, 20)
                     .padding(.vertical, 13)

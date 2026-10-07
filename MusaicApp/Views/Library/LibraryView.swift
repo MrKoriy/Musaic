@@ -18,7 +18,7 @@ struct LibraryView: View {
     @State private var visibleLiked: [TrackListItem] = []
     @State private var visibleLikedTracks: [Track] = []
 
-    private let tabs = ["Playlists", "Albums", "Artists", "Liked"]
+    private let tabs = ["Playlists", "Albums", "Artists", "Liked", "Downloads"]
     private static let staleAfter: TimeInterval = 5 * 60
     private let downloadManager = DownloadManager.shared
     private let api = APIService.shared
@@ -48,6 +48,8 @@ struct LibraryView: View {
 
                     Group {
                         switch selectedTab {
+                        case "Downloads":
+                            DownloadsLibraryView(showNowPlaying: $showNowPlaying)
                         case "Liked":
                             likedView
                         case "Playlists":
@@ -146,11 +148,11 @@ struct LibraryView: View {
                 } label: {
                     HStack(spacing: 5) {
                         Image(systemName: currentSortOption.icon)
-                            .font(.system(size: 11))
+                            .musaicFont(size: 11)
                         Text(currentSortOption.title)
-                            .font(.system(size: 12, weight: .semibold))
+                            .musaicFont(size: 12, weight: .semibold)
                         Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .semibold))
+                            .musaicFont(size: 9, weight: .semibold)
                     }
                     .foregroundStyle(Color.accentStrong)
                     .padding(.horizontal, 10)
@@ -164,10 +166,10 @@ struct LibraryView: View {
                 Toggle(isOn: $downloadedOnly) {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.down.circle.fill")
-                            .font(.system(size: 13))
+                            .musaicFont(size: 13)
                             .foregroundStyle(downloadedOnly ? .green : Color.textSecondary)
                         Text(String(localized: "Downloaded only"))
-                            .font(.system(size: 13, weight: .semibold))
+                            .musaicFont(size: 13, weight: .semibold)
                             .foregroundStyle(Color.textPrimary)
                     }
                 }
@@ -253,11 +255,11 @@ struct LibraryView: View {
                                 ArtworkTile(urlString: api.artworkURL(for: album.coverUrl), icon: "opticaldisc")
                                     .aspectRatio(1, contentMode: .fit)
                                 Text(album.album)
-                                    .font(.system(size: 14, weight: .semibold))
+                                    .musaicFont(size: 14, weight: .semibold)
                                     .foregroundStyle(Color.textPrimary)
                                     .lineLimit(1)
                                 Text(album.artist)
-                                    .font(.system(size: 12, weight: .medium))
+                                    .musaicFont(size: 12, weight: .medium)
                                     .foregroundStyle(Color.textSecondary)
                                     .lineLimit(1)
                             }
@@ -294,10 +296,10 @@ struct LibraryView: View {
 
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(artist.artist)
-                                        .font(.system(size: 15, weight: .semibold))
+                                        .musaicFont(size: 15, weight: .semibold)
                                         .foregroundStyle(Color.textPrimary)
                                     Text(String(localized: "\(artist.albumCount) albums • \(artist.trackCount) tracks"))
-                                        .font(.system(size: 12, weight: .medium))
+                                        .musaicFont(size: 12, weight: .medium)
                                         .foregroundStyle(Color.textSecondary)
                                 }
                                 Spacer()
@@ -319,6 +321,7 @@ struct LibraryView: View {
         case "Albums": return String(localized: "Albums")
         case "Artists": return String(localized: "Artists")
         case "Liked": return String(localized: "Liked")
+        case "Downloads": return String(localized: "Downloads")
         default: return tab
         }
     }

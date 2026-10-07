@@ -16,11 +16,11 @@ struct ArtistSourceWarning: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(String(localized: "Some sources did not respond"), systemImage: "exclamationmark.triangle.fill")
-                .font(.system(size: 13, weight: .semibold))
+                .musaicFont(size: 13, weight: .semibold)
                 .foregroundStyle(Color.textPrimary)
 
             Text(errors.keys.sorted(by: { artistSourceRank($0) < artistSourceRank($1) }).map(artistSourceDisplayName).joined(separator: ", "))
-                .font(.system(size: 12, weight: .medium))
+                .musaicFont(size: 12, weight: .medium)
                 .foregroundStyle(Color.textSecondary)
                 .lineLimit(2)
         }

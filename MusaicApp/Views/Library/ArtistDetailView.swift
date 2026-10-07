@@ -257,9 +257,9 @@ struct ArtistProfileScreen: View {
                     } label: {
                         HStack(spacing: 7) {
                             Image(systemName: artistSourceIcon(option.id))
-                                .font(.system(size: 12, weight: .semibold))
+                                .musaicFont(size: 12, weight: .semibold)
                             Text(option.label)
-                                .font(.system(size: 13, weight: .semibold))
+                                .musaicFont(size: 13, weight: .semibold)
                         }
                         .foregroundStyle(Color.textPrimary)
                         .padding(.horizontal, 15)
@@ -280,7 +280,7 @@ struct ArtistProfileScreen: View {
         if !popular.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 Text(String(localized: "Popular Tracks"))
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .musaicFont(size: 18, weight: .bold, design: .rounded)
                     .foregroundStyle(Color.textPrimary)
                     .padding(.horizontal, 18)
 
@@ -313,10 +313,10 @@ struct ArtistProfileScreen: View {
                     } label: {
                         HStack(spacing: 8) {
                             Text(String(localized: "All songs (\(model.visibleTracks.count))"))
-                                .font(.system(size: 14, weight: .semibold))
+                                .musaicFont(size: 14, weight: .semibold)
                                 .foregroundStyle(Color.textPrimary)
                             Image(systemName: "chevron.right")
-                                .font(.system(size: 12, weight: .bold))
+                                .musaicFont(size: 12, weight: .bold)
                                 .foregroundStyle(Color.textSecondary)
                         }
                         .padding(.horizontal, 16)
@@ -335,7 +335,7 @@ struct ArtistProfileScreen: View {
     private var albumsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(String(localized: "Albums"))
-                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .musaicFont(size: 18, weight: .bold, design: .rounded)
                 .foregroundStyle(Color.textPrimary)
                 .padding(.horizontal, 18)
 
@@ -356,14 +356,14 @@ struct ArtistProfileScreen: View {
                                 .aspectRatio(1, contentMode: .fit)
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(group.title)
-                                    .font(.system(size: 13, weight: .semibold))
+                                    .musaicFont(size: 13, weight: .semibold)
                                     .foregroundStyle(Color.textPrimary)
                                     .lineLimit(2)
                                     .multilineTextAlignment(.leading)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 Text(albumCaption(group))
-                                    .font(.system(size: 11, weight: .medium))
+                                    .musaicFont(size: 11, weight: .medium)
                                     .foregroundStyle(Color.textSecondary)
                                     .lineLimit(1)
                                     .frame(maxWidth: .infinity, alignment: .leading)

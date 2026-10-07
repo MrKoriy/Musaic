@@ -19,9 +19,9 @@ struct SearchMoodsView: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 18) {
                             Image(systemName: moodIcon(mood))
-                                .font(.system(size: 22, weight: .semibold))
+                                .musaicFont(size: 22, weight: .semibold)
                             Text(moodDisplayName(mood))
-                                .font(.system(size: 15, weight: .semibold))
+                                .musaicFont(size: 15, weight: .semibold)
                             Spacer(minLength: 0)
                         }
                         .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)

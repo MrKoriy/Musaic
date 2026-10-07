@@ -13,6 +13,7 @@ struct Track: Identifiable, Codable, Hashable {
     var url: String
     var duration: TimeInterval?
     let source: TrackSource
+    var recommendationReasons: [String]?
     var loudnessLufs: Double?
     var loudnessPeakDb: Double?
 
@@ -39,7 +40,7 @@ struct Track: Identifiable, Codable, Hashable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, title, artist, album, canonicalFamilyId, artwork, artworkColor, url, duration, source
+        case id, title, artist, album, canonicalFamilyId, artwork, artworkColor, url, duration, source, recommendationReasons
         case coverUrl
         case cover_url
         case loudnessLufs = "loudness_lufs"
@@ -57,6 +58,7 @@ struct Track: Identifiable, Codable, Hashable {
         url: String,
         duration: TimeInterval? = nil,
         source: TrackSource,
+        recommendationReasons: [String]? = nil,
         loudnessLufs: Double? = nil,
         loudnessPeakDb: Double? = nil
     ) {
@@ -70,6 +72,7 @@ struct Track: Identifiable, Codable, Hashable {
         self.url = url
         self.duration = duration
         self.source = source
+        self.recommendationReasons = recommendationReasons
         self.loudnessLufs = loudnessLufs
         self.loudnessPeakDb = loudnessPeakDb
     }
@@ -91,6 +94,7 @@ struct Track: Identifiable, Codable, Hashable {
         url = try container.decodeIfPresent(String.self, forKey: .url) ?? ""
         duration = try container.decodeIfPresent(TimeInterval.self, forKey: .duration)
         source = (try? container.decodeIfPresent(TrackSource.self, forKey: .source)) ?? .unknown
+        recommendationReasons = try container.decodeIfPresent([String].self, forKey: .recommendationReasons)
         loudnessLufs = try container.decodeIfPresent(Double.self, forKey: .loudnessLufs)
         loudnessPeakDb = try container.decodeIfPresent(Double.self, forKey: .loudnessPeakDb)
     }
@@ -107,6 +111,7 @@ struct Track: Identifiable, Codable, Hashable {
         try container.encode(url, forKey: .url)
         try container.encodeIfPresent(duration, forKey: .duration)
         try container.encode(source, forKey: .source)
+        try container.encodeIfPresent(recommendationReasons, forKey: .recommendationReasons)
         try container.encodeIfPresent(loudnessLufs, forKey: .loudnessLufs)
         try container.encodeIfPresent(loudnessPeakDb, forKey: .loudnessPeakDb)
     }
@@ -274,12 +279,14 @@ struct ServerTrack: Codable {
     var coverUrl: String?
     var localPath: String?
     var waveformUrl: String?
+    var versions: [ServerTrack]?
+    var recommendationReasons: [String]?
 
     // Provider stream URLs are intentionally not modeled: some contain
     // short-lived credentials and playback always uses APIService's proxy URL.
     // Server uses both snake_case and camelCase for the remaining fields.
     enum CodingKeys: String, CodingKey {
-        case id, source, title, artist, album, duration, canonicalFamilyId
+        case id, source, title, artist, album, duration, canonicalFamilyId, versions, recommendationReasons
         case coverUrl = "cover_url"
         case localPath = "local_path"
         case waveformUrl = "waveform_url"

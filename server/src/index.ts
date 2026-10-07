@@ -653,6 +653,7 @@ app.post("/api/history", async (c) => {
     trackId: string;
     action: string;
     eventId?: string;
+    playedAt?: number;
     playedMs?: number;
     durationMs?: number;
     playedRatio?: number;
@@ -680,6 +681,9 @@ app.post("/api/history", async (c) => {
   const validActions = new Set(["play", "pause", "skip", "like", "unlike", "dislike", "complete"]);
   if (!validActions.has(body.action)) {
     return c.json({ error: "Invalid action" }, 400);
+  }
+  if (body.playedAt != null && (!Number.isFinite(body.playedAt) || body.playedAt < 0 || body.playedAt > Date.now() / 1000 + 300)) {
+    return c.json({ error: "Invalid playedAt" }, 400);
   }
   for (const value of [body.playedMs, body.durationMs, body.position]) {
     if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) {

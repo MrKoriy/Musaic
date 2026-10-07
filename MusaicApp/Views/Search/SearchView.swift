@@ -17,6 +17,11 @@ struct SearchView: View {
     @State private var expandedPlaylist: ExternalPlaylist?
     @State private var searchGeneration = 0
     @State private var nextOffset = 0
+    @State private var nextCursor: String?
+    @State private var suggestionsTask: Task<Void, Never>?
+    @State private var versionsByTrack: [String: [Track]] = [:]
+    @State private var sourceChoices: [Track] = []
+    @State private var sourceChoiceIndex = 0
     @State private var searchErrors: [String: String] = [:]
     @State private var searchError: String?
     @State private var searchUnauthorized = false
@@ -75,7 +80,7 @@ struct SearchView: View {
                                     sourceFilter = id
                                     if !query.isEmpty { search() }
                                 }
-                                .font(.system(size: 13, weight: .semibold))
+                                .musaicFont(size: 13, weight: .semibold)
                                 .foregroundStyle(Color.textPrimary)
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 10)
@@ -112,7 +117,7 @@ struct SearchView: View {
                             ProgressView()
                                 .tint(Color.textPrimary)
                             Text(String(localized: "Searching \(sourceLabel)"))
-                                .font(.system(size: 14, weight: .medium))
+                                .musaicFont(size: 14, weight: .medium)
                                 .foregroundStyle(Color.textSecondary)
                         }
                         .frame(maxWidth: .infinity)
@@ -191,8 +196,12 @@ struct SearchView: View {
                                             isCurrent: player.currentTrack?.id == item.track.id,
                                             isLiked: library.isLiked(item.track.id),
                                             onTap: {
-                                                if player.setQueue(results, startAt: item.index) {
-                                                    showNowPlaying = true
+                                                let versions = versionsByTrack[item.track.id] ?? []
+                                                if versions.count > 1 {
+                                                    sourceChoiceIndex = item.index
+                                                    sourceChoices = versions
+                                                } else {
+                                                    playSearchTrack(item.track, at: item.index)
                                                 }
                                             },
                                             onLike: { library.toggleLike(track: item.track) },
@@ -237,6 +246,16 @@ struct SearchView: View {
                     resetResults()
                 }
             }
+            .confirmationDialog(String(localized: "Choose source"), isPresented: Binding(
+                get: { !sourceChoices.isEmpty }, set: { if !$0 { sourceChoices = [] } }
+            ), titleVisibility: .visible) {
+                ForEach(sourceChoices) { track in
+                    Button("\(track.source.displayTag) — \(track.title)") {
+                        playSearchTrack(track, at: sourceChoiceIndex)
+                        sourceChoices = []
+                    }
+                }
+            }
             .sheet(item: $playlistPickerTrack) { track in
                 PlaylistPickerView(track: track)
             }
@@ -262,10 +281,20 @@ struct SearchView: View {
         sourceFilter == "all" ? settings.enabledSourcesParam : sourceFilter
     }
 
+    private func playSearchTrack(_ track: Track, at index: Int) {
+        guard results.indices.contains(index) else { return }
+        var queue = results
+        queue[index] = track
+        if player.setQueue(queue, startAt: index) { showNowPlaying = true }
+    }
+
     private func resetResults() {
         searchTask?.cancel()
         searchRequestTask?.cancel()
         loadMoreTask?.cancel()
+        suggestionsTask?.cancel()
+        nextCursor = nil
+        versionsByTrack = [:]
         searchGeneration += 1
         results = []
         playlists = []
@@ -300,17 +329,24 @@ struct SearchView: View {
         let q = query
         searchGeneration += 1
         let generation = searchGeneration
+        suggestionsTask?.cancel()
+        suggestionsTask = Task {
+            guard let extra = try? await api.searchSuggestions(query: q, sources: src),
+                  !Task.isCancelled, generation == searchGeneration, q == query, src == currentSources else { return }
+            playlists = extra.playlists
+            artists = extra.artists
+        }
         searchRequestTask = Task {
             do {
-                let result = try await api.searchWithPlaylists(query: q, sources: src, limit: pageSize, offset: 0)
+                let result = try await api.searchPage(query: q, sources: src, limit: pageSize)
                 guard !Task.isCancelled, generation == searchGeneration, q == query, src == currentSources else { return }
                 results = result.tracks.map(api.toAppTrack)
-                playlists = result.playlists
-                artists = result.artists
-                searchErrors = result.errors
+                versionsByTrack = Dictionary(result.tracks.map { ($0.id, ($0.versions ?? []).map(api.toAppTrack)) }, uniquingKeysWith: { first, _ in first })
+                searchErrors = result.errors ?? [:]
                 searchError = nil
                 searchUnauthorized = false
-                hasMore = result.hasMore
+                hasMore = result.hasMore ?? false
+                nextCursor = result.nextCursor
                 nextOffset = pageSize
             } catch {
                 guard generation == searchGeneration, !error.isCancellation else { return }
@@ -330,7 +366,7 @@ struct SearchView: View {
     }
 
     private func loadMore() {
-        guard !loadingMore, hasMore, query.count >= 2 else { return }
+        guard !loading, !loadingMore, hasMore, query.count >= 2, let cursor = nextCursor else { return }
         loadingMore = true
         let src = currentSources
         let q = query
@@ -339,14 +375,16 @@ struct SearchView: View {
         loadMoreTask?.cancel()
         loadMoreTask = Task {
             do {
-                let result = try await api.searchTracks(query: q, sources: src, limit: pageSize, offset: offset)
+                let result = try await api.searchPage(query: q, sources: src, limit: pageSize, cursor: cursor)
                 guard !Task.isCancelled, generation == searchGeneration, q == query, src == currentSources else { return }
                 nextOffset = offset + pageSize
                 let newTracks = result.tracks.map(api.toAppTrack)
                 let existingIds = Set(results.map(\.id))
                 let unique = newTracks.filter { !existingIds.contains($0.id) }
                 results.append(contentsOf: unique)
-                hasMore = result.hasMore
+                for track in result.tracks { versionsByTrack[track.id] = (track.versions ?? []).map(api.toAppTrack) }
+                hasMore = result.hasMore ?? false
+                nextCursor = result.nextCursor
             } catch where error.isCancellation {
                 // Superseded by a newer query.
             } catch {

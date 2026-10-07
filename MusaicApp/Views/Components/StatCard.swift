@@ -12,17 +12,17 @@ struct StatCard: View {
         VStack(alignment: .leading, spacing: compact ? 6 : 8) {
             if let icon {
                 Image(systemName: icon)
-                    .font(.system(size: compact ? 12 : 14, weight: .semibold))
+                    .musaicFont(size: compact ? 12 : 14, weight: .semibold)
                     .foregroundStyle(Color.textSecondary)
                     .accessibilityHidden(true)
             }
             Text(value)
-                .font(.system(size: compact ? 20 : 22, weight: .bold, design: .rounded))
+                .musaicFont(size: compact ? 20 : 22, weight: .bold, design: .rounded)
                 .foregroundStyle(Color.textPrimary)
                 .minimumScaleFactor(0.7)
                 .lineLimit(1)
             Text(label)
-                .font(.system(size: compact ? 11 : 12, weight: .medium))
+                .musaicFont(size: compact ? 11 : 12, weight: .medium)
                 .foregroundStyle(Color.textSecondary)
                 .lineLimit(1)
         }

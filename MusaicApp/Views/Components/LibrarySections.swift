@@ -53,7 +53,7 @@ struct LibraryPlaylistSection: View {
             } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "plus")
-                        .font(.system(size: 16, weight: .bold))
+                        .musaicFont(size: 16, weight: .bold)
                         .foregroundStyle(Color.textPrimary)
                         .frame(width: 36, height: 36)
                         .background(
@@ -63,10 +63,10 @@ struct LibraryPlaylistSection: View {
                         )
                     VStack(alignment: .leading, spacing: 4) {
                         Text(String(localized: "New Playlist"))
-                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                            .musaicFont(size: 15, weight: .bold, design: .rounded)
                             .foregroundStyle(Color.textPrimary)
                         Text(String(localized: "Create a fresh playlist and start filling it right away."))
-                            .font(.system(size: 12, weight: .medium))
+                            .musaicFont(size: 12, weight: .medium)
                             .foregroundStyle(Color.textSecondary)
                     }
                     Spacer()
@@ -111,11 +111,11 @@ struct LibraryPlaylistSection: View {
                                     .aspectRatio(1, contentMode: .fit)
 
                                 Text(playlist.name)
-                                    .font(.system(size: 14, weight: .semibold))
+                                    .musaicFont(size: 14, weight: .semibold)
                                     .foregroundStyle(Color.textPrimary)
                                     .lineLimit(1)
                                 Text(String(localized: "\(playlist.trackCount) tracks"))
-                                    .font(.system(size: 12, weight: .medium))
+                                    .musaicFont(size: 12, weight: .medium)
                                     .foregroundStyle(Color.textSecondary)
                             }
                             .padding(12)

@@ -41,10 +41,10 @@ struct PlaylistPickerView: View {
 
                                         VStack(alignment: .leading, spacing: 4) {
                                             Text(playlist.name)
-                                                .font(.system(size: 15, weight: .semibold))
+                                                .musaicFont(size: 15, weight: .semibold)
                                                 .foregroundStyle(Color.textPrimary)
                                             Text(String(localized: "\(playlist.trackCount) tracks"))
-                                                .font(.system(size: 12, weight: .medium))
+                                                .musaicFont(size: 12, weight: .medium)
                                                 .foregroundStyle(Color.textSecondary)
                                         }
 
@@ -93,7 +93,7 @@ struct PlaylistPickerView: View {
                             showNew = true
                         } label: {
                             Label(String(localized: "New Playlist"), systemImage: "plus")
-                                .font(.system(size: 14, weight: .semibold))
+                                .musaicFont(size: 14, weight: .semibold)
                                 .foregroundStyle(Color.textPrimary)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 14)

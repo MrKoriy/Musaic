@@ -33,7 +33,7 @@ struct ChipSelector<Option: Hashable>: View {
         let selected = isSelected(option)
         if style == .mood {
             Text(label(option))
-                .font(.system(size: 13, weight: .semibold))
+                .musaicFont(size: 13, weight: .semibold)
                 .foregroundStyle(selected ? Color.bgPrimary : Color.textPrimary)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
@@ -43,7 +43,7 @@ struct ChipSelector<Option: Hashable>: View {
                 )
         } else {
             Text(label(option))
-                .font(.system(size: 13, weight: .semibold))
+                .musaicFont(size: 13, weight: .semibold)
                 .foregroundStyle(Color.textPrimary)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)

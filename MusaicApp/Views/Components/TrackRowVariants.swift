@@ -29,8 +29,10 @@ struct TrackRow: View {
     @State private var isHovered = false
     /// Stagger entrance flag — rows fade/rise in with a 30ms per-item delay.
     @State private var appeared = false
+    @State private var showRecommendationReasons = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private let downloadManager = DownloadManager.shared
 
 
@@ -45,6 +47,11 @@ struct TrackRow: View {
             .opacity(appeared ? 1 : 0)
             .offset(y: appeared ? 0 : 8)
             .onAppear(perform: playEntranceIfNeeded)
+            .alert(String(localized: "Recommendation signals"), isPresented: $showRecommendationReasons) {
+                Button(String(localized: "OK"), role: .cancel) {}
+            } message: {
+                Text(track.recommendationReasonSummary)
+            }
     }
 
     /// Quick actions ride on the system's swipe implementation: the rows declare
@@ -124,7 +131,7 @@ struct TrackRow: View {
                     )
                     .overlay(
                         Image(systemName: "music.note")
-                            .font(.system(size: 16, weight: .medium))
+                            .musaicFont(size: 16, weight: .medium)
                             .foregroundStyle(Color.textSecondary)
                     )
             }
@@ -144,11 +151,11 @@ struct TrackRow: View {
                     .font(.subheadline)
                     .fontWeight(.medium)
                     .foregroundStyle(isCurrent ? Color.accentStrong : Color.textPrimary)
-                    .lineLimit(1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                 Text(track.artist)
                     .font(.caption)
                     .foregroundStyle(Color.textSecondary)
-                    .lineLimit(1)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -173,14 +180,19 @@ struct TrackRow: View {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .strokeBorder(Color.white.opacity(isCurrent ? 0.15 : (isHovered ? 0.12 : 0.06)), lineWidth: 0.5)
         )
-        .animation(.easeOut(duration: 0.25), value: isCurrent)
-        .animation(.easeOut(duration: 0.18), value: isHovered)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: isCurrent)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isHovered)
         .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .onTapGesture { onTap?() }
         .onHover { hovering in isHovered = hovering }
         .accessibilityLabel(Text("\(track.title), \(track.artist)"))
         .accessibilityHint(Text(String(localized: "Plays this track")))
         .contextMenu {
+            if !(track.recommendationReasons ?? []).isEmpty {
+                Button { showRecommendationReasons = true } label: {
+                    Label(String(localized: "Why this track?"), systemImage: "info.circle")
+                }
+            }
             if let onAddToPlaylist {
                 Button { onAddToPlaylist() } label: {
                     Label(String(localized: "Add to Playlist"), systemImage: "text.badge.plus")
@@ -206,7 +218,7 @@ struct TrackRow: View {
                 Button {
                     downloadManager.downloadTrack(track)
                 } label: {
-                    Label(String(localized: "Download (AAC 128k)"), systemImage: "arrow.down.circle")
+                    Label(String(localized: "Download (AAC \(SettingsStore.shared.downloadBitrate)k)"), systemImage: "arrow.down.circle")
                 }
                 .disabled(downloadManager.phase(for: track.id).isActive)
             }
@@ -219,12 +231,12 @@ struct TrackRow: View {
             onLike?()
         }) {
             Image(systemName: isLiked ? "heart.fill" : "heart")
-                .font(.system(size: 15))
+                .musaicFont(size: 15)
                 .foregroundStyle(isLiked ? Color.accentStrong : Color.textSecondary)
-                .frame(width: 36, height: 36)
+                .frame(width: 44, height: 44)
                 .contentShape(Circle())
                 .contentTransition(.symbolEffect(.replace.downUp))
-                .symbolEffect(.bounce.up.byLayer, value: isLiked)
+                .musaicBounce(value: isLiked)
         }
         .buttonStyle(.plain)
         .sensoryFeedback(.success, trigger: isLiked)
@@ -264,22 +276,22 @@ private struct TrackDownloadButton: View {
         switch downloadManager.phase(for: track.id) {
         case .completed:
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 14))
+                .musaicFont(size: 14)
                 .foregroundStyle(.green.opacity(0.7))
-                .frame(width: 32, height: 32)
+                .frame(width: 44, height: 44)
                 .accessibilityLabel(Text(String(localized: "Downloaded")))
         case .downloading:
             DownloadProgressRing(progress: downloadManager.progress(for: track.id))
-                .frame(width: 32, height: 32)
+                .frame(width: 44, height: 44)
                 .accessibilityLabel(Text(String(localized: "Downloading")))
         case .failed(let message):
             Button {
                 downloadManager.downloadTrack(track)
             } label: {
                 Image(systemName: "exclamationmark.circle")
-                    .font(.system(size: 14))
+                    .musaicFont(size: 14)
                     .foregroundStyle(.red.opacity(0.7))
-                    .frame(width: 32, height: 32)
+                    .frame(width: 44, height: 44)
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
@@ -290,9 +302,9 @@ private struct TrackDownloadButton: View {
                 downloadManager.downloadTrack(track)
             } label: {
                 Image(systemName: "arrow.down.circle")
-                    .font(.system(size: 14))
+                    .musaicFont(size: 14)
                     .foregroundStyle(Color.textSecondary.opacity(0.5))
-                    .frame(width: 32, height: 32)
+                    .frame(width: 44, height: 44)
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
@@ -319,21 +331,11 @@ private struct DownloadProgressRing: View {
 }
 
 extension View {
-    /// Opts a scroll container into the system swipe actions so its rows can
-    /// declare `.swipeActions` (iOS 27 / macOS 27). On older SDKs or OS versions
-    /// this is a no-op and the rows fall back to their context menu.
-    @ViewBuilder
-    func musaicSwipeContainer() -> some View {
-        #if compiler(>=6.3)
-        if #available(iOS 27.0, macOS 27.0, *) {
-            swipeActionsContainer()
-        } else {
-            self
-        }
-        #else
-        self
-        #endif
-    }
+    /// Compatibility hook. Swift compiler versions are not SDK feature tests:
+    /// the pinned SDK does not provide swipeActionsContainer(). ScrollView rows
+    /// retain their accessible buttons and context menus without a conflicting
+    /// custom drag recognizer. List-native swipeActions remain on the row.
+    func musaicSwipeContainer() -> some View { self }
 }
 
 /// Process-wide registry so the entrance stagger plays once per row even
@@ -362,7 +364,7 @@ struct QueueTrackRow: View {
         HStack(spacing: 12) {
             if isCurrent {
                 Image(systemName: "speaker.wave.2.fill")
-                    .font(.system(size: 12))
+                    .musaicFont(size: 12)
                     .foregroundStyle(Color.accentStrong)
                     .frame(width: 20)
             } else {
@@ -374,7 +376,7 @@ struct QueueTrackRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
-                    .font(.system(size: 14, weight: isCurrent ? .bold : .medium))
+                    .musaicFont(size: 14, weight: isCurrent ? .bold : .medium)
                     .foregroundStyle(isCurrent ? Color.accentStrong : Color.textPrimary)
                     .lineLimit(1)
                 Text(track.artist)
@@ -414,12 +416,12 @@ struct ImportTrackRow: View {
                         .foregroundStyle(.red.opacity(0.6))
                 }
             }
-            .font(.system(size: 16))
+            .musaicFont(size: 16)
             .frame(width: 24)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(match.title)
-                    .font(.system(size: 14, weight: .medium))
+                    .musaicFont(size: 14, weight: .medium)
                     .foregroundStyle(match.confidence != "none" ? Color.textPrimary : Color.textMuted)
                     .lineLimit(1)
                 Text(match.artist)
@@ -428,7 +430,7 @@ struct ImportTrackRow: View {
                     .lineLimit(1)
                 if let matchSource = match.matchSource {
                     Text("Found on \(matchSource)")
-                        .font(.system(size: 10, weight: .semibold))
+                        .musaicFont(size: 10, weight: .semibold)
                         .foregroundStyle(Color.textSecondary.opacity(0.7))
                 }
             }

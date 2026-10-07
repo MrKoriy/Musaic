@@ -15,7 +15,7 @@ import {
 } from "../../db/index.js";
 import { publicTrack } from "../../utils/public-track.js";
 
-const CACHE_CONTROL_JSON = "public, max-age=30";
+const CACHE_CONTROL_JSON = "private, max-age=0, must-revalidate";
 
 function etagFor(value: string): string {
   return `"${crypto.createHash("sha1").update(value).digest("hex").slice(0, 20)}"`;
@@ -69,7 +69,7 @@ playlistsRouter.get("/", (c) => {
   const userId = (c as any).get("userId") as string | undefined;
   const playlists = getPlaylists(userId);
   const fingerprint = playlists
-    .map((p) => `${p.id}:${p.updated_at}:${p.track_count}`)
+    .map((p) => `${p.id}:${p.revision}:${p.track_count}`)
     .join("|");
   const etag = etagFor(`playlists:${fingerprint}`);
   if (c.req.header("if-none-match") === etag) return notModifiedResponse(etag);
@@ -96,10 +96,35 @@ playlistsRouter.delete("/:id", (c) => {
 playlistsRouter.get("/:id/tracks", (c) => {
   const id = c.req.param("id");
   const db = getDb();
-  const meta = db.prepare("SELECT updated_at FROM playlists WHERE id = $id")
-    .get({ $id: id }) as { updated_at: number } | null;
-  const etag = etagFor(`playlist-tracks:${id}:${meta?.updated_at ?? 0}`);
-  if (c.req.header("if-none-match") === etag) return notModifiedResponse(etag);
+  const meta = db.prepare("SELECT revision FROM playlists WHERE id = $id")
+    .get({ $id: id }) as { revision: number } | null;
+  const etag = etagFor(`playlist-tracks:${id}:${meta?.revision ?? 0}`);
+  if (!c.req.query("limit") && c.req.header("if-none-match") === etag) return notModifiedResponse(etag);
+  if (c.req.query("limit") != null) {
+    const limit = Math.min(200, Math.max(1, Math.floor(Number(c.req.query("limit")))));
+    if (!Number.isFinite(limit)) return c.json({ error: "Invalid limit" }, 400);
+    let after: { position: number; rowId: number; revision: number } | undefined;
+    if (c.req.query("cursor")) {
+      try {
+        after = JSON.parse(Buffer.from(c.req.query("cursor")!, "base64url").toString());
+        if (!after || !Number.isInteger(after.position) || !Number.isInteger(after.rowId) || !Number.isInteger(after.revision)) throw new Error("Invalid cursor");
+      } catch { return c.json({ error: "Invalid cursor" }, 400); }
+      if (after.revision !== meta?.revision) return c.json({ error: "Playlist changed; refresh before continuing" }, 409);
+    }
+    const rows = db.prepare(`SELECT t.*, pt.position AS _position, pt.id AS _row_id
+      FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id
+      WHERE pt.playlist_id = $id AND (pt.position > $pos OR (pt.position = $pos AND pt.id > $row))
+      ORDER BY pt.position ASC, pt.id ASC LIMIT $limit`).all({
+      $id: id, $pos: after?.position ?? -1, $row: after?.rowId ?? -1, $limit: limit + 1,
+    }) as Array<Record<string, unknown>>;
+    const hasMore = rows.length > limit;
+    const visible = rows.slice(0, limit);
+    const last = visible.at(-1);
+    const nextCursor = hasMore && last ? Buffer.from(JSON.stringify({ position: last._position, rowId: last._row_id, revision: meta?.revision })).toString("base64url") : undefined;
+    // Every page has its own validator; do not share the full-list ETag.
+    return c.json({ tracks: visible.map(publicTrack), hasMore, nextCursor }, 200,
+      { "Cache-Control": "private, no-store", ...PRIVATE_STRIPPED });
+  }
   const tracks = getPlaylistTracks(id).map(publicTrack);
   return c.json({ tracks }, 200, { ETag: etag, "Cache-Control": CACHE_CONTROL_JSON, ...PRIVATE_STRIPPED });
 });
@@ -110,8 +135,10 @@ playlistsRouter.post("/:id/tracks", async (c) => {
   if (ownerErr) return c.json({ error: ownerErr.error }, ownerErr.status as any);
   const body = await c.req.json<{ trackId?: string; position?: number }>();
   if (!body.trackId) return c.json({ error: "trackId required" }, 400);
-  const tracks = getPlaylistTracks(c.req.param("id"));
-  addTrackToPlaylist(c.req.param("id"), body.trackId, body.position ?? tracks.length);
+  if (body.position != null && (!Number.isInteger(body.position) || body.position < 0)) {
+    return c.json({ error: "position must be a non-negative integer" }, 400);
+  }
+  addTrackToPlaylist(c.req.param("id"), body.trackId, body.position);
   return c.json({ ok: true });
 });
 
@@ -220,7 +247,7 @@ playlistsRouter.get("/:id", (c) => {
       CASE WHEN pcd.playlist_id IS NOT NULL THEN 1 ELSE 0 END as has_custom_cover,
       COALESCE(
         CASE
-          WHEN pcd.playlist_id IS NOT NULL THEN '/api/playlists/' || p.id || '/image'
+          WHEN pcd.playlist_id IS NOT NULL THEN '/api/playlists/' || p.id || '/image?v=' || p.revision
           ELSE NULL
         END,
         (
@@ -239,7 +266,7 @@ playlistsRouter.get("/:id", (c) => {
     GROUP BY p.id
   `).get({ $id: id }) as Record<string, unknown> | null;
   if (!playlist) return c.json({ error: "Not found" }, 404);
-  const etag = etagFor(`playlist:${id}:${playlist.updated_at}:${playlist.track_count}`);
+  const etag = etagFor(`playlist:${id}:${playlist.revision}:${playlist.track_count}`);
   if (c.req.header("if-none-match") === etag) return notModifiedResponse(etag);
   return c.json({ playlist: normalizePlaylistRow(playlist) }, 200, { ETag: etag, "Cache-Control": CACHE_CONTROL_JSON, ...PRIVATE_STRIPPED });
 });

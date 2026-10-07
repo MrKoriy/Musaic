@@ -11,9 +11,36 @@ import { hydrateCachedCoverUrls } from "../providers/artwork.js";
 import { normaliseArtistSources, searchArtists } from "../providers/artists.js";
 import type { Track } from "../types.js";
 import type { ExternalPlaylist } from "../providers/soundcloud.js";
+import { searchPager, type SearchHit } from "../utils/search-pager.js";
 import { songFamilyKey } from "../utils/track-identity.js";
 
 const router = new Hono();
+
+function normaliseSearchTrack(t: SearchHit): Record<string, unknown> {
+  return { id: t.id, source: t.source, title: t.title, artist: t.artist, album: t.album,
+    duration: t.duration, cover_url: t.coverUrl, waveform_url: t.waveformUrl,
+    versions: t.versions?.map(v => normaliseSearchTrack({ ...v, versions: undefined })) };
+}
+async function budget<T>(work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([work, new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Source timed out; retry search or choose another source")), 6_000);
+    })]);
+  } finally { if (timer) clearTimeout(timer); }
+}
+// Secondary sections do not delay the first useful track results.
+router.get("/suggestions", async c => {
+  const q = c.req.query("q")?.trim();
+  if (!q) return c.json({ error: "q required" }, 400);
+  const sources = normaliseArtistSources(c.req.query("sources"));
+  const [artists, playlists] = await Promise.all([
+    budget(searchArtists(q, sources, 8)).catch(() => []),
+    sources.includes("soundcloud") ? budget(getSoundCloudProvider().searchPlaylists(q, 5)).catch(() => []) : Promise.resolve([]),
+  ]);
+  return c.json({ artists, playlists });
+});
+
 
 /**
  * GET /api/search?q=query&sources=local,vk,soundcloud
@@ -33,6 +60,27 @@ router.get("/", async (c) => {
   // Each provider paginates from `offset` and returns up to `limit` items.
   // We over-fetch slightly so dedup loss across sources doesn't shrink the page.
   const perProviderLimit = Math.min(limit + 10, 100);
+
+  if (!Number.isFinite(limit) || !Number.isFinite(offset)) return c.json({ error: "Invalid pagination" }, 400);
+  if (c.req.query("paged") === "1") {
+    const allowedSources = ["local", "yandex", "youtube", "soundcloud"].filter(source => sources.includes(source));
+    const uid = (c as any).get("userId") as string | undefined;
+    const scope = JSON.stringify([uid ?? "", q, allowedSources]);
+    const page = await searchPager.page(scope, allowedSources, Math.floor(limit), async (source, sourceOffset, amount) => {
+      switch (source) {
+        case "local": return getLocalProvider().search(q, amount, sourceOffset);
+        case "yandex":
+          if (!getYandexProvider().isAuthenticated()) return searchCachedYandexTracks(q, amount, sourceOffset);
+          return budget(getYandexProvider().search(q, amount, sourceOffset));
+        case "youtube": return budget(getYouTubeProvider().search(q, amount, sourceOffset));
+        case "soundcloud": return budget(getSoundCloudProvider().search(q, amount, sourceOffset));
+        default: return [];
+      }
+    }, c.req.query("cursor"));
+    if (!page) return c.json({ error: "Search expired; start a new search" }, 410);
+    return c.json({ ...page, tracks: page.tracks.map(normaliseSearchTrack), query: q, limit });
+  }
+
 
   const results: Record<string, Track[]> = {};
   const playlists: ExternalPlaylist[] = [];

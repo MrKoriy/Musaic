@@ -24,16 +24,16 @@ struct ErrorRetryView: View {
     var body: some View {
         VStack(spacing: 14) {
             Image(systemName: isUnauthorized ? "person.crop.circle.badge.exclamationmark" : "wifi.exclamationmark")
-                .font(.system(size: 30, weight: .semibold))
+                .musaicFont(size: 30, weight: .semibold)
                 .foregroundStyle(Color.accentStrong)
 
             Text(title)
-                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .musaicFont(size: 18, weight: .bold, design: .rounded)
                 .foregroundStyle(Color.textPrimary)
                 .multilineTextAlignment(.center)
 
             Text(message)
-                .font(.system(size: 13, weight: .medium))
+                .musaicFont(size: 13, weight: .medium)
                 .foregroundStyle(Color.textSecondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
@@ -63,7 +63,7 @@ struct StateActionButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 13, weight: .bold))
+            .musaicFont(size: 13, weight: .bold)
             .foregroundStyle(prominent ? Color.bgPrimary : Color.textPrimary)
             .padding(.horizontal, 16)
             .padding(.vertical, 11)

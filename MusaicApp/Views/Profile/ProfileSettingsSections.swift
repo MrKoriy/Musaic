@@ -12,7 +12,7 @@ struct ProfileSettingsCard<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(title)
-                .font(.system(size: 15, weight: .semibold))
+                .musaicFont(size: 15, weight: .semibold)
                 .foregroundStyle(Color.textPrimary)
             content
         }
@@ -29,7 +29,7 @@ struct ProfileSourceToggle: View {
     var body: some View {
         Toggle(isOn: $isOn) {
             Text(title)
-                .font(.system(size: 14, weight: .medium))
+                .musaicFont(size: 14, weight: .medium)
                 .foregroundStyle(Color.textPrimary)
         }
         .toggleStyle(.switch)
@@ -51,16 +51,16 @@ struct ProfileSettingRow: View {
     var body: some View {
         HStack {
             Text(title)
-                .font(.system(size: 14, weight: .medium))
+                .musaicFont(size: 14, weight: .medium)
                 .foregroundStyle(Color.textPrimary)
             Spacer()
             if let action {
                 Button(value, action: action)
-                    .font(.system(size: 13, weight: .semibold))
+                    .musaicFont(size: 13, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
             } else {
                 Text(value)
-                    .font(.system(size: 13, weight: .semibold))
+                    .musaicFont(size: 13, weight: .semibold)
                     .foregroundStyle(Color.textSecondary)
             }
         }
@@ -112,10 +112,10 @@ struct ProfileStatusSection: View {
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 11, weight: .medium))
+                    .musaicFont(size: 11, weight: .medium)
                     .foregroundStyle(Color.textSecondary)
                 Text(state)
-                    .font(.system(size: 14, weight: .semibold))
+                    .musaicFont(size: 14, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
             }
         }
@@ -139,7 +139,7 @@ struct ProfileSourcesSection: View {
             ProfileSourceToggle(title: String(localized: "SoundCloud"), isOn: $sourceSoundcloud)
             ProfileSourceToggle(title: String(localized: "VK (liked tracks only)"), isOn: $sourceVK)
             Text(String(localized: "VK is no longer used for search or recommendations — only your already-liked VK tracks still play. Connect VK below to keep them playing."))
-                .font(.system(size: 11, weight: .medium))
+                .musaicFont(size: 11, weight: .medium)
                 .foregroundStyle(Color.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -169,7 +169,7 @@ struct ProfilePlaybackSection: View {
                 AudioPlayer.shared.applyPlaybackSettings()
             }
             ProfileSourceToggle(
-                title: String(localized: "Gapless Playback"),
+                title: String(localized: "Seamless bridge"),
                 isOn: Binding(
                     get: { gapless },
                     set: {
@@ -179,8 +179,8 @@ struct ProfilePlaybackSection: View {
                 )
             )
             ProfileSourceToggle(title: String(localized: "Volume Normalization"), isOn: $normalization)
-            Text(String(localized: "Stream Quality applies to Yandex (real bitrate tiers); other sources serve a fixed quality. Gapless uses a short seamless bridge between tracks when Crossfade is Off."))
-                .font(.system(size: 11, weight: .medium))
+            Text(String(localized: "Stream Quality applies to Yandex; other sources use their available quality. Seamless bridge overlaps tracks by 0.25 seconds when Crossfade is Off. It is not sample-accurate gapless playback."))
+                .musaicFont(size: 11, weight: .medium)
                 .foregroundStyle(Color.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -197,16 +197,33 @@ struct ProfilePlaybackSection: View {
 
 struct ProfileDownloadsSection: View {
     private let downloads = DownloadManager.shared
+    private let settings = SettingsStore.shared
 
     var body: some View {
+        @Bindable var settings = settings
         ProfileSettingsCard(title: String(localized: "Downloads")) {
+            Picker(String(localized: "Download Quality"), selection: $settings.downloadBitrate) {
+                Text("AAC 128 kbps").tag(128)
+                Text("AAC 192 kbps").tag(192)
+                Text("AAC 256 kbps").tag(256)
+            }
+            ProfileSourceToggle(title: String(localized: "Downloads on Wi-Fi only"), isOn: $settings.downloadsWifiOnly)
+            Text(String(localized: "Download quality is independent of streaming. Higher bitrates use more storage and cannot improve the original source quality."))
+                .font(.caption)
+                .foregroundStyle(Color.textSecondary)
+            if let message = PlaybackOutbox.shared.lastError {
+                Text(message).font(.caption).foregroundStyle(Color.textSecondary)
+                Button(String(localized: "Retry history sync")) {
+                    Task { await PlaybackOutbox.shared.flush() }
+                }
+            }
             ProfileSettingRow(title: String(localized: "Offline Tracks"), value: "\(downloads.downloadCount)")
             ProfileSettingRow(title: String(localized: "Storage Used"), value: downloads.totalSizeFormatted)
             if downloads.downloadCount > 0 {
                 Button(String(localized: "Delete All Downloads")) {
                     downloads.deleteAllDownloads()
                 }
-                .font(.system(size: 13, weight: .semibold))
+                .musaicFont(size: 13, weight: .semibold)
                 .foregroundStyle(.red)
             }
         }
@@ -222,11 +239,11 @@ struct ProfileStorageSection: View {
         ProfileSettingsCard(title: String(localized: "Storage")) {
             ProfileSettingRow(title: String(localized: "Cache Size"), value: cacheSize)
             Button(clearing ? String(localized: "Clearing…") : String(localized: "Clear Cache"), action: onClearCache)
-                .font(.system(size: 13, weight: .semibold))
+                .musaicFont(size: 13, weight: .semibold)
                 .foregroundStyle(Color.textPrimary)
                 .disabled(clearing)
             Text(String(localized: "Removes cached artwork and server responses. Downloads are kept."))
-                .font(.system(size: 11, weight: .medium))
+                .musaicFont(size: 11, weight: .medium)
                 .foregroundStyle(Color.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -251,7 +268,7 @@ struct ProfileServerSection: View {
 
                     HStack(spacing: 10) {
                         Button(String(localized: "Save"), action: onSave)
-                            .font(.system(size: 13, weight: .semibold))
+                            .musaicFont(size: 13, weight: .semibold)
                             .foregroundStyle(Color.bgPrimary)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 12)
@@ -260,7 +277,7 @@ struct ProfileServerSection: View {
                         Button(String(localized: "Cancel")) {
                             editingServer = false
                         }
-                        .font(.system(size: 13, weight: .semibold))
+                        .musaicFont(size: 13, weight: .semibold)
                         .foregroundStyle(Color.textPrimary)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
@@ -274,10 +291,10 @@ struct ProfileServerSection: View {
                 } label: {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(serverURL)
-                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                            .musaicFont(size: 13, weight: .semibold, design: .monospaced)
                             .foregroundStyle(Color.textPrimary)
                         Text(String(localized: "Tap to change the server address (e.g. a LAN IP)."))
-                            .font(.system(size: 12, weight: .medium))
+                            .musaicFont(size: 12, weight: .medium)
                             .foregroundStyle(Color.textSecondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -287,7 +304,7 @@ struct ProfileServerSection: View {
 
             if let message {
                 Text(message)
-                    .font(.system(size: 12, weight: .medium))
+                    .musaicFont(size: 12, weight: .medium)
                     .foregroundStyle(Color.textSecondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
@@ -297,7 +314,7 @@ struct ProfileServerSection: View {
                 onTestConnection()
             } label: {
                 Text(testing ? String(localized: "Testing…") : connectionButtonLabel)
-                    .font(.system(size: 13, weight: .semibold))
+                    .musaicFont(size: 13, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
@@ -318,14 +335,14 @@ struct ProfileAccountSection: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 12) {
                     Image(systemName: "person.circle.fill")
-                        .font(.system(size: 28))
+                        .musaicFont(size: 28)
                         .foregroundStyle(Color.textPrimary)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(settings.authDisplayName.isEmpty ? settings.authUsername : settings.authDisplayName)
-                            .font(.system(size: 15, weight: .semibold))
+                            .musaicFont(size: 15, weight: .semibold)
                             .foregroundStyle(Color.textPrimary)
                         Text("@\(settings.authUsername)")
-                            .font(.system(size: 12, weight: .medium))
+                            .musaicFont(size: 12, weight: .medium)
                             .foregroundStyle(Color.textSecondary)
                     }
                     Spacer()
@@ -333,7 +350,7 @@ struct ProfileAccountSection: View {
                 Button(String(localized: "Sign Out"), role: .destructive) {
                     Task { await api.logout() }
                 }
-                .font(.system(size: 13, weight: .semibold))
+                .musaicFont(size: 13, weight: .semibold)
                 .foregroundStyle(.red)
             }
         }
@@ -347,13 +364,13 @@ struct ProfileAboutSection: View {
         ProfileSettingsCard(title: String(localized: "About")) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(verbatim: "Musaic")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .musaicFont(size: 18, weight: .bold, design: .rounded)
                     .foregroundStyle(Color.textPrimary)
                 Text(appVersionLabel)
-                    .font(.system(size: 12, weight: .medium))
+                    .musaicFont(size: 12, weight: .medium)
                     .foregroundStyle(Color.textSecondary)
                 Text(String(localized: "A personal music player for your own server: local files, Yandex Music, YouTube and SoundCloud."))
-                    .font(.system(size: 12, weight: .medium))
+                    .musaicFont(size: 12, weight: .medium)
                     .foregroundStyle(Color.textMuted)
             }
         }
