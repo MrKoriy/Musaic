@@ -8,6 +8,9 @@ struct NowPlayingView: View {
     @State private var showIPodWheel = false
 
     private let player = PlayerStore.shared
+    private let audio = AudioPlayer.shared
+    private let videoStore = VideoStore.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if let track = player.currentTrack {
@@ -54,17 +57,26 @@ struct NowPlayingView: View {
         GeometryReader { geo in
             // Everything fits without scrolling: header 44 + artwork (adaptive)
             // + metadata ~120 + scrub ~70 + transport ~96 + paddings ~50.
+            // The video slot reuses the artwork's vertical budget at 16:9.
             let screenInset: CGFloat = 22
             let contentWidth = min(geo.size.width - screenInset * 2, 460)
             let artSide = min(contentWidth, max(170, geo.size.height - 400), 290)
+            let videoHeight = min(contentWidth * 9 / 16, max(170, geo.size.height - 400), 290)
 
             VStack(spacing: 0) {
                 macTopBar
 
                 Spacer(minLength: 8)
 
-                NowPlayingArtworkView(track: track, side: artSide)
-                    .frame(maxHeight: .infinity)
+                ZStack {
+                    NowPlayingArtworkView(track: track, side: artSide)
+                    if videoStore.videoModeEnabled, let videoPlayer = audio.activeVideoPlayer {
+                        MacVideoPlayerSurface(player: videoPlayer, height: videoHeight)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.28), value: audio.activeVideoPlayer != nil)
+                .frame(maxHeight: .infinity)
 
                 NowPlayingMetadataSectionView(track: track)
                     .padding(.top, 16)
@@ -98,6 +110,21 @@ struct NowPlayingView: View {
             .accessibilityLabel(Text(String(localized: "Close player")))
 
             Spacer()
+
+            if videoStore.currentVideo != nil {
+                Button {
+                    videoStore.toggleVideoMode()
+                } label: {
+                    Image(systemName: videoStore.videoModeEnabled ? "tv.fill" : "tv")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(videoStore.videoModeEnabled ? Color.accentStrong : Color.textSecondary)
+                        .frame(width: 30, height: 30)
+                        .background(Color.white.opacity(0.07), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .help(videoStore.videoModeEnabled ? String(localized: "Show artwork") : String(localized: "Show video"))
+                .accessibilityLabel(Text(videoStore.videoModeEnabled ? String(localized: "Show artwork") : String(localized: "Show video")))
+            }
 
             Button {
                 showSleepTimer = true

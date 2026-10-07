@@ -93,6 +93,13 @@ final class AudioPlayer {
 
     // State
     private(set) var playbackState: PlaybackState = .idle
+    /// Track id of the loaded item (nil for ad-hoc URL playback).
+    var loadedTrackID: String? { currentTrackID }
+    /// True while the loaded item is a music video (muxed audio+video stream).
+    private(set) var isVideoPlayback = false
+    /// The live player while a music video is on screen; nil in audio mode.
+    /// Observed by the macOS Now Playing video surface.
+    private(set) var activeVideoPlayer: AVPlayer?
     var isPlaying: Bool { playbackState == .playing }
     /// True when playback is playing or about to (loading / buffering after a
     /// play request). Use for play/pause affordances.
@@ -134,6 +141,9 @@ final class AudioPlayer {
     @ObservationIgnored var onPlaybackStateChange: (@MainActor (PlaybackState) -> Void)?
     /// Fired after a seek lands, with the new position in seconds.
     @ObservationIgnored var onPlaybackSeeked: (@MainActor (TimeInterval) -> Void)?
+    /// Video-item failures route here (instead of registerPlaybackFailure) so
+    /// VideoStore can re-resolve the URL or fall back to plain audio.
+    @ObservationIgnored var onVideoItemFailed: (@MainActor () -> Void)?
 
     private init() {
         if let stored = UserDefaults.standard.object(forKey: Self.userVolumeKey) as? NSNumber {
@@ -567,6 +577,53 @@ final class AudioPlayer {
         deactivateAudioSession()
     }
 
+    // MARK: - Video mode (music clips)
+
+    /// Swap the loaded item for the track's music video at the current
+    /// position. The AVPlayer instance (and the SwiftUI surface bound to it)
+    /// survives the swap; the seek lands via the pending-start mechanism once
+    /// the video item is ready.
+    func upgradeToVideo(url: URL) {
+        guard let player, player.currentItem != nil else { return }
+        let position = player.currentTime().seconds
+        guard position.isFinite else { return }
+
+        removePlayerObservers()
+        // googlevideo URLs are pre-signed; attaching our bearer token to a
+        // third-party host would leak the session.
+        let item = makePlayerItem(for: url, authenticated: false)
+        isVideoPlayback = true
+        pendingStartTime = position > 0.5 ? position : nil
+        player.replaceCurrentItem(with: item)
+        attachObservers(player: player, item: item)
+        activeVideoPlayer = player
+        applyVolumes()
+        if pendingStartTime == nil, wantsPlayback {
+            player.play()
+        }
+    }
+
+    /// Swap a video item back to the plain audio stream at the current
+    /// position (video mode off, or a video failure fallback).
+    func downgradeToAudio() {
+        guard isVideoPlayback, let player,
+              let audioURLString = currentURLString,
+              let audioURL = URL(string: audioURLString) else { return }
+        let position = player.currentTime().seconds
+
+        removePlayerObservers()
+        let item = makePlayerItem(for: audioURL)
+        isVideoPlayback = false
+        activeVideoPlayer = nil
+        pendingStartTime = position.isFinite && position > 0.5 ? position : nil
+        player.replaceCurrentItem(with: item)
+        attachObservers(player: player, item: item)
+        applyVolumes()
+        if pendingStartTime == nil, wantsPlayback {
+            player.play()
+        }
+    }
+
     // MARK: - Volume
 
     /// Single place that derives both players' volumes from base loudness,
@@ -585,11 +642,15 @@ final class AudioPlayer {
 
     // MARK: - Observer and retry management
 
-    private func makePlayerItem(for url: URL) -> AVPlayerItem {
-        let request = APIService.shared.authenticatedRequest(for: url)
+    private func makePlayerItem(for url: URL, authenticated: Bool = true) -> AVPlayerItem {
         var options: [String: Any] = [:]
-        if let headers = request.allHTTPHeaderFields, !headers.isEmpty {
-            options["AVURLAssetHTTPHeaderFieldsKey"] = headers
+        // The bearer token goes only to our own server; attaching it to
+        // third-party hosts (e.g. googlevideo) would leak the session.
+        if authenticated, url.absoluteString.hasPrefix(APIService.shared.serverURL) {
+            let request = APIService.shared.authenticatedRequest(for: url)
+            if let headers = request.allHTTPHeaderFields, !headers.isEmpty {
+                options["AVURLAssetHTTPHeaderFieldsKey"] = headers
+            }
         }
 
         // A URL-only player item cannot carry the bearer token. Supplying the
@@ -616,7 +677,11 @@ final class AudioPlayer {
                         self.updatePlaybackState(for: player, item: item)
                     }
                 case .failed:
-                    self.registerPlaybackFailure(item.error ?? player.currentItem?.error, fallback: String(localized: "Couldn't load the stream."))
+                    if self.isVideoPlayback, let onVideoItemFailed = self.onVideoItemFailed {
+                        onVideoItemFailed()
+                    } else {
+                        self.registerPlaybackFailure(item.error ?? player.currentItem?.error, fallback: String(localized: "Couldn't load the stream."))
+                    }
                 case .unknown:
                     if self.wantsPlayback { self.transition(to: .loading) }
                 @unknown default:
@@ -678,7 +743,11 @@ final class AudioPlayer {
             let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
             Task { @MainActor [weak self] in
                 guard let self, self.isCurrentItem(item) else { return }
-                self.registerPlaybackFailure(error, fallback: String(localized: "Playback stopped unexpectedly."))
+                if self.isVideoPlayback, let onVideoItemFailed = self.onVideoItemFailed {
+                    onVideoItemFailed()
+                } else {
+                    self.registerPlaybackFailure(error, fallback: String(localized: "Playback stopped unexpectedly."))
+                }
             }
         }
 
@@ -753,7 +822,11 @@ final class AudioPlayer {
         guard stallRetryTask == nil else { return }
 
         guard stallRetryCount < maxStallRetries else {
-            registerPlaybackFailure(item.error, fallback: String(localized: "Playback stalled after two retries."))
+            if isVideoPlayback, let onVideoItemFailed {
+                onVideoItemFailed()
+            } else {
+                registerPlaybackFailure(item.error, fallback: String(localized: "Playback stalled after two retries."))
+            }
             return
         }
 
@@ -803,6 +876,8 @@ final class AudioPlayer {
         removePlayerObservers()
         player?.pause()
         player = nil
+        isVideoPlayback = false
+        activeVideoPlayer = nil
     }
 
     // MARK: - Next-track preload & crossfade
@@ -830,7 +905,8 @@ final class AudioPlayer {
     /// the last `crossfadeSec` seconds. Called from the periodic tick and the
     /// boundary observer (which gives the precise start for short bridges).
     private func advanceTransitionIfNeeded(position: TimeInterval, duration dur: TimeInterval) {
-        guard crossfadeEnabled, crossfadeSec > 0, nextURLString != nil,
+        // Video items never crossfade: the clip is the point of watching.
+        guard !isVideoPlayback, crossfadeEnabled, crossfadeSec > 0, nextURLString != nil,
               wantsPlayback, let player, player.rate > 0,
               dur > crossfadeSec * 1.5, position > 0 else { return }
         let remaining = dur - position
@@ -923,7 +999,7 @@ final class AudioPlayer {
 
     private func installCrossfadeBoundary() {
         removeCrossfadeBoundary()
-        guard crossfadeEnabled, crossfadeSec > 0, nextURLString != nil,
+        guard !isVideoPlayback, crossfadeEnabled, crossfadeSec > 0, nextURLString != nil,
               let player, let item = player.currentItem else { return }
         let dur = resolvedDuration(for: item)
         guard dur > crossfadeSec * 1.5 else { return }
@@ -968,6 +1044,9 @@ final class AudioPlayer {
         nextURLString = nil
         currentTrackID = trackID
         currentURLString = urlString
+        // Promoted items are always plain audio (video items never preload).
+        isVideoPlayback = false
+        activeVideoPlayer = nil
         lastErrorMessage = nil
         pendingStartTime = nil
         wantsPlayback = true

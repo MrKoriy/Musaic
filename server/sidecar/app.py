@@ -27,6 +27,8 @@ Endpoints (all JSON unless noted):
   GET  /yt/track/<videoId>
   GET  /yt/artist?name=&count=
   GET  /yt/stream/<videoId>?quality=       -> {url, ...}
+  GET  /yt/search-videos?q=&count=         -> {videos: [...]}
+  GET  /yt/video-stream/<videoId>          -> {url, ext, duration, width, height}
 
 Run:  python3 app.py            (reads MUSAIC_SIDECAR_PORT, default 8770)
 """
@@ -772,6 +774,86 @@ def yt_artist(name, count):
     return {"tracks": unique[:count]}
 
 
+def yt_search_videos(q, count):
+    """Search YouTube Music's video catalog (official clips, live videos…).
+
+    Unlike yt_search (filter="songs") this hits filter="videos", which is
+    where official music videos live. Mapping mirrors _yt_song_to_dict.
+    """
+    yt = _get_ytmusic()
+    results = yt.search(q, filter="videos", limit=count) or []
+    videos = []
+    for item in results[:count]:
+        vid = item.get("videoId")
+        if not vid:
+            continue
+        artists = ", ".join(a.get("name", "") for a in (item.get("artists") or []) if a.get("name"))
+        dur = item.get("duration_seconds")
+        if dur is None and item.get("duration"):
+            try:
+                parts = [int(p) for p in str(item["duration"]).split(":")]
+                dur = 0
+                for p in parts:
+                    dur = dur * 60 + p
+            except Exception:
+                dur = 0
+        videos.append({
+            "videoId": vid,
+            "title": (item.get("title") or "").strip(),
+            "artist": artists.strip(),
+            "duration": int(dur or 0),
+            "thumbnailUrl": _yt_thumb(item.get("thumbnails")),
+            "views": item.get("views"),
+        })
+    return {"videos": videos}
+
+
+def yt_video_stream_url(video_id):
+    """Resolve a playable VIDEO url via yt-dlp (muxed audio+video).
+
+    Picks a progressive format (single URL with both tracks) so AVPlayer can
+    play it directly with no HLS manifest plumbing. The android client
+    reliably exposes muxed itag 18 (mp4 360p) and often itag 22 (mp4 720p);
+    quality is capped accordingly — HLS renditions are a later upgrade.
+    """
+    import yt_dlp
+
+    clients = ["android"]
+    extractor_args = {}
+    if YT_POT_BASE_URL:
+        extractor_args["youtubepot-bgutilhttp"] = {"base_url": [YT_POT_BASE_URL]}
+        clients += ["web_music", "mweb"]
+    extractor_args["youtube"] = {"player_client": clients}
+
+    ydl_opts = {
+        # Muxed only: separate video-only/audio-only itags would need a
+        # player that can sync two URLs, which AVPlayer cannot do.
+        "format": "best[ext=mp4][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]",
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "skip_download": True,
+        "extractor_args": extractor_args,
+    }
+    cookiefile = os.environ.get("YT_COOKIES_FILE", "").strip()
+    if cookiefile and os.path.exists(cookiefile):
+        ydl_opts["cookiefile"] = cookiefile
+
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+    stream = info.get("url")
+    if not stream:
+        raise LookupError(f"No video stream resolved for {video_id}")
+    return {
+        "url": stream,
+        "ext": info.get("ext"),
+        "duration": int(info.get("duration") or 0),
+        "width": info.get("width"),
+        "height": info.get("height"),
+    }
+
+
 def yt_stream_url(video_id, quality):
     """Resolve a playable audio URL via yt-dlp.
 
@@ -936,6 +1018,12 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/yt/stream/"):
                 vid = unquote(path[len("/yt/stream/"):])
                 return self._json(200, yt_stream_url(vid, q1("quality", "high")))
+            if path == "/yt/search-videos":
+                count = min(int(q1("count", "10")), 25)
+                return self._json(200, yt_search_videos(q1("q", ""), count))
+            if path.startswith("/yt/video-stream/"):
+                vid = unquote(path[len("/yt/video-stream/"):])
+                return self._json(200, yt_video_stream_url(vid))
 
             return self._json(404, {"error": f"unknown path: {path}"})
         except ValueError as e:

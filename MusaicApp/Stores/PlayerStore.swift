@@ -171,6 +171,7 @@ final class PlayerStore {
         }
         #endif
         currentTrack = normalizedTrack
+        VideoStore.shared.trackDidChange(normalizedTrack)
         audio.play(track: normalizedTrack, restartIfSame: restartIfCurrent, startAt: startAt)
         audio.updateNowPlayingInfo(track: normalizedTrack)
         publishNowPlaying(force: true)
@@ -755,6 +756,7 @@ final class PlayerStore {
         // Cleared before stopping so the resulting state change publishes
         // "nothing playing" rather than the old track.
         currentTrack = nil
+        VideoStore.shared.reset()
         queue = []
         originalQueue = []
         queueIndex = 0
@@ -827,6 +829,7 @@ final class PlayerStore {
         guard let track = queue[safe: queueIndex].map({ api.normalizedTrack($0) }) else { return }
         audio.stop()
         currentTrack = track
+        VideoStore.shared.trackDidChange(track)
         restoredPosition = 0
         audio.presentRestoredPosition(0, duration: track.duration ?? 0)
         audio.updateNowPlayingInfo(track: track)
@@ -840,6 +843,7 @@ final class PlayerStore {
         audio.stop()
         audio.clearNowPlayingInfo()
         currentTrack = nil
+        VideoStore.shared.trackDidChange(nil)
         queueIndex = 0
         restoredPosition = nil
         publisher.clear()
@@ -964,6 +968,7 @@ final class PlayerStore {
         queueSurface = saved.surface
         let track = queue[queueIndex]
         currentTrack = track
+        VideoStore.shared.trackDidChange(track)
         let position = saved.position.isFinite ? max(0, saved.position) : 0
         restoredPosition = position
         lastPersistedPositionBucket = Int(position / 10)

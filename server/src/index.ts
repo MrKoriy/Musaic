@@ -21,6 +21,7 @@ import lyricsRoutes from "./routes/lyrics.js";
 import statsRoutes from "./routes/stats.js";
 import smartPlaylistRoutes from "./routes/playlists-smart.js";
 import { releasesRouter } from "./routes/releases.js";
+import videosRoutes from "./routes/videos.js";
 import authRoutes from "./routes/auth.js";
 import importRoutes from "./routes/import.js";
 import streamRoutes from "./routes/stream.js";
@@ -402,6 +403,7 @@ app.route("/api/lyrics", lyricsRoutes);
 app.route("/api/stats", statsRoutes);
 app.route("/api/smart-playlists", smartPlaylistRoutes);
 app.route("/api/releases", releasesRouter);
+app.route("/api/videos", videosRoutes);
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 

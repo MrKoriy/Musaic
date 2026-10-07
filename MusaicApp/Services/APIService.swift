@@ -941,6 +941,18 @@ final class APIService {
     private func streamEndpointURL(forTrackID trackID: String, source: Track.TrackSource) -> String {
         "\(serverURL)/api/stream/\(source.rawValue)/\(encodedTrackID(trackID))"
     }
+
+    // MARK: - Music videos
+
+    /// The matched music video for a track (server caches the match).
+    func fetchVideoInfo(trackId: String) async throws -> TrackVideoInfo {
+        try await get("/api/videos/for-track/\(encodedTrackID(trackId))")
+    }
+
+    /// A fresh playable muxed (audio+video) URL for a matched clip.
+    func resolveVideoStream(videoId: String) async throws -> ResolvedVideoStream {
+        try await get("/api/videos/\(encodedTrackID(videoId))/resolve")
+    }
 }
 
 /// Joins concurrent identical GETs. Every caller can cancel on its own; the

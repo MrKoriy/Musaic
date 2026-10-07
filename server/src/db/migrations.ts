@@ -546,6 +546,23 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 26,
+    description: "Music video matches per track",
+    up: `
+      CREATE TABLE IF NOT EXISTS track_videos (
+        track_id TEXT PRIMARY KEY,
+        video_id TEXT,
+        video_title TEXT,
+        channel TEXT,
+        duration INTEGER,
+        thumbnail_url TEXT,
+        status TEXT NOT NULL DEFAULT 'none' CHECK (status IN ('matched', 'none', 'rejected')),
+        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+    `,
+  },
 ];
 
 const ALL_MIGRATIONS: Migration[] = (() => {
