@@ -58,3 +58,9 @@ __pycache__/
 /musaic-cachetest/
 /musaic-cachetest2/
 /*.patch
+
+# Freebuff build tooling (generated project + derived data)
+.freebuff/
+.freebuff-reinstall.yml
+MusaicApp/.DerivedDataFreebuff*/
+MusaicApp/MusaicFreebuff.xcodeproj/
