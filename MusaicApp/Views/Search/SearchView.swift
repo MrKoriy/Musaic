@@ -220,6 +220,7 @@ struct SearchView: View {
                 .padding(.bottom, Layout.playerBottomInset)
             }
             .background(AppBackdrop())
+            .musaicSwipeContainer()
             .scrollIndicators(.hidden)
             .navigationBarHiddenCompat(true)
             .onChange(of: query) { _, new in

@@ -234,6 +234,7 @@ struct ArtistProfileScreen: View {
             }
         }
         .background(AppBackdrop())
+        .musaicSwipeContainer()
         .navigationTitle(profileArtist?.artist ?? subject.name)
         .navigationBarTitleDisplayModeCompat()
         .task(id: subject.id) {

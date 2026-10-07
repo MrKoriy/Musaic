@@ -65,6 +65,7 @@ struct LibraryView: View {
                 .padding(.bottom, Layout.playerBottomInset)
             }
             .background(AppBackdrop())
+            .musaicSwipeContainer()
             .scrollIndicators(.hidden)
             .task { await refreshIfStale() }
             .refreshable { await loadData(forceSync: true) }

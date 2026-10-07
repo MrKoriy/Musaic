@@ -50,9 +50,10 @@ enum NowPlayingShared {
     /// fire when the app finally launches.
     static let commandMaxAge: TimeInterval = 120
 
-    static var defaults: UserDefaults? {
-        UserDefaults(suiteName: appGroupID)
-    }
+    /// Cached once — this is read on every playback tick (4 Hz) to drain widget
+    /// commands, and re-creating the suite each time churned on the main actor.
+    /// UserDefaults is thread-safe, hence the opt-out.
+    nonisolated(unsafe) static let defaults: UserDefaults? = UserDefaults(suiteName: appGroupID)
 
     static func save(_ snapshot: NowPlayingSnapshot) {
         guard let data = try? JSONEncoder().encode(snapshot) else { return }

@@ -96,6 +96,7 @@ struct PlaylistDetailView: View {
                 .padding(.bottom, Layout.playerBottomInset)
             }
             .refreshable { await refreshPlaylist() }
+            .musaicSwipeContainer()
         }
         .navigationTitle(playlist.name)
         .navigationBarTitleDisplayModeCompat()

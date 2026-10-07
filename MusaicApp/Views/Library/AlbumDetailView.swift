@@ -90,6 +90,7 @@ struct AlbumDetailView: View {
             .padding(.bottom, Layout.playerBottomInset)
         }
         .background(AppBackdrop())
+        .musaicSwipeContainer()
         .navigationTitle(albumTitle)
         .navigationBarTitleDisplayModeCompat()
         .sheet(item: $playlistPickerTrack) { track in

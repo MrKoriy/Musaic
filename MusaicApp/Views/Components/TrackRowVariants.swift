@@ -10,8 +10,8 @@ import SwiftUI
 ///   `onAppear` on every scroll-back; animating there made rows re-dance while
 ///   scrolling (DESIGN.md §10: stagger fade-in, 200ms ease-out, 30ms per item).
 /// - A horizontal swipe reveals quick actions (like on the leading edge, queue +
-///   playlist on the trailing edge). Implemented with a plain drag gesture so it
-///   works in every container on iOS 17+/macOS 15+ — no List required.
+///   playlist on the trailing edge) via the system swipe-actions API, which
+///   coordinates with the enclosing scroll view instead of fighting it.
 struct TrackRow: View {
     let track: Track
     let index: Int
@@ -29,18 +29,10 @@ struct TrackRow: View {
     @State private var isHovered = false
     /// Stagger entrance flag — rows fade/rise in with a 30ms per-item delay.
     @State private var appeared = false
-    /// Swipe-reveal offset of the row content (negative = trailing actions open).
-    @State private var swipeOffset: CGFloat = 0
-    @State private var dragStartOffset: CGFloat?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let downloadManager = DownloadManager.shared
 
-    private let actionSize: CGFloat = 64
-    private var leadingActionsWidth: CGFloat { onLike != nil ? actionSize : 0 }
-    private var trailingActionsWidth: CGFloat {
-        ((onAddToQueue != nil ? 1 : 0) + (onAddToPlaylist != nil ? 1 : 0) + (onRemove != nil ? 1 : 0)) * actionSize
-    }
 
     /// 30ms per row, capped so deep rows in long lists don't wait seconds.
     private var staggerDelay: Double {
@@ -48,18 +40,58 @@ struct TrackRow: View {
     }
 
     var body: some View {
-        ZStack {
-            if swipeOffset != 0 {
-                swipeActions
-            }
+        rowWithSwipeActions
+            .padding(.horizontal, 16)
+            .opacity(appeared ? 1 : 0)
+            .offset(y: appeared ? 0 : 8)
+            .onAppear(perform: playEntranceIfNeeded)
+    }
+
+    /// Quick actions ride on the system's swipe implementation: the rows declare
+    /// `.swipeActions`, and the enclosing scroll view opts in with
+    /// `.musaicSwipeContainer()`. A hand-rolled drag gesture used to live here and
+    /// fought the scroll view — after dismissing the player sheet the list would
+    /// stop scrolling. The system version coordinates with the scroll view instead
+    /// of competing with it; older SDKs simply keep the context menu.
+    @ViewBuilder
+    private var rowWithSwipeActions: some View {
+        #if compiler(>=6.3)
+        if #available(iOS 27.0, macOS 27.0, *) {
             rowContent
-                .offset(x: swipeOffset)
+                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                    if let onLike {
+                        Button {
+                            #if os(iOS)
+                            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                            #endif
+                            onLike()
+                        } label: {
+                            Label(
+                                isLiked ? String(localized: "Unlike") : String(localized: "Like"),
+                                systemImage: isLiked ? "heart.slash" : "heart"
+                            )
+                        }
+                        .tint(Color.accentStrong)
+                    }
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    if let onAddToQueue {
+                        Button { onAddToQueue() } label: {
+                            Label(String(localized: "Add to Queue"), systemImage: "text.append")
+                        }
+                    }
+                    if let onAddToPlaylist {
+                        Button { onAddToPlaylist() } label: {
+                            Label(String(localized: "Add to Playlist"), systemImage: "text.badge.plus")
+                        }
+                    }
+                }
+        } else {
+            rowContent
         }
-        .simultaneousGesture(swipeGesture)
-        .padding(.horizontal, 16)
-        .opacity(appeared ? 1 : 0)
-        .offset(y: appeared ? 0 : 8)
-        .onAppear(perform: playEntranceIfNeeded)
+        #else
+        rowContent
+        #endif
     }
 
     // MARK: - Row content
@@ -136,12 +168,6 @@ struct TrackRow: View {
         .background(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .fill(rowBackgroundColor)
-                .background(
-                    // Opaque scrim so the swipe actions behind the row don't
-                    // shine through the translucent fill while swiping.
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(Color.bgPrimary.opacity(swipeOffset == 0 ? 0 : 0.92))
-                )
         )
         .overlay(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
@@ -150,13 +176,7 @@ struct TrackRow: View {
         .animation(.easeOut(duration: 0.25), value: isCurrent)
         .animation(.easeOut(duration: 0.18), value: isHovered)
         .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .onTapGesture {
-            if swipeOffset != 0 {
-                closeSwipe()
-            } else {
-                onTap?()
-            }
-        }
+        .onTapGesture { onTap?() }
         .onHover { hovering in isHovered = hovering }
         .accessibilityLabel(Text("\(track.title), \(track.artist)"))
         .accessibilityHint(Text(String(localized: "Plays this track")))
@@ -217,99 +237,6 @@ struct TrackRow: View {
         if isCurrent { return Color.white.opacity(0.12) }
         if isHovered { return Color.white.opacity(0.09) }
         return Color.white.opacity(0.05)
-    }
-
-    // MARK: - Swipe actions
-
-    private var swipeActions: some View {
-        HStack(spacing: 0) {
-            if onLike != nil {
-                swipeActionButton(
-                    systemName: isLiked ? "heart.fill" : "heart",
-                    tint: isLiked ? Color.accentStrong : Color.textPrimary,
-                    label: String(localized: "Like")
-                ) {
-                    closeSwipe()
-                    Haptics.impact(.soft)
-                    onLike?()
-                }
-                .frame(width: actionSize)
-            }
-            Spacer(minLength: 0)
-            if let onAddToPlaylist {
-                swipeActionButton(systemName: "text.badge.plus", tint: Color.textPrimary, label: String(localized: "Add to Playlist")) {
-                    closeSwipe()
-                    onAddToPlaylist()
-                }
-                .frame(width: actionSize)
-            }
-            if let onAddToQueue {
-                swipeActionButton(systemName: "text.append", tint: Color.textPrimary, label: String(localized: "Add to Queue")) {
-                    closeSwipe()
-                    onAddToQueue()
-                }
-                .frame(width: actionSize)
-            }
-            if let onRemove {
-                swipeActionButton(systemName: "minus.circle.fill", tint: .red, label: String(localized: "Remove from Playlist")) {
-                    closeSwipe()
-                    onRemove()
-                }
-                .frame(width: actionSize)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func swipeActionButton(
-        systemName: String,
-        tint: Color,
-        label: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(tint)
-                .frame(width: 44, height: 44)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(Text(label))
-    }
-
-    private var swipeGesture: some Gesture {
-        DragGesture(minimumDistance: 12)
-            .onChanged { value in
-                let dx = value.translation.width
-                let dy = value.translation.height
-                // Vertical intent → let the enclosing list scroll.
-                guard abs(dx) > abs(dy) else { return }
-                if dragStartOffset == nil { dragStartOffset = swipeOffset }
-                let base = dragStartOffset ?? 0
-                swipeOffset = min(max(base + dx, -trailingActionsWidth), leadingActionsWidth)
-            }
-            .onEnded { value in
-                defer { dragStartOffset = nil }
-                let dx = value.translation.width
-                guard abs(dx) > abs(value.translation.height) else {
-                    withAnimation(.easeOut(duration: 0.2)) { swipeOffset = 0 }
-                    return
-                }
-                withAnimation(.easeOut(duration: 0.22)) {
-                    if swipeOffset < -actionSize * 0.5 {
-                        swipeOffset = -trailingActionsWidth
-                    } else if swipeOffset > actionSize * 0.5 {
-                        swipeOffset = leadingActionsWidth
-                    } else {
-                        swipeOffset = 0
-                    }
-                }
-            }
-    }
-
-    private func closeSwipe() {
-        withAnimation(.easeOut(duration: 0.2)) { swipeOffset = 0 }
     }
 
     // MARK: - Entrance
@@ -388,6 +315,24 @@ private struct DownloadProgressRing: View {
         }
         .frame(width: 16, height: 16)
         .accessibilityValue(Text("\(Int(progress.fraction * 100))%"))
+    }
+}
+
+extension View {
+    /// Opts a scroll container into the system swipe actions so its rows can
+    /// declare `.swipeActions` (iOS 27 / macOS 27). On older SDKs or OS versions
+    /// this is a no-op and the rows fall back to their context menu.
+    @ViewBuilder
+    func musaicSwipeContainer() -> some View {
+        #if compiler(>=6.3)
+        if #available(iOS 27.0, macOS 27.0, *) {
+            swipeActionsContainer()
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
     }
 }
 

@@ -78,6 +78,7 @@ struct HomeView: View {
                 .padding(.bottom, Layout.playerBottomInset)
             }
             .scrollIndicators(.hidden)
+            .musaicSwipeContainer()
             .background(AppBackdrop())
             .refreshable { await loadData() }
             .task { await refreshIfStale() }

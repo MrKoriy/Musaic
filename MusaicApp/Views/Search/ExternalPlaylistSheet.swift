@@ -84,6 +84,7 @@ struct ExternalPlaylistSheet: View {
                     .frame(maxWidth: .infinity)
                     .padding(.bottom, 40)
                 }
+                .musaicSwipeContainer()
             }
             .navigationBarTitleDisplayModeCompat()
             .toolbar {

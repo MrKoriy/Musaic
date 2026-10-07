@@ -38,6 +38,7 @@ struct ArtistAllTracksView: View {
             .padding(.bottom, Layout.playerBottomInset)
         }
         .background(AppBackdrop())
+        .musaicSwipeContainer()
         .navigationTitle(artistName)
         .navigationBarTitleDisplayModeCompat()
         .sheet(item: $playlistPickerTrack) { track in
