@@ -1,6 +1,11 @@
 import CryptoKit
 import Foundation
 
+struct OfflinePlaylistSnapshot: Codable, Sendable {
+    var playlist: ServerPlaylist
+    var tracks: [Track]
+}
+
 // MARK: - Download Manager
 
 struct DownloadedTrack: Codable, Sendable {
@@ -9,6 +14,7 @@ struct DownloadedTrack: Codable, Sendable {
     let sizeBytes: Int64
     let downloadedAt: Date
     let bitrate: Int
+    var track: Track? = nil
 }
 
 enum DownloadState: Equatable {
@@ -38,12 +44,14 @@ private struct DownloadTaskInfo: Codable, Sendable {
     let artist: String
     let title: String
     let bitrate: Int
+    var track: Track? = nil
 
-    init(trackId: String, artist: String, title: String, bitrate: Int) {
+    init(trackId: String, artist: String, title: String, bitrate: Int, track: Track? = nil) {
         self.trackId = trackId
         self.artist = artist
         self.title = title
         self.bitrate = bitrate
+        self.track = track
     }
 
     init?(task: URLSessionTask) {
@@ -74,9 +82,11 @@ final class DownloadManager {
     static let sessionIdentifier = "\(Bundle.main.bundleIdentifier ?? "com.leonid.musaic").downloads"
 
     private let api = APIService.shared
-    private let bitrate = 128
+    private var bitrate: Int { min(256, max(64, SettingsStore.shared.downloadBitrate)) }
 
     private(set) var downloads: [String: DownloadedTrack] = [:]
+    private(set) var offlinePlaylists: [String: OfflinePlaylistSnapshot] = [:]
+    @ObservationIgnored private let playlistManifest = JSONFileStore<[String: OfflinePlaylistSnapshot]>(fileName: "offline-playlists.json")
     /// Cached so rows can check "downloaded" without touching the disk.
     private(set) var downloadedTrackIds: Set<String> = []
     /// Phase per track (`.downloading` carries 0; live progress lives in `DownloadProgress`).
@@ -100,14 +110,76 @@ final class DownloadManager {
 
     var downloadCount: Int { downloads.count }
 
+    /// All downloads, not only liked tracks. Old manifests can recover metadata
+    /// from the local library; otherwise the saved filename remains playable.
+    var offlineTracks: [Track] {
+        let liked = Dictionary(LibraryStore.shared.likedTracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return downloads.values.sorted { $0.downloadedAt > $1.downloadedAt }.map { entry in
+            entry.track ?? liked[entry.trackId] ?? Track(id: entry.trackId,
+                title: (entry.fileName as NSString).deletingPathExtension,
+                artist: String(localized: "Unknown Artist"), url: "", source: .unknown)
+        }
+    }
+
+    func saveOfflinePlaylist(playlist: ServerPlaylist, tracks: [Track]) {
+        offlinePlaylists[playlist.id] = OfflinePlaylistSnapshot(playlist: playlist, tracks: tracks)
+        playlistManifest.save(offlinePlaylists)
+        playlistManifest.flush()
+    }
+
+    func offlinePlaylist(id: String) -> OfflinePlaylistSnapshot? {
+        guard var snapshot = offlinePlaylists[id] else { return nil }
+        // Prefer persisted offline artwork and omit files removed by the user.
+        snapshot.tracks = snapshot.tracks.compactMap { track in
+            guard let download = downloads[track.id] else { return nil }
+            return download.track ?? track
+        }
+        if let artwork = snapshot.tracks.first?.artwork, URL(string: artwork)?.isFileURL == true {
+            snapshot.playlist.coverUrl = artwork
+        }
+        return snapshot
+    }
+
+    func cancelDownload(trackId: String) {
+        cancelTasks(matching: [trackId])
+        activeDownloads.removeValue(forKey: trackId)
+        progressByTrack.removeValue(forKey: trackId)
+    }
+
+    func downloadTracks(_ tracks: [Track]) {
+        for track in tracks { downloadTrack(track) }
+    }
+
+    private func cacheOfflineArtwork(for track: Track) async {
+        guard let raw = track.artwork, let url = URL(string: raw), !url.isFileURL else { return }
+        do {
+            let result = try await ArtworkPipeline.shared.loadImage(from: url, maxPixelSize: 512)
+            let directory = AppStorageLocation.directory("OfflineArtwork")
+            let name = SHA256.hash(data: Data(track.id.utf8)).map { String(format: "%02x", $0) }.joined() + ".jpg"
+            let target = directory.appendingPathComponent(name)
+            let saved = await Task.detached(priority: .utility) {
+                guard let data = result.image.platformJPEGData(compressionQuality: 0.85) else { return false }
+                do { try data.write(to: target, options: [.atomic]); return true } catch { return false }
+            }.value
+            guard saved, var entry = downloads[track.id], var metadata = entry.track else { return }
+            metadata.artwork = target.absoluteString
+            entry.track = metadata
+            downloads[track.id] = entry
+            manifest.save(downloads)
+            manifest.flush()
+        } catch { /* Audio remains available when an artwork fetch fails. */ }
+    }
+
     private init() {
         let configuration = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
         configuration.sessionSendsLaunchEvents = true
         configuration.isDiscretionary = false
+        configuration.httpMaximumConnectionsPerHost = 3
         configuration.timeoutIntervalForResource = 24 * 60 * 60
         session = URLSession(configuration: configuration, delegate: DownloadSessionDelegate(), delegateQueue: nil)
 
         loadManifest()
+        offlinePlaylists = playlistManifest.load() ?? [:]
         runMaintenance()
         reconnectRunningTasks()
     }
@@ -156,13 +228,15 @@ final class DownloadManager {
         // short-lived credentials and must never be persisted client-side.
         var request = api.authenticatedRequest(for: url)
         request.setValue("audio/*", forHTTPHeaderField: "Accept")
+        request.allowsCellularAccess = !SettingsStore.shared.downloadsWifiOnly
 
         let task = session.downloadTask(with: request)
         task.taskDescription = DownloadTaskInfo(
             trackId: track.id,
             artist: track.artist,
             title: track.title,
-            bitrate: bitrate
+            bitrate: bitrate,
+            track: api.normalizedTrack(track)
         ).encoded
         cancelledTrackIds.remove(track.id)
         progress(for: track.id).fraction = 0
@@ -176,6 +250,9 @@ final class DownloadManager {
         progressByTrack.removeValue(forKey: trackId)
         downloadedTrackIds.remove(trackId)
         if let download = downloads.removeValue(forKey: trackId) {
+            if let artwork = download.track?.artwork, let url = URL(string: artwork), url.isFileURL {
+                Task.detached(priority: .utility) { try? FileManager.default.removeItem(at: url) }
+            }
             DownloadStorage.removeFilesInBackground([download.fileName])
         }
         manifest.save(downloads)
@@ -183,8 +260,13 @@ final class DownloadManager {
 
     func deleteAllDownloads() {
         cancelTasks(matching: nil)
+        let artwork = downloads.values.compactMap { $0.track?.artwork }.compactMap(URL.init(string:)).filter(\.isFileURL)
+        Task.detached(priority: .utility) { for url in artwork { try? FileManager.default.removeItem(at: url) } }
         DownloadStorage.removeFilesInBackground(downloads.values.map(\.fileName))
         downloads.removeAll()
+        offlinePlaylists.removeAll()
+        playlistManifest.save(offlinePlaylists)
+        playlistManifest.flush()
         downloadedTrackIds.removeAll()
         activeDownloads.removeAll()
         progressByTrack.removeAll()
@@ -193,6 +275,7 @@ final class DownloadManager {
 
     func flushPendingWrites() {
         manifest.flush()
+        playlistManifest.flush()
     }
 
     /// iOS app delegate hook: keep the handler until the session drains its events.
@@ -241,11 +324,14 @@ final class DownloadManager {
                 fileName: fileName,
                 sizeBytes: sizeBytes,
                 downloadedAt: Date(),
-                bitrate: info.bitrate
+                bitrate: info.bitrate,
+                track: info.track
             )
             downloadedTrackIds.insert(trackId)
             activeDownloads.removeValue(forKey: trackId)
             manifest.save(downloads)
+            manifest.flush()
+            if let track = info.track { Task { await cacheOfflineArtwork(for: track) } }
         case .failure(let message):
             activeDownloads[trackId] = .failed(message)
         }
@@ -338,7 +424,8 @@ final class DownloadManager {
                 fileName: fileName,
                 sizeBytes: old.sizeBytes,
                 downloadedAt: old.downloadedAt,
-                bitrate: old.bitrate
+                bitrate: old.bitrate,
+                track: old.track
             )
         }
         for trackId in result.missing where activeDownloads[trackId] == nil {

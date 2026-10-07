@@ -336,6 +336,16 @@ final class APIService {
 
     // MARK: - Tracks
 
+    func searchPage(query: String, sources: String, limit: Int = 30, cursor: String? = nil) async throws -> SearchResponse {
+        var path = "/api/search?paged=1&q=\(encodedQueryValue(query))&sources=\(encodedQueryValue(sources))&limit=\(limit)"
+        if let cursor { path += "&cursor=\(encodedQueryValue(cursor))" }
+        return try await get(path)
+    }
+
+    func searchSuggestions(query: String, sources: String) async throws -> SearchSuggestionsResponse {
+        try await get("/api/search/suggestions?q=\(encodedQueryValue(query))&sources=\(encodedQueryValue(sources))")
+    }
+
     func searchTracks(query: String, sources: String = SettingsStore.shared.enabledSourcesParam, limit: Int = 30, offset: Int = 0) async throws -> (tracks: [ServerTrack], hasMore: Bool) {
         let q = encodedQueryValue(query)
         let response: SearchResponse = try await get("/api/search?q=\(q)&sources=\(sources)&limit=\(limit)&offset=\(offset)")
@@ -538,9 +548,22 @@ final class APIService {
         let _: OkResponse = try await delete("/api/playlists/\(id)")
     }
 
+    func getPlaylistTrackPage(playlistId: String, cursor: String? = nil) async throws -> PlaylistTrackPage {
+        var path = "/api/playlists/\(encodedTrackID(playlistId))/tracks?limit=100"
+        if let cursor { path += "&cursor=\(encodedQueryValue(cursor))" }
+        return try await get(path)
+    }
+
     func getPlaylistTracks(playlistId: String) async throws -> [ServerTrack] {
-        let response: TracksResponse = try await get("/api/playlists/\(playlistId)/tracks")
-        return response.tracks
+        var tracks: [ServerTrack] = []
+        var cursor: String?
+        repeat {
+            try Task.checkCancellation()
+            let page = try await getPlaylistTrackPage(playlistId: playlistId, cursor: cursor)
+            tracks.append(contentsOf: page.tracks)
+            cursor = page.nextCursor
+        } while cursor != nil
+        return tracks
     }
 
     // MARK: - Playlist tracks cache
@@ -598,12 +621,16 @@ final class APIService {
         let body = UploadPlaylistCoverBody(imageBase64: base64, mimeType: "image/jpeg")
         let response: PlaylistCoverUploadResponse = try await postJSON("/api/playlists/\(playlistId)/image", body: body)
         invalidatePlaylistTracksCache(playlistId: playlistId)
+        await ArtworkPipeline.shared.invalidatePlaylistCover(playlistId: playlistId)
+        urlCache.removeAllCachedResponses()
         return response.coverUrl
     }
 
     func deletePlaylistCover(playlistId: String) async throws {
         let _: OkResponse = try await delete("/api/playlists/\(playlistId)/image")
         invalidatePlaylistTracksCache(playlistId: playlistId)
+        await ArtworkPipeline.shared.invalidatePlaylistCover(playlistId: playlistId)
+        urlCache.removeAllCachedResponses()
     }
 
     // MARK: - Playlist import
@@ -690,20 +717,23 @@ final class APIService {
         } else {
             ratio = nil
         }
+        let safePlayedMs = playedMs.map { min($0, durationMs ?? $0) }
         let body = LogPlayBody(
             trackId: trackId,
             action: action,
-            eventId: eventId,
-            playedMs: playedMs,
+            eventId: eventId ?? UUID().uuidString,
+            playedAt: Int(Date().timeIntervalSince1970),
+            playedMs: safePlayedMs,
             durationMs: durationMs,
-            playedRatio: ratio,
+            playedRatio: ratio.map { min(1, $0) },
             sessionId: sessionId,
             requestId: requestId,
             surface: surface,
             isOrganic: isOrganic,
             position: position
         )
-        let _: OkResponse? = try? await postJSON("/api/history", body: body)
+        guard let userId = SettingsStore.shared.authUserId else { return }
+        await PlaybackOutbox.shared.enqueue(body, userId: userId, serverURL: serverURL)
     }
 
     // MARK: - Likes Sync
@@ -757,18 +787,18 @@ final class APIService {
     }
 
     func getStatsOverview() async throws -> StatsOverview {
-        return try await get("/api/stats/overview")
+        return try await get("/api/stats/overview?timezone=\(encodedQueryValue(TimeZone.current.identifier))")
     }
 
     func getTopTracks(period: String = "month", limit: Int = 5) async throws -> [StatsTopTrack] {
         struct Resp: Codable { let tracks: [StatsTopTrack] }
-        let resp: Resp = try await get("/api/stats/top-tracks?period=\(period)&limit=\(limit)")
+        let resp: Resp = try await get("/api/stats/top-tracks?period=\(period)&limit=\(limit)&timezone=\(encodedQueryValue(TimeZone.current.identifier))")
         return resp.tracks
     }
 
     func getTopArtists(period: String = "month", limit: Int = 5) async throws -> [StatsTopArtist] {
         struct Resp: Codable { let artists: [StatsTopArtist] }
-        let resp: Resp = try await get("/api/stats/top-artists?period=\(period)&limit=\(limit)")
+        let resp: Resp = try await get("/api/stats/top-artists?period=\(period)&limit=\(limit)&timezone=\(encodedQueryValue(TimeZone.current.identifier))")
         return resp.artists
     }
 
@@ -904,6 +934,7 @@ final class APIService {
 
     func artworkURL(for coverUrl: String?) -> String? {
         guard let coverUrl else { return nil }
+        if URL(string: coverUrl)?.isFileURL == true { return coverUrl }
         // Never re-wrap a URL that already goes through the server artwork
         // proxy (recursive wrapping made these URLs grow without bound).
         if coverUrl.contains("/api/artwork") || coverUrl.hasPrefix(serverURL) {
@@ -934,7 +965,8 @@ final class APIService {
             artwork: st.coverUrl,
             url: streamURL(for: st),
             duration: st.duration,
-            source: st.source
+            source: st.source,
+            recommendationReasons: st.recommendationReasons
         ))
     }
 
@@ -1034,7 +1066,9 @@ private actor InFlightRequests {
 
 // MARK: - Response Types
 
+struct SearchSuggestionsResponse: Codable { let artists: [SearchArtist]; let playlists: [ExternalPlaylist] }
 struct SearchResponse: Codable {
+    let nextCursor: String?
     let tracks: [ServerTrack]
     let playlists: [ExternalPlaylist]?
     let artists: [SearchArtist]?
@@ -1042,6 +1076,7 @@ struct SearchResponse: Codable {
     let errors: [String: String]?
 }
 struct TracksResponse: Codable { let tracks: [ServerTrack] }
+struct PlaylistTrackPage: Codable { let tracks: [ServerTrack]; let hasMore: Bool; let nextCursor: String? }
 struct AlbumsResponse: Codable { let albums: [Album] }
 struct ArtistsResponse: Codable { let artists: [Artist] }
 struct ArtistProfileResponse: Codable {
@@ -1202,10 +1237,11 @@ struct AddTrackBody: Encodable, Sendable {
 }
 struct VKTokenBody: Encodable, Sendable { let token: String; let username: String?; let state: String? }
 struct YandexTokenBody: Encodable, Sendable { let token: String }
-struct LogPlayBody: Encodable, Sendable {
+struct LogPlayBody: Codable, Sendable {
     let trackId: String
     let action: String
     let eventId: String?
+    let playedAt: Int?
     let playedMs: Int?
     let durationMs: Int?
     let playedRatio: Double?

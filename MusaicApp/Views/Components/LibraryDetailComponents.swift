@@ -43,20 +43,20 @@ struct ArtistDetailBanner: View {
                             maxPixelSize: 300
                         ) {
                             Image(systemName: "person.fill")
-                                .font(.system(size: 34))
+                                .musaicFont(size: 34)
                                 .foregroundStyle(Color.textPrimary)
                         }
                         .clipShape(Circle())
                     )
 
                 Text(artistName)
-                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                    .musaicFont(size: 26, weight: .bold, design: .rounded)
                     .foregroundStyle(Color.white)
                     .multilineTextAlignment(.center)
                     .shadow(color: .black.opacity(0.5), radius: 4, y: 2)
 
                 Text([subtitle, String(localized: "\(albumCount) albums • \(trackCount) tracks")].compactMap { $0 }.joined(separator: " • "))
-                    .font(.system(size: 13, weight: .medium))
+                    .musaicFont(size: 13, weight: .medium)
                     .foregroundStyle(Color.white.opacity(0.75))
                     .lineLimit(1)
             }

@@ -7695,6 +7695,499 @@
           }
         }
       }
+    },
+    "Choose source": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose source"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Выбрать источник"
+          }
+        }
+      }
+    },
+    "More player options": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "More player options"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Дополнительные действия плеера"
+          }
+        }
+      }
+    },
+    "Download Quality": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download Quality"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Качество загрузки"
+          }
+        }
+      }
+    },
+    "Downloads on Wi-Fi only": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Downloads on Wi-Fi only"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Загружать только по Wi-Fi"
+          }
+        }
+      }
+    },
+    "Download quality is independent of streaming. Higher bitrates use more storage and cannot improve the original source quality.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download quality is independent of streaming. Higher bitrates use more storage and cannot improve the original source quality."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Качество загрузки настраивается отдельно от стриминга. Высокий битрейт занимает больше места и не повышает качество оригинала."
+          }
+        }
+      }
+    },
+    "Seamless bridge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Seamless bridge"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Плавный переход"
+          }
+        }
+      }
+    },
+    "Stream Quality applies to Yandex; other sources use their available quality. Seamless bridge overlaps tracks by 0.25 seconds when Crossfade is Off. It is not sample-accurate gapless playback.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stream Quality applies to Yandex; other sources use their available quality. Seamless bridge overlaps tracks by 0.25 seconds when Crossfade is Off. It is not sample-accurate gapless playback."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Качество стриминга применяется к Яндексу; остальные источники используют доступное качество. Плавный переход перекрывает треки на 0,25 секунды при выключенном кроссфейде. Это не точное бесшовное воспроизведение."
+          }
+        }
+      }
+    },
+    "Download queue": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download queue"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Очередь загрузок"
+          }
+        }
+      }
+    },
+    "Cancel download": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel download"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Отменить загрузку"
+          }
+        }
+      }
+    },
+    "Download tracks or playlists to listen without a connection.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download tracks or playlists to listen without a connection."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Скачайте треки или плейлисты, чтобы слушать без подключения к сети."
+          }
+        }
+      }
+    },
+    "Download Playlist": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download Playlist"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Скачать плейлист"
+          }
+        }
+      }
+    },
+    "Export JSON": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export JSON"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Экспорт в JSON"
+          }
+        }
+      }
+    },
+    "Export M3U": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export M3U"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Экспорт в M3U"
+          }
+        }
+      }
+    },
+    "Retry history sync": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry history sync"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Повторить синхронизацию истории"
+          }
+        }
+      }
+    },
+    "Could not save listening history on this device.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not save listening history on this device."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не удалось сохранить историю прослушиваний на устройстве."
+          }
+        }
+      }
+    },
+    "Listening history will sync when the server is available.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listening history will sync when the server is available."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "История прослушиваний синхронизируется, когда сервер станет доступен."
+          }
+        }
+      }
+    },
+    "Download (AAC %lldk)": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download (AAC %lldk)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Скачать (AAC %lld кбит/с)"
+          }
+        }
+      }
+    },
+    "Start your personal music station from favorites.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start your personal music station from favorites."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Запустите персональную музыкальную станцию на основе избранного."
+          }
+        }
+      }
+    },
+    "Sign in to Musaic to start your station.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in to Musaic to start your station."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Войдите в Musaic, чтобы запустить станцию."
+          }
+        }
+      }
+    },
+    "Add favorite tracks in Musaic to build your station.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add favorite tracks in Musaic to build your station."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Добавьте любимые треки в Musaic, чтобы создать станцию."
+          }
+        }
+      }
+    },
+    "Starting your personal station in Musaic.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Starting your personal station in Musaic."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Запускаю персональную станцию в Musaic."
+          }
+        }
+      }
+    },
+    "Recommendation signals": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recommendation signals"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Сигналы рекомендации"
+          }
+        }
+      }
+    },
+    "Why this track?": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Why this track?"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Почему этот трек?"
+          }
+        }
+      }
+    },
+    "Positive listening history for this track.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Positive listening history for this track."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Положительная история прослушиваний этого трека."
+          }
+        }
+      }
+    },
+    "Positive listening history for this artist.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Positive listening history for this artist."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Положительная история прослушиваний этого исполнителя."
+          }
+        }
+      }
+    },
+    "Musical tags shared with your station seeds.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Musical tags shared with your station seeds."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Музыкальные теги совпадают с треками, на основе которых построена станция."
+          }
+        }
+      }
+    },
+    "Matches the selected mood.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Matches the selected mood."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Соответствует выбранному настроению."
+          }
+        }
+      }
+    },
+    "Related to an artist used to build this station.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Related to an artist used to build this station."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Связан с исполнителем, на основе которого построена станция."
+          }
+        }
+      }
+    },
+    "Similar listening preferences.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Similar listening preferences."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Похожие музыкальные предпочтения."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

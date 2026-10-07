@@ -29,93 +29,35 @@ struct GlassBackground: ViewModifier {
     var tint: Color = .white
     var intensity: Double = 0.08
     var interactive: Bool = false
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-
-        if #available(iOS 26.0, macOS 26.0, *) {
-            let glass = Glass.regular
-                .tint(tint.opacity(min(0.12, max(0.02, intensity))))
-                .interactive(interactive)
-
-            content
-                .background {
-                    shape
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    .white.opacity(0.03),
-                                    tint.opacity(intensity * 0.34),
-                                    .black.opacity(0.14),
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .overlay {
-                            shape
-                                .fill(
-                                    RadialGradient(
-                                        colors: [
-                                            tint.opacity(intensity * 0.7),
-                                            .clear,
-                                        ],
-                                        center: .topTrailing,
-                                        startRadius: 4,
-                                        endRadius: 120
-                                    )
-                                )
-                                .blur(radius: 16)
-                        }
-                }
-                .glassEffect(glass, in: shape)
-                .overlay {
-                    LiquidEdgeHighlight(cornerRadius: cornerRadius, tint: tint)
-                }
-                .shadow(color: .black.opacity(0.24), radius: 28, y: 18)
+        let opaque = reduceTransparency || contrast == .increased
+        if #available(iOS 26.0, macOS 26.0, *), interactive && !opaque {
+            content.glassEffect(.regular.tint(tint.opacity(min(0.12, intensity))).interactive(), in: shape)
         } else {
             content
-                .background(
-                    ZStack {
-                        shape
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        tint.opacity(intensity + 0.04),
-                                        .white.opacity(0.06),
-                                        .black.opacity(0.12),
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                    }
-                )
-                .overlay(
-                    LiquidEdgeHighlight(cornerRadius: cornerRadius, tint: tint)
-                )
-                .shadow(color: .black.opacity(0.18), radius: 16, y: 10)
+                .background(shape.fill(opaque ? Color.bgSecondary : Color.bgSecondary.opacity(0.94)))
+                .overlay(shape.strokeBorder(Color.white.opacity(contrast == .increased ? 0.28 : 0.08), lineWidth: 1))
         }
     }
 }
 
 struct ClearGlassBackground: ViewModifier {
     var cornerRadius: CGFloat = 24
-
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, macOS 26.0, *) {
-            content
-                .glassEffect(.clear, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if reduceTransparency || contrast == .increased {
+            content.background(shape.fill(Color.bgSecondary))
+                .overlay(shape.strokeBorder(Color.white.opacity(0.28), lineWidth: 1))
+        } else if #available(iOS 26.0, macOS 26.0, *) {
+            content.glassEffect(.clear, in: shape)
         } else {
-            content
-                .background(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(.thinMaterial)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(.white.opacity(0.12), lineWidth: 1)
-                )
+            content.background(shape.fill(.thinMaterial))
         }
     }
 }
@@ -313,9 +255,9 @@ struct LiquidIconButton: View {
         if #available(iOS 26.0, macOS 26.0, *) {
             Button(action: action) {
                 Image(systemName: systemName)
-                    .font(.system(size: 16, weight: .semibold))
+                    .musaicFont(size: 16, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
-                    .frame(width: size, height: size)
+                    .frame(width: max(44, size), height: max(44, size))
             }
             .buttonBorderShape(.circle)
             .buttonStyle(.glass(.regular.interactive()))
@@ -323,9 +265,9 @@ struct LiquidIconButton: View {
         } else {
             Button(action: action) {
                 Image(systemName: systemName)
-                    .font(.system(size: 16, weight: .semibold))
+                    .musaicFont(size: 16, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
-                    .frame(width: size, height: size)
+                    .frame(width: max(44, size), height: max(44, size))
                     .glassCard(cornerRadius: size / 2, intensity: 0.12)
             }
             .buttonStyle(.plain)

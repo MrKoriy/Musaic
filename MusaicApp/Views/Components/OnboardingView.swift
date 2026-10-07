@@ -40,15 +40,15 @@ struct OnboardingView: View {
                                 .frame(width: 70, height: 70)
 
                             Image(systemName: "waveform")
-                                .font(.system(size: 28, weight: .bold))
+                                .musaicFont(size: 28, weight: .bold)
                                 .foregroundStyle(Color.bgPrimary)
                         }
                         Text(String(localized: "Welcome to Musaic"))
-                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .musaicFont(size: 30, weight: .bold, design: .rounded)
                             .foregroundStyle(Color.textPrimary)
 
                         Text(String(localized: "Your library is empty. Choose the sources Musaic should search and recommend from."))
-                            .font(.system(size: 14, weight: .medium))
+                            .musaicFont(size: 14, weight: .medium)
                             .foregroundStyle(Color.textSecondary)
                             .multilineTextAlignment(.center)
                             .fixedSize(horizontal: false, vertical: true)
@@ -58,7 +58,7 @@ struct OnboardingView: View {
 
                     VStack(alignment: .leading, spacing: 14) {
                         Text(String(localized: "Music Sources"))
-                            .font(.system(size: 18, weight: .bold, design: .rounded))
+                            .musaicFont(size: 18, weight: .bold, design: .rounded)
                             .foregroundStyle(Color.textPrimary)
 
                         sourceRow(
@@ -114,7 +114,7 @@ struct OnboardingView: View {
                             ? String(localized: "You can enable sources later in Settings.")
                             : String(localized: "You can change these choices any time in Settings.")
                     )
-                    .font(.system(size: 12, weight: .medium))
+                    .musaicFont(size: 12, weight: .medium)
                     .foregroundStyle(Color.textSecondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 30)
@@ -125,7 +125,7 @@ struct OnboardingView: View {
                             .frame(maxWidth: .infinity)
 
                         Button(String(localized: "Open Settings to Connect"), action: onOpenSettings)
-                            .font(.system(size: 13, weight: .semibold))
+                            .musaicFont(size: 13, weight: .semibold)
                             .foregroundStyle(Color.textSecondary)
                     }
                     .padding(.horizontal, 18)
@@ -147,17 +147,17 @@ struct OnboardingView: View {
     ) -> some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
-                .font(.system(size: 16, weight: .semibold))
+                .musaicFont(size: 16, weight: .semibold)
                 .foregroundStyle(Color.textPrimary)
                 .frame(width: 34, height: 34)
                 .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 14, weight: .semibold))
+                    .musaicFont(size: 14, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
                 Text(subtitle)
-                    .font(.system(size: 11, weight: .medium))
+                    .musaicFont(size: 11, weight: .medium)
                     .foregroundStyle(Color.textSecondary)
                     .lineLimit(1)
             }
@@ -166,7 +166,7 @@ struct OnboardingView: View {
 
             VStack(alignment: .trailing, spacing: 5) {
                 Text(status)
-                    .font(.system(size: 10, weight: .semibold))
+                    .musaicFont(size: 10, weight: .semibold)
                     .foregroundStyle(Color.textMuted)
                 Toggle("", isOn: isOn)
                     .labelsHidden()

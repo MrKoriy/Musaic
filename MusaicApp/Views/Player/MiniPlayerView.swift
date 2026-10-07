@@ -20,12 +20,12 @@ struct MiniPlayerView: View {
 
                         VStack(alignment: .leading, spacing: 4) {
                             Text(track.title)
-                                .font(.system(size: 14, weight: .semibold))
+                                .musaicFont(size: 14, weight: .semibold)
                                 .foregroundStyle(Color.textPrimary)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.74)
                             Text(audio.lastErrorMessage ?? track.artist)
-                                .font(.system(size: 11, weight: .medium))
+                                .musaicFont(size: 11, weight: .medium)
                                 .foregroundStyle(audio.lastErrorMessage == nil ? Color.textSecondary : Color.accentStrong)
                                 .lineLimit(1)
                         }
@@ -64,6 +64,7 @@ struct MiniPlayerView: View {
                 .frame(maxWidth: .infinity, minHeight: 60, alignment: .center)
             }
             .padding(EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12))
+            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
             .onTapGesture { showNowPlaying = true }
             .gesture(
                 DragGesture(minimumDistance: 30)
@@ -125,7 +126,7 @@ struct MiniPlayerView: View {
 
     private func miniControlGlyph(systemName: String, prominent: Bool) -> some View {
         Image(systemName: systemName)
-            .font(.system(size: prominent ? 14 : 13, weight: .bold))
+            .musaicFont(size: prominent ? 14 : 13, weight: .bold)
             .foregroundStyle(Color.textPrimary)
             .frame(width: embeddedInAccessory ? 26 : 32, height: embeddedInAccessory ? 26 : 32)
             .contentTransition(.symbolEffect(.replace.downUp))

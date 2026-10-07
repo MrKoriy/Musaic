@@ -20,10 +20,10 @@ struct ImportPlaylistView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Import Playlist")
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .musaicFont(size: 28, weight: .bold, design: .rounded)
                             .foregroundStyle(Color.textPrimary)
                         Text(String(localized: "Paste a link from Yandex Music. Tracks are matched in your library and enabled sources."))
-                            .font(.system(size: 13, weight: .medium))
+                            .musaicFont(size: 13, weight: .medium)
                             .foregroundStyle(Color.textSecondary)
                     }
                     .padding(.horizontal, 18)
@@ -72,7 +72,7 @@ struct ImportPlaylistView: View {
                             #endif
                         } label: {
                             Label("Paste", systemImage: "doc.on.clipboard")
-                                .font(.system(size: 13, weight: .semibold))
+                                .musaicFont(size: 13, weight: .semibold)
                                 .foregroundStyle(Color.textPrimary)
                                 .padding(.horizontal, 16)
                                 .padding(.vertical, 12)
@@ -87,7 +87,7 @@ struct ImportPlaylistView: View {
                                     ProgressView().tint(Color.bgPrimary).scaleEffect(0.8)
                                 }
                                 Text(loading ? String(localized: "Searching…") : String(localized: "Find Tracks"))
-                                    .font(.system(size: 14, weight: .bold))
+                                    .musaicFont(size: 14, weight: .bold)
                             }
                             .foregroundStyle(Color.bgPrimary)
                             .frame(maxWidth: .infinity)
@@ -100,7 +100,7 @@ struct ImportPlaylistView: View {
 
                     if let error {
                         Text(error)
-                            .font(.system(size: 13, weight: .medium))
+                            .musaicFont(size: 13, weight: .medium)
                             .foregroundStyle(.red)
                             .padding(.horizontal, 18)
                     }
@@ -115,7 +115,7 @@ struct ImportPlaylistView: View {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundStyle(.green)
                             Text(String(localized: "Saved as \"\(savedName)\""))
-                                .font(.system(size: 14, weight: .semibold))
+                                .musaicFont(size: 14, weight: .semibold)
                                 .foregroundStyle(Color.textPrimary)
                         }
                         .padding(.horizontal, 18)
@@ -141,10 +141,10 @@ struct ImportPlaylistView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(result.title ?? String(localized: "Imported Playlist"))
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
+                        .musaicFont(size: 20, weight: .bold, design: .rounded)
                         .foregroundStyle(Color.textPrimary)
                     Text(String(localized: "\(result.matchedCount ?? 0)/\(result.totalTracks ?? 0) tracks found"))
-                        .font(.system(size: 13, weight: .medium))
+                        .musaicFont(size: 13, weight: .medium)
                         .foregroundStyle((result.matchedCount ?? 0) > 0 ? .green : Color.textSecondary)
                 }
                 Spacer()
@@ -157,7 +157,7 @@ struct ImportPlaylistView: View {
                                 ProgressView().tint(Color.bgPrimary).scaleEffect(0.7)
                             }
                             Text(saving ? String(localized: "Saving…") : String(localized: "Save Playlist"))
-                                .font(.system(size: 13, weight: .bold))
+                                .musaicFont(size: 13, weight: .bold)
                         }
                         .foregroundStyle(Color.bgPrimary)
                         .padding(.horizontal, 14)

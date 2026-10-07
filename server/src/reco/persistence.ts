@@ -1,3 +1,4 @@
+import { RECO_FEATURE_NAMES } from "./ranker.js";
 import { getDb } from "../db/index.js";
 import { songFamilyKey } from "../utils/track-identity.js";
 import crypto from "crypto";
@@ -16,6 +17,19 @@ function stableHash(value: string): number {
   return hash >>> 0;
 }
 
+export function recommendationSignals(rawFeatures: unknown): string[] {
+  if (!Array.isArray(rawFeatures)) return [];
+  const value = (name: typeof RECO_FEATURE_NAMES[number]) => Number(rawFeatures[RECO_FEATURE_NAMES.indexOf(name)]) || 0;
+  const signals: string[] = [];
+  if (value("familiar") > 0) signals.push("positive_track_history");
+  if (value("artistPositiveCount") > 0) signals.push("positive_artist_history");
+  if (value("tagOverlap") > 0) signals.push("shared_tags");
+  if (value("moodMatchCount") > 0) signals.push("mood_match");
+  if (value("seedArtistOverlap") > 0) signals.push("seed_artist");
+  if (value("cfSimilarity") > 0) signals.push("similar_listeners");
+  return signals.slice(0, 3);
+}
+
 export function recommendationEnvelope(
   payload: Record<string, unknown>,
   surface: string,
@@ -31,7 +45,7 @@ export function recommendationEnvelope(
     canonicalFamilyId: songFamilyKey({ artist: String(track.artist ?? ""), title: String(track.title ?? "") }),
   }));
   const responseTracks = tracks.map((track) => {
-    const clean = { ...track };
+    const clean: Record<string, unknown> = { ...track, recommendationReasons: recommendationSignals(track._recoFeatures) };
     delete clean._recoHandScore;
     delete clean._recoModelScore;
     delete clean._recoModelVersion;

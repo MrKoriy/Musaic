@@ -14,6 +14,13 @@ struct PlaylistDetailView: View {
     @State private var loadError: String?
     @State private var loadUnauthorized = false
     @State private var uploadingCover = false
+    @State private var nextCursor: String?
+    @State private var loadingMore = false
+    @State private var startingPlayback = false
+    @State private var loadGeneration = 0
+    @State private var showExport = false
+    @State private var exportType: UTType = .json
+    @State private var exportDocument = PlaylistExportDocument(data: Data())
     @State private var showCoverPicker = false
     @State private var showRename = false
     @State private var showDeleteConfirm = false
@@ -68,9 +75,19 @@ struct PlaylistDetailView: View {
                         )
                         .padding(.top, 40)
                     } else {
-                        PlayShuffleButtons(tracks: tracks) { showNowPlaying = true }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 18)
+                        HStack(spacing: 16) {
+                            Button { Task { await playPlaylist(startAt: 0, shuffled: false) } } label: {
+                                Label(String(localized: "Play All"), systemImage: "play.fill")
+                            }
+                            Button { Task { await playPlaylist(startAt: 0, shuffled: true) } } label: {
+                                Label(String(localized: "Shuffle"), systemImage: "shuffle")
+                            }
+                            if startingPlayback { ProgressView() }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(startingPlayback)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 18)
 
                         LazyVStack(spacing: 10) {
                             ForEach(tracks.listItems) { item in
@@ -80,15 +97,19 @@ struct PlaylistDetailView: View {
                                     isCurrent: player.currentTrack?.id == item.track.id,
                                     isLiked: library.isLiked(item.track.id),
                                     onTap: {
-                                        if player.setQueue(tracks, startAt: item.index) {
-                                            showNowPlaying = true
-                                        }
+                                        Task { await playPlaylist(startAt: item.index, shuffled: false) }
                                     },
                                     onLike: { library.toggleLike(track: item.track) },
                                     onAddToQueue: { player.addToQueue(item.track) },
                                     onRemove: { remove(item.track) }
                                 )
+                                .onAppear {
+                                    if item.index >= tracks.count - 5, nextCursor != nil, !loadingMore {
+                                        Task { await loadNextPage() }
+                                    }
+                                }
                             }
+                            if loadingMore { ProgressView().padding() }
                         }
                     }
                 }
@@ -150,6 +171,17 @@ struct PlaylistDetailView: View {
                     } label: {
                         Label(String(localized: "Rename"), systemImage: "pencil")
                     }
+                    Button {
+                        Task { await downloadPlaylist() }
+                    } label: {
+                        Label(String(localized: "Download Playlist"), systemImage: "arrow.down.circle")
+                    }
+                    Button { Task { await prepareExport(type: .json) } } label: {
+                        Label(String(localized: "Export JSON"), systemImage: "square.and.arrow.up")
+                    }
+                    Button { Task { await prepareExport(type: .plainText) } } label: {
+                        Label(String(localized: "Export M3U"), systemImage: "music.note.list")
+                    }
                     Button(role: .destructive) {
                         showDeleteConfirm = true
                     } label: {
@@ -162,6 +194,10 @@ struct PlaylistDetailView: View {
                 .accessibilityLabel(Text(String(localized: "Playlist options")))
             }
         }
+        .fileExporter(isPresented: $showExport, document: exportDocument,
+            contentType: exportType, defaultFilename: playlist.name + (exportType == .json ? ".json" : ".m3u")) { result in
+                if case .failure(let error) = result { actionError = error.localizedDescription }
+            }
         .alert(String(localized: "Rename Playlist"), isPresented: $showRename) {
             TextField(String(localized: "Playlist name"), text: $renameText)
             Button(String(localized: "Save")) { rename() }
@@ -200,7 +236,7 @@ struct PlaylistDetailView: View {
                             Image(systemName: "photo")
                         }
                         Text(uploadingCover ? String(localized: "Uploading…") : String(localized: "Edit Cover"))
-                            .font(.system(size: 12, weight: .semibold))
+                            .musaicFont(size: 12, weight: .semibold)
                     }
                     .foregroundStyle(Color.textPrimary)
                     .padding(.horizontal, 14)
@@ -215,11 +251,11 @@ struct PlaylistDetailView: View {
 
             VStack(spacing: 4) {
                 Text(playlist.name)
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .musaicFont(size: 28, weight: .bold, design: .rounded)
                     .foregroundStyle(Color.textPrimary)
                     .multilineTextAlignment(.center)
-                Text(String(localized: "\(tracks.count) tracks"))
-                    .font(.system(size: 13, weight: .medium))
+                Text(String(localized: "\(playlist.trackCount) tracks"))
+                    .musaicFont(size: 13, weight: .medium)
                     .foregroundStyle(Color.textSecondary)
             }
         }
@@ -228,32 +264,91 @@ struct PlaylistDetailView: View {
     // MARK: - Actions
 
     private func refreshPlaylist() async {
-        // Show cached tracks instantly, then revalidate — reopening a large
-        // playlist (e.g. Yandex Likes with 1000+ tracks) must not show a spinner.
-        if tracks.isEmpty, let cached = api.cachedPlaylistTracks(playlistId: playlistId) {
+        loadGeneration += 1
+        let generation = loadGeneration
+        if tracks.isEmpty, let snapshot = DownloadManager.shared.offlinePlaylist(id: playlistId) {
+            playlist = snapshot.playlist
+            tracks = snapshot.tracks
+            loading = false
+        } else if tracks.isEmpty, let cached = api.cachedPlaylistTracks(playlistId: playlistId) {
             tracks = cached.map(api.toAppTrack)
             loading = false
         }
-
         do {
-            async let playlistTask = api.getPlaylist(id: playlistId)
-            async let tracksTask = api.getPlaylistTracks(playlistId: playlistId)
-            let (fetchedPlaylist, fetchedTracks) = try await (playlistTask, tracksTask)
-            playlist = fetchedPlaylist
-            api.storePlaylistTracks(fetchedTracks, playlistId: playlistId)
-            let mapped = fetchedTracks.map(api.toAppTrack)
-            if mapped != tracks {
-                tracks = mapped
-            }
+            async let metadata = api.getPlaylist(id: playlistId)
+            async let first = api.getPlaylistTrackPage(playlistId: playlistId)
+            let (newPlaylist, page) = try await (metadata, first)
+            guard generation == loadGeneration, !Task.isCancelled else { return }
+            playlist = newPlaylist
+            tracks = page.tracks.map(api.toAppTrack)
+            nextCursor = page.nextCursor
+            loadingMore = false
+            if nextCursor == nil { api.storePlaylistTracks(page.tracks, playlistId: playlistId) }
             loadError = nil
             loadUnauthorized = false
-        } catch where error.isCancellation {
-            return
         } catch {
+            guard generation == loadGeneration, !error.isCancellation else { return }
+            nextCursor = nil
             loadError = error.localizedDescription
             loadUnauthorized = error.isUnauthorized
         }
         loading = false
+    }
+
+    private func loadNextPage() async {
+        guard !loadingMore, let cursor = nextCursor else { return }
+        loadingMore = true
+        let generation = loadGeneration
+        defer { if generation == loadGeneration { loadingMore = false } }
+        do {
+            let page = try await api.getPlaylistTrackPage(playlistId: playlistId, cursor: cursor)
+            guard generation == loadGeneration, !Task.isCancelled else { return }
+            let known = Set(tracks.map(\.id))
+            tracks.append(contentsOf: page.tracks.map(api.toAppTrack).filter { !known.contains($0.id) })
+            nextCursor = page.nextCursor
+        } catch {
+            guard generation == loadGeneration, !error.isCancellation else { return }
+            actionError = error.localizedDescription
+        }
+    }
+
+    /// Playing/download/export operate on the full playlist, never just its visible page.
+    private func completePlaylistTracks() async throws -> [Track] {
+        if let snapshot = DownloadManager.shared.offlinePlaylist(id: playlistId), nextCursor == nil, loadError != nil {
+            return snapshot.tracks
+        }
+        if nextCursor == nil, !loading { return tracks }
+        return try await api.getPlaylistTracks(playlistId: playlistId).map(api.toAppTrack)
+    }
+
+    private func playPlaylist(startAt index: Int, shuffled: Bool) async {
+        guard !startingPlayback, tracks.indices.contains(index) else { return }
+        startingPlayback = true
+        defer { startingPlayback = false }
+        let selectedId = tracks[index].id
+        do {
+            var full = try await completePlaylistTracks()
+            if shuffled { full.shuffle() }
+            let selectedIndex = shuffled ? 0 : (full.firstIndex { $0.id == selectedId } ?? 0)
+            if player.setQueue(full, startAt: selectedIndex) { showNowPlaying = true }
+        } catch { actionError = error.localizedDescription }
+    }
+
+    private func downloadPlaylist() async {
+        do {
+            let full = try await completePlaylistTracks()
+            DownloadManager.shared.saveOfflinePlaylist(playlist: playlist, tracks: full)
+            DownloadManager.shared.downloadTracks(full)
+        } catch { actionError = error.localizedDescription }
+    }
+
+    private func prepareExport(type: UTType) async {
+        do {
+            let full = try await completePlaylistTracks()
+            exportDocument = PlaylistExportDocument(data: try PlaylistExport.data(name: playlist.name, tracks: full, json: type == .json))
+            exportType = type
+            showExport = true
+        } catch { actionError = error.localizedDescription }
     }
 
     /// Optimistic: the row disappears at once and comes back if the server refuses.
@@ -263,6 +358,7 @@ struct PlaylistDetailView: View {
         Task {
             do {
                 try await api.removeFromPlaylist(playlistId: playlistId, trackId: track.id)
+                await refreshPlaylist()
             } catch {
                 tracks.insert(track, at: min(index, tracks.count))
                 if !error.isCancellation {

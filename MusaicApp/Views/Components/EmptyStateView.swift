@@ -24,23 +24,23 @@ struct EmptyStateView: View {
     var body: some View {
         VStack(spacing: 14) {
             Image(systemName: systemImage)
-                .font(.system(size: 30, weight: .semibold))
+                .musaicFont(size: 30, weight: .semibold)
                 .foregroundStyle(Color.textPrimary)
 
             Text(title)
-                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .musaicFont(size: 18, weight: .bold, design: .rounded)
                 .foregroundStyle(Color.textPrimary)
                 .multilineTextAlignment(.center)
 
             Text(message)
-                .font(.system(size: 13, weight: .medium))
+                .musaicFont(size: 13, weight: .medium)
                 .foregroundStyle(Color.textSecondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
 
             if let action, let actionTitle {
                 Button(actionTitle, action: action)
-                    .font(.system(size: 14, weight: .bold))
+                    .musaicFont(size: 14, weight: .bold)
                     .foregroundStyle(Color.bgPrimary)
                     .padding(.horizontal, 20)
                     .padding(.vertical, 12)

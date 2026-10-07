@@ -563,6 +563,88 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 27,
+    description: "Monotonic playlist revisions and ordered playlist index",
+    up: `
+      ALTER TABLE playlists ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+      CREATE INDEX IF NOT EXISTS idx_playlist_position ON playlist_tracks(playlist_id, position, id);
+    `,
+    migrate: (db) => db.exec(`
+      CREATE TRIGGER playlist_revision_metadata AFTER UPDATE OF name, description, updated_at ON playlists BEGIN
+        UPDATE playlists SET revision = revision + 1 WHERE id = NEW.id;
+      END;
+      CREATE TRIGGER playlist_revision_insert AFTER INSERT ON playlist_tracks BEGIN
+        UPDATE playlists SET revision = revision + 1 WHERE id = NEW.playlist_id;
+      END;
+      CREATE TRIGGER playlist_revision_delete AFTER DELETE ON playlist_tracks BEGIN
+        UPDATE playlists SET revision = revision + 1 WHERE id = OLD.playlist_id;
+      END;
+      CREATE TRIGGER playlist_revision_order AFTER UPDATE OF position ON playlist_tracks BEGIN
+        UPDATE playlists SET revision = revision + 1 WHERE id = NEW.playlist_id;
+      END;
+      CREATE TRIGGER playlist_revision_track AFTER UPDATE OF title, artist, album, duration, cover_url, waveform_url, loudness_lufs, loudness_peak_db ON tracks BEGIN
+        UPDATE playlists SET revision = revision + 1 WHERE id IN
+          (SELECT playlist_id FROM playlist_tracks WHERE track_id = NEW.id);
+      END;
+    `),
+  },
+  {
+    version: 28,
+    description: "Retention-independent listening totals and UTC minute rollups",
+    up: `
+      CREATE TABLE listening_stats_minutes (
+        user_key TEXT NOT NULL,
+        bucket INTEGER NOT NULL,
+        track_id TEXT NOT NULL,
+        listens INTEGER NOT NULL,
+        seconds REAL NOT NULL,
+        PRIMARY KEY (user_key, bucket, track_id)
+      );
+      CREATE TABLE listening_stats_totals (
+        user_key TEXT NOT NULL,
+        track_id TEXT NOT NULL,
+        listens INTEGER NOT NULL,
+        seconds REAL NOT NULL,
+        PRIMARY KEY (user_key, track_id)
+      );
+      INSERT INTO listening_stats_minutes
+        SELECT COALESCE(lh.user_id, ''), CAST(lh.played_at / 60 AS INTEGER) * 60, lh.track_id,
+          COUNT(*), SUM(COALESCE(lh.played_ms / 1000.0, t.duration, 0))
+        FROM listening_history lh LEFT JOIN tracks t ON t.id = lh.track_id
+        WHERE ((lh.action = 'play' AND lh.played_ratio IS NULL)
+          OR (lh.action IN ('play', 'complete', 'skip') AND lh.played_ratio >= 0.5))
+        GROUP BY COALESCE(lh.user_id, ''), CAST(lh.played_at / 60 AS INTEGER) * 60, lh.track_id;
+      INSERT INTO listening_stats_totals
+        SELECT user_key, track_id, SUM(listens), SUM(seconds)
+        FROM listening_stats_minutes GROUP BY user_key, track_id;
+    `,
+    migrate: (db) => db.exec(`
+      CREATE TRIGGER listening_stats_insert AFTER INSERT ON listening_history
+      WHEN ((NEW.action = 'play' AND NEW.played_ratio IS NULL)
+        OR (NEW.action IN ('play', 'complete', 'skip') AND NEW.played_ratio >= 0.5)) BEGIN
+        INSERT INTO listening_stats_minutes (user_key, bucket, track_id, listens, seconds)
+          VALUES (COALESCE(NEW.user_id, ''), CAST(NEW.played_at / 60 AS INTEGER) * 60, NEW.track_id, 1,
+            COALESCE(NEW.played_ms / 1000.0, (SELECT duration FROM tracks WHERE id = NEW.track_id), 0))
+          ON CONFLICT(user_key, bucket, track_id) DO UPDATE SET
+            listens = listens + 1, seconds = seconds + excluded.seconds;
+        INSERT INTO listening_stats_totals (user_key, track_id, listens, seconds)
+          VALUES (COALESCE(NEW.user_id, ''), NEW.track_id, 1,
+            COALESCE(NEW.played_ms / 1000.0, (SELECT duration FROM tracks WHERE id = NEW.track_id), 0))
+          ON CONFLICT(user_key, track_id) DO UPDATE SET
+            listens = listens + 1, seconds = seconds + excluded.seconds;
+      END;
+    `),
+  },
+  {
+    version: 29,
+    description: "Keep playback delivery receipts across history retention",
+    up: `
+      CREATE TABLE listening_event_receipts (event_id TEXT PRIMARY KEY, user_key TEXT NOT NULL);
+      INSERT OR IGNORE INTO listening_event_receipts
+        SELECT event_id, COALESCE(user_id, '') FROM listening_history WHERE event_id IS NOT NULL;
+    `,
+  },
 ];
 
 const ALL_MIGRATIONS: Migration[] = (() => {

@@ -25,6 +25,7 @@ struct HomeView: View {
     @State private var vibeIconAppeared = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    @ScaledMetric(relativeTo: .caption) private var compactArtworkSide: CGFloat = 88
     private let api = APIService.shared
     private let player = PlayerStore.shared
     private let library = LibraryStore.shared
@@ -40,9 +41,9 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    jumpBackInSection
-
                     heroSection
+
+                    jumpBackInSection
 
                     if let dailyMixError {
                         ErrorRetryView(
@@ -73,6 +74,8 @@ struct HomeView: View {
                     }
 
                     recommendationsSection
+
+                    homeStatsSection
                 }
                 .padding(.top, 12)
                 .padding(.bottom, Layout.playerBottomInset)
@@ -94,7 +97,7 @@ struct HomeView: View {
         if !likedTracks.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 Text(String(localized: "Jump Back In"))
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .musaicFont(size: 16, weight: .bold, design: .rounded)
                     .foregroundStyle(Color.textPrimary)
                     .padding(.horizontal, 18)
 
@@ -129,25 +132,25 @@ struct HomeView: View {
                     .fill(Color.white.opacity(0.08))
                     .overlay(
                         Image(systemName: "music.note")
-                            .font(.system(size: 22, weight: .medium))
+                            .musaicFont(size: 22, weight: .medium)
                             .foregroundStyle(Color.textSecondary)
                     )
             }
-            .frame(width: 88, height: 88)
+            .frame(width: compactArtworkSide, height: compactArtworkSide)
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .shadow(color: Color.black.opacity(0.35), radius: 8, y: 4)
 
             Text(track.title)
-                .font(.system(size: 11, weight: .semibold))
+                .musaicFont(size: 11, weight: .semibold)
                 .foregroundStyle(Color.textPrimary)
                 .lineLimit(1)
-                .frame(width: 88, alignment: .leading)
+                .frame(width: compactArtworkSide, alignment: .leading)
 
             Text(track.artist)
-                .font(.system(size: 10, weight: .medium))
+                .musaicFont(size: 10, weight: .medium)
                 .foregroundStyle(Color.textSecondary)
                 .lineLimit(1)
-                .frame(width: 88, alignment: .leading)
+                .frame(width: compactArtworkSide, alignment: .leading)
         }
     }
 
@@ -156,10 +159,10 @@ struct HomeView: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(greeting)
-                        .font(.system(size: 36, weight: .bold, design: .rounded))
+                        .musaicFont(size: 28, weight: .bold, design: .rounded, relativeTo: .title)
                         .foregroundStyle(Color.textPrimary)
                     Text(heroSubtitle)
-                        .font(.system(size: 14, weight: .medium))
+                        .musaicFont(size: 14, weight: .medium)
                         .foregroundStyle(Color.textSecondary)
                 }
                 Spacer(minLength: 12)
@@ -175,6 +178,12 @@ struct HomeView: View {
                 djIntroBanner(intro)
             }
 
+
+        }
+        .padding(.horizontal, 18)
+    }
+
+    private var homeStatsSection: some View {
             HStack(spacing: 12) {
                 StatCard(value: "\(player.queue.count)", label: String(localized: "Queue"), icon: "music.note.list")
                 StatCard(value: "\(library.likedTrackIds.count)", label: String(localized: "Liked"), icon: "heart.fill")
@@ -184,8 +193,7 @@ struct HomeView: View {
                     icon: player.isMyVibeActive ? "dot.radiowaves.up.forward" : "wand.and.stars"
                 )
             }
-        }
-        .padding(.horizontal, 18)
+            .padding(.horizontal, 18)
     }
 
     private var heroSubtitle: String {
@@ -207,11 +215,11 @@ struct HomeView: View {
     private func djIntroBanner(_ text: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "dot.radiowaves.forward")
-                .font(.system(size: 15, weight: .bold))
+                .musaicFont(size: 15, weight: .bold)
                 .foregroundStyle(Color.accentStrong)
                 .accessibilityHidden(true)
             Text(text)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .musaicFont(size: 13, weight: .semibold, design: .rounded)
                 .foregroundStyle(Color.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
@@ -234,11 +242,11 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 8) {
                         Text(String(localized: "My Vibe"))
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .musaicFont(size: 28, weight: .bold, design: .rounded)
                             .foregroundStyle(Color.textPrimary)
 
                         Text(player.isMyVibeActive ? String(localized: "LIVE") : String(localized: "WAVE"))
-                            .font(.system(size: 11, weight: .black))
+                            .musaicFont(size: 11, weight: .black)
                             .foregroundStyle(player.isMyVibeActive ? Color.bgPrimary : Color.textPrimary)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
@@ -249,12 +257,12 @@ struct HomeView: View {
                     }
 
                     Text(myVibeLead)
-                        .font(.system(size: 13, weight: .medium))
+                        .musaicFont(size: 13, weight: .medium)
                         .foregroundStyle(Color.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
 
                     Text(myVibeFilters.summary)
-                        .font(.system(size: 12, weight: .semibold))
+                        .musaicFont(size: 12, weight: .semibold)
                         .foregroundStyle(Color.textPrimary.opacity(0.90))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
@@ -272,12 +280,12 @@ struct HomeView: View {
                 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: startingMyVibe ? "hourglass" : "play.fill")
-                            .font(.system(size: 13, weight: .black))
+                            .musaicFont(size: 13, weight: .black)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(player.isMyVibeActive ? String(localized: "Restart My Vibe") : String(localized: "Start My Vibe"))
-                                .font(.system(size: 14, weight: .bold, design: .rounded))
+                                .musaicFont(size: 14, weight: .bold, design: .rounded)
                             Text(isCurrentVibe ? String(localized: "Already playing with these filters") : String(localized: "An endless station built from your favorites"))
-                                .font(.system(size: 11, weight: .medium))
+                                .musaicFont(size: 11, weight: .medium)
                                 .foregroundStyle(Color.bgPrimary.opacity(0.70))
                         }
                         Spacer(minLength: 8)
@@ -301,7 +309,7 @@ struct HomeView: View {
                             myVibeFilters = .default
                         }
                     }
-                    .font(.system(size: 13, weight: .semibold))
+                    .musaicFont(size: 13, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 14)
@@ -330,7 +338,7 @@ struct HomeView: View {
                 ) { $0.title }
 
                 Text(myVibeFilters.character.subtitle)
-                    .font(.system(size: 12, weight: .medium))
+                    .musaicFont(size: 12, weight: .medium)
                     .foregroundStyle(Color.textSecondary)
             }
         }
@@ -389,10 +397,10 @@ struct HomeView: View {
                 .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
                 .padding(8)
             Image(systemName: startingMyVibe ? "waveform.path.ecg" : "dot.radiowaves.up.forward")
-                .font(.system(size: 24, weight: .bold))
+                .musaicFont(size: 24, weight: .bold)
                 .foregroundStyle(Color.bgPrimary)
         }
-        .frame(width: 88, height: 88)
+        .frame(width: compactArtworkSide, height: compactArtworkSide)
         .scaleEffect(vibeIconAppeared ? 1 : 0.8)
         .opacity(vibeIconAppeared ? 1 : 0)
         .accessibilityHidden(true)
@@ -418,9 +426,9 @@ struct HomeView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.counterclockwise")
-                            .font(.system(size: 12, weight: .bold))
+                            .musaicFont(size: 12, weight: .bold)
                         Text(String(localized: "Reload"))
-                            .font(.system(size: 12, weight: .semibold))
+                            .musaicFont(size: 12, weight: .semibold)
                     }
                     .foregroundStyle(Color.textPrimary)
                     .padding(.horizontal, 14)
@@ -460,14 +468,14 @@ struct HomeView: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text(dailyMixName)
-                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .musaicFont(size: 22, weight: .bold, design: .rounded)
                         .foregroundStyle(Color.textPrimary)
                     Text(dailyMix.prefix(3).map(\.artist).joined(separator: " • "))
-                        .font(.system(size: 13, weight: .medium))
+                        .musaicFont(size: 13, weight: .medium)
                         .foregroundStyle(Color.textSecondary)
                         .lineLimit(2)
                     Text(String(localized: "Play curated blend"))
-                        .font(.system(size: 12, weight: .semibold))
+                        .musaicFont(size: 12, weight: .semibold)
                         .foregroundStyle(Color.textPrimary.opacity(0.85))
                 }
 
@@ -486,7 +494,7 @@ struct HomeView: View {
                 ProgressView()
                     .tint(Color.textPrimary)
                 Text(String(localized: "Blending your feed"))
-                    .font(.system(size: 14, weight: .medium))
+                    .musaicFont(size: 14, weight: .medium)
                     .foregroundStyle(Color.textSecondary)
             }
             .frame(maxWidth: .infinity)
@@ -568,7 +576,7 @@ struct HomeView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(.system(size: 12, weight: .semibold))
+                .musaicFont(size: 12, weight: .semibold)
                 .foregroundStyle(Color.textSecondary)
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -581,7 +589,7 @@ struct HomeView: View {
                             }
                         } label: {
                             Text(label(option))
-                                .font(.system(size: 12, weight: .semibold))
+                                .musaicFont(size: 12, weight: .semibold)
                                 .foregroundStyle(isSelected ? Color.bgPrimary : Color.textPrimary)
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 10)
@@ -777,7 +785,7 @@ private struct MixCover: View {
                     endRadius: size
                 )
                 Image(systemName: "waveform")
-                    .font(.system(size: size * 0.30, weight: .semibold))
+                    .musaicFont(size: size * 0.30, weight: .semibold)
                     .foregroundStyle(Color.textPrimary.opacity(0.85))
             } else {
                 collage
@@ -788,7 +796,7 @@ private struct MixCover: View {
                 .fill(Color.black.opacity(0.22))
 
             Image(systemName: "play.fill")
-                .font(.system(size: size * 0.24, weight: .bold))
+                .musaicFont(size: size * 0.24, weight: .bold)
                 .foregroundStyle(Color.textPrimary)
                 .frame(width: size * 0.52, height: size * 0.52)
                 .background(.ultraThinMaterial, in: Circle())

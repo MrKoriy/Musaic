@@ -63,6 +63,7 @@ struct NowPlayingView: View {
             let artSide = min(contentWidth, max(170, geo.size.height - 400), 290)
             let videoHeight = min(contentWidth * 9 / 16, max(170, geo.size.height - 400), 290)
 
+            AdaptivePlayerContainer {
             VStack(spacing: 0) {
                 macTopBar
 
@@ -91,6 +92,7 @@ struct NowPlayingView: View {
             .padding(.horizontal, screenInset)
             .padding(.top, 14)
             .padding(.bottom, 16)
+            }
         }
     }
 
@@ -100,7 +102,7 @@ struct NowPlayingView: View {
                 dismiss()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .bold))
+                    .musaicFont(size: 12, weight: .bold)
                     .foregroundStyle(Color.textSecondary)
                     .frame(width: 30, height: 30)
                     .background(Color.white.opacity(0.07), in: Circle())
@@ -116,7 +118,7 @@ struct NowPlayingView: View {
                     videoStore.toggleVideoMode()
                 } label: {
                     Image(systemName: videoStore.videoModeEnabled ? "tv.fill" : "tv")
-                        .font(.system(size: 12, weight: .semibold))
+                        .musaicFont(size: 12, weight: .semibold)
                         .foregroundStyle(videoStore.videoModeEnabled ? Color.accentStrong : Color.textSecondary)
                         .frame(width: 30, height: 30)
                         .background(Color.white.opacity(0.07), in: Circle())
@@ -130,7 +132,7 @@ struct NowPlayingView: View {
                 showSleepTimer = true
             } label: {
                 Image(systemName: player.sleepTimerActive ? "moon.zzz.fill" : "moon")
-                    .font(.system(size: 12, weight: .semibold))
+                    .musaicFont(size: 12, weight: .semibold)
                     .foregroundStyle(player.sleepTimerActive ? Color.accentStrong : Color.textSecondary)
                     .frame(width: 30, height: 30)
                     .background(Color.white.opacity(0.07), in: Circle())
@@ -143,7 +145,7 @@ struct NowPlayingView: View {
                 showLyrics = true
             } label: {
                 Image(systemName: "quote.bubble")
-                    .font(.system(size: 12, weight: .semibold))
+                    .musaicFont(size: 12, weight: .semibold)
                     .foregroundStyle(Color.textSecondary)
                     .frame(width: 30, height: 30)
                     .background(Color.white.opacity(0.07), in: Circle())
@@ -156,7 +158,7 @@ struct NowPlayingView: View {
                 showQueue = true
             } label: {
                 Image(systemName: "list.bullet")
-                    .font(.system(size: 12, weight: .semibold))
+                    .musaicFont(size: 12, weight: .semibold)
                     .foregroundStyle(Color.textSecondary)
                     .frame(width: 30, height: 30)
                     .background(Color.white.opacity(0.07), in: Circle())
@@ -179,6 +181,7 @@ struct NowPlayingView: View {
             let topInset = max(geo.safeAreaInsets.top, 18)
             let bottomInset = max(geo.safeAreaInsets.bottom, 18)
 
+            AdaptivePlayerContainer {
             VStack(spacing: 14) {
                 Capsule()
                     .fill(Color.white.opacity(0.35))
@@ -206,6 +209,7 @@ struct NowPlayingView: View {
             .padding(.horizontal, screenInset)
             .padding(.top, topInset + 6)
             .padding(.bottom, bottomInset)
+            }
         }
     }
     #endif

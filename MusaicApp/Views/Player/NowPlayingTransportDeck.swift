@@ -139,10 +139,10 @@ struct NowPlayingTransportDeckView: View {
                     )
 
                 Image(systemName: systemName)
-                    .font(.system(size: size, weight: .semibold))
+                    .musaicFont(size: size, weight: .semibold)
                     .foregroundStyle(active ? Color.accentStrong : Color.textPrimary)
                     .contentTransition(.symbolEffect(.replace))
-                    .symbolEffect(.bounce, value: bounceTrigger)
+                    .musaicBounce(value: bounceTrigger)
             }
             .frame(width: 44, height: 44)
             .shadow(color: .black.opacity(0.16), radius: 10, y: 4)
@@ -237,7 +237,7 @@ private struct TransportPlayPauseButton: View {
                     )
 
                 Image(systemName: showsPause ? "pause.fill" : "play.fill")
-                    .font(.system(size: 27, weight: .black))
+                    .musaicFont(size: 27, weight: .black)
                     .foregroundStyle(Color.textPrimary)
                     .offset(x: showsPause ? 0 : 2)
                     .contentTransition(.symbolEffect(.replace.downUp))

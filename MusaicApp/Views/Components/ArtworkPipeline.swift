@@ -93,6 +93,17 @@ actor ArtworkPipeline {
         urlCache.currentDiskUsage
     }
 
+    func invalidatePlaylistCover(playlistId: String) {
+        // NSCache does not expose keys; a small memory cache reset is safe and
+        // the versioned cover URL prevents the HTTP cache serving the old bytes.
+        imageCache.removeAllObjects()
+        let path = "/api/playlists/\(playlistId)/image"
+        for (key, load) in inflight where key.contains(path) {
+            load.task.cancel()
+            inflight[key] = nil
+        }
+    }
+
     func clearCaches() {
         imageCache.removeAllObjects()
         urlCache.removeAllCachedResponses()
@@ -183,6 +194,14 @@ actor ArtworkPipeline {
 
     private static func fetchAndDecode(_ request: URLRequest, session: URLSession, maxPixelSize: Int) async throws -> ArtworkLoadResult {
         try Task.checkCancellation()
+        if let url = request.url, url.isFileURL {
+            let data = try Data(contentsOf: url)
+            guard data.count <= 5 * 1024 * 1024,
+                  let image = downsampledImage(from: data, maxPixelSize: maxPixelSize) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            return ArtworkLoadResult(image: image, statusCode: nil, byteCount: data.count, cacheHit: false)
+        }
         let (data, response) = try await session.data(for: request)
         try Task.checkCancellation()
         guard data.count <= 5 * 1024 * 1024 else { throw URLError(.dataLengthExceedsMaximum) }

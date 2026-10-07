@@ -19,16 +19,17 @@ struct NowPlayingTopBarView: View {
                 Spacer()
                 LiquidGlassGroup(spacing: 10) {
                     HStack(spacing: 10) {
-                        LiquidIconButton(
-                            systemName: "dial.max",
-                            size: 42,
-                            accessibilityLabel: String(localized: "iPod wheel")
-                        ) {
-                            showIPodWheel = true
+                        Menu {
+                            Button { showSleepTimer = true } label: {
+                                Label(String(localized: "Sleep timer"), systemImage: sleepIcon)
+                            }
+                            Button { showIPodWheel = true } label: {
+                                Label(String(localized: "iPod wheel"), systemImage: "dial.max")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis").frame(width: 44, height: 44)
                         }
-                        LiquidIconButton(systemName: sleepIcon, size: 42, accessibilityLabel: String(localized: "Sleep timer")) {
-                            showSleepTimer = true
-                        }
+                        .accessibilityLabel(Text(String(localized: "More player options")))
                         LiquidIconButton(systemName: "quote.bubble", size: 42, accessibilityLabel: String(localized: "Show lyrics")) {
                             showLyrics = true
                         }
@@ -41,7 +42,7 @@ struct NowPlayingTopBarView: View {
 
             VStack(spacing: 4) {
                 Text(String(localized: "NOW PLAYING"))
-                    .font(.system(size: 11, weight: .semibold))
+                    .musaicFont(size: 11, weight: .semibold)
                     .tracking(3)
                     .foregroundStyle(Color.textSecondary)
                 Group {
@@ -61,7 +62,7 @@ struct NowPlayingTopBarView: View {
 
     private var stateLineText: some View {
         Text(trackStateLine)
-            .font(.system(size: 12, weight: .medium))
+            .musaicFont(size: 12, weight: .medium)
             .foregroundStyle(audio.isBuffering ? Color.accentStrong : Color.textMuted)
             .lineLimit(1)
             .minimumScaleFactor(0.8)
@@ -114,6 +115,7 @@ struct NowPlayingArtworkView: View {
 }
 
 struct NowPlayingMetadataSectionView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let track: Track
 
     private let audio = AudioPlayer.shared
@@ -125,24 +127,24 @@ struct NowPlayingMetadataSectionView: View {
 
         return VStack(spacing: 12) {
             Text(track.title)
-                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .musaicFont(size: 22, weight: .bold, design: .rounded)
                 .foregroundStyle(Color.textPrimary)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
                 .minimumScaleFactor(0.78)
                 .contentTransition(.opacity)
-                .animation(.easeOut(duration: 0.28), value: track.id)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.28), value: track.id)
 
             Text(track.artist)
-                .font(.system(size: 17, weight: .medium))
+                .musaicFont(size: 17, weight: .medium)
                 .foregroundStyle(Color.textSecondary)
                 .lineLimit(1)
                 .contentTransition(.opacity)
-                .animation(.easeOut(duration: 0.28), value: track.id)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.28), value: track.id)
 
             if let playbackLine {
                 Text(playbackLine)
-                    .font(.system(size: 12, weight: .semibold))
+                    .musaicFont(size: 12, weight: .semibold)
                     .foregroundStyle(audio.lastErrorMessage == nil ? Color.textMuted : Color.accentStrong)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
@@ -152,7 +154,7 @@ struct NowPlayingMetadataSectionView: View {
 
             HStack(spacing: 10) {
                 Text(track.source.displayTag)
-                    .font(.system(size: 11, weight: .bold))
+                    .musaicFont(size: 11, weight: .bold)
                     .foregroundStyle(Color.textPrimary)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 9)
@@ -165,11 +167,11 @@ struct NowPlayingMetadataSectionView: View {
                     library.toggleLike(track: track)
                 } label: {
                     Image(systemName: liked ? "heart.fill" : "heart")
-                        .font(.system(size: 17, weight: .semibold))
+                        .musaicFont(size: 17, weight: .semibold)
                         .foregroundStyle(liked ? Color.accentStrong : Color.textPrimary)
-                        .frame(width: 42, height: 42)
+                        .frame(width: 44, height: 44)
                         .contentTransition(.symbolEffect(.replace.downUp))
-                        .symbolEffect(.bounce.up.byLayer, value: liked)
+                        .musaicBounce(value: liked)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(liked ? String(localized: "Remove from favorites") : String(localized: "Add to favorites")))
@@ -187,9 +189,9 @@ struct NowPlayingMetadataSectionView: View {
                     player.dislikeCurrentTrack()
                 } label: {
                     Image(systemName: "hand.thumbsdown")
-                        .font(.system(size: 16, weight: .semibold))
+                        .musaicFont(size: 16, weight: .semibold)
                         .foregroundStyle(Color.textPrimary)
-                        .frame(width: 42, height: 42)
+                        .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(String(localized: "Dislike and skip track")))

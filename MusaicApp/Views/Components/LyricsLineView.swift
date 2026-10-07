@@ -29,7 +29,7 @@ struct LyricsLineView: View {
                     .foregroundStyle(Color.textPrimary.opacity(isActive ? 1.0 : 0.38))
             }
         }
-        .font(.system(size: 22, weight: .semibold, design: .rounded))
+        .musaicFont(size: 22, weight: .semibold, design: .rounded)
         .fixedSize(horizontal: false, vertical: true)
         .multilineTextAlignment(.leading)
         .frame(maxWidth: .infinity, alignment: .leading)

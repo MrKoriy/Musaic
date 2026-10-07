@@ -129,25 +129,25 @@ struct ExternalPlaylistSheet: View {
                     }
                 } else {
                     Color.white.opacity(0.06)
-                        .overlay(Image(systemName: "music.note.list").font(.system(size: 32)).foregroundStyle(Color.textSecondary))
+                        .overlay(Image(systemName: "music.note.list").musaicFont(size: 32).foregroundStyle(Color.textSecondary))
                 }
             }
             .frame(width: 180, height: 180)
             .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
 
             Text(playlist.title)
-                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .musaicFont(size: 22, weight: .bold, design: .rounded)
                 .foregroundStyle(Color.textPrimary)
                 .multilineTextAlignment(.center)
 
             HStack(spacing: 6) {
                 Text(playlist.source.uppercased())
-                    .font(.system(size: 11, weight: .bold))
+                    .musaicFont(size: 11, weight: .bold)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
                     .glassCard(cornerRadius: 12, intensity: 0.08)
                 Text(String(localized: "\(playlist.trackCount) tracks"))
-                    .font(.system(size: 13))
+                    .musaicFont(size: 13)
                     .foregroundStyle(Color.textSecondary)
             }
 
@@ -159,7 +159,7 @@ struct ExternalPlaylistSheet: View {
                         }
                     } label: {
                         Label(String(localized: "Play All"), systemImage: "play.fill")
-                            .font(.system(size: 14, weight: .semibold))
+                            .musaicFont(size: 14, weight: .semibold)
                             .foregroundStyle(Color.textPrimary)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 13)
@@ -177,7 +177,7 @@ struct ExternalPlaylistSheet: View {
                     } label: {
                         Label(savedStateLabel, systemImage: savedStateIcon)
                             .contentTransition(.symbolEffect(.replace))
-                            .font(.system(size: 14, weight: .semibold))
+                            .musaicFont(size: 14, weight: .semibold)
                             .foregroundStyle(Color.textPrimary)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 13)
@@ -190,7 +190,7 @@ struct ExternalPlaylistSheet: View {
 
                 if let saveError {
                     Text(saveError)
-                        .font(.system(size: 12, weight: .medium))
+                        .musaicFont(size: 12, weight: .medium)
                         .foregroundStyle(Color.accentStrong)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 30)

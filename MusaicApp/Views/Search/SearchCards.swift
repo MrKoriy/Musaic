@@ -16,7 +16,7 @@ struct ArtistSearchCard: View {
                             maxPixelSize: 420
                         ) {
                             Image(systemName: "person.fill")
-                                .font(.system(size: 28, weight: .semibold))
+                                .musaicFont(size: 28, weight: .semibold)
                                 .foregroundStyle(Color.textPrimary)
                         }
                         .clipShape(Circle())
@@ -24,7 +24,7 @@ struct ArtistSearchCard: View {
                     .frame(width: 86, height: 86)
 
                 Text(sourceBadge(artist.source))
-                    .font(.system(size: 9, weight: .bold))
+                    .musaicFont(size: 9, weight: .bold)
                     .foregroundStyle(Color.textPrimary)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
@@ -33,18 +33,18 @@ struct ArtistSearchCard: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(artist.artist)
-                    .font(.system(size: 14, weight: .semibold))
+                    .musaicFont(size: 14, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
                     .lineLimit(2)
                     .frame(minHeight: 34, alignment: .topLeading)
 
                 Text(artist.subtitle?.isEmpty == false ? artist.subtitle! : artist.sourceLabel)
-                    .font(.system(size: 11, weight: .medium))
+                    .musaicFont(size: 11, weight: .medium)
                     .foregroundStyle(Color.textSecondary)
                     .lineLimit(1)
 
                 Text("\(artist.trackCount) tracks")
-                    .font(.system(size: 11, weight: .medium))
+                    .musaicFont(size: 11, weight: .medium)
                     .foregroundStyle(Color.textMuted)
                     .lineLimit(1)
             }
@@ -91,9 +91,9 @@ struct PlaylistSearchCard: View {
                             Spacer()
                             HStack(spacing: 4) {
                                 Image(systemName: "list.bullet")
-                                    .font(.system(size: 9, weight: .bold))
+                                    .musaicFont(size: 9, weight: .bold)
                                 Text("\(playlist.trackCount)")
-                                    .font(.system(size: 10, weight: .bold))
+                                    .musaicFont(size: 10, weight: .bold)
                             }
                             .foregroundStyle(.white)
                             .padding(.horizontal, 8)
@@ -107,18 +107,18 @@ struct PlaylistSearchCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
                 Text(playlist.title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .musaicFont(size: 13, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
                     .lineLimit(2)
 
                 HStack(spacing: 4) {
                     Text(playlist.source.uppercased())
-                        .font(.system(size: 9, weight: .bold))
+                        .musaicFont(size: 9, weight: .bold)
                         .foregroundStyle(Color.textMuted)
                     Text("•")
                         .foregroundStyle(Color.textMuted)
                     Text(playlist.author)
-                        .font(.system(size: 11))
+                        .musaicFont(size: 11)
                         .foregroundStyle(Color.textSecondary)
                 }
                 .lineLimit(1)

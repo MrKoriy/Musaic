@@ -125,7 +125,7 @@ struct SleepTimerSheet: View {
                                 HStack(spacing: 8) {
                                     Image(systemName: "xmark.circle.fill")
                                  Text(String(localized: "Turn off timer"))
-                                        .font(.system(size: 14, weight: .bold))
+                                        .musaicFont(size: 14, weight: .bold)
                                 }
                                 .foregroundStyle(Color.textPrimary)
                                 .padding(.horizontal, 22)
@@ -172,7 +172,7 @@ struct SleepTimerSheet: View {
                 // Pulses only while a timer is armed and the app is in the
                 // foreground; static under Reduce Motion.
                 Image(systemName: "moon.zzz.fill")
-                    .font(.system(size: 36, weight: .semibold))
+                    .musaicFont(size: 36, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
                     .symbolEffect(
                         .pulse,
@@ -183,7 +183,7 @@ struct SleepTimerSheet: View {
             .frame(width: 100, height: 100)
 
              Text(String(localized: "Sleep Timer"))
-                .font(.system(size: 24, weight: .bold, design: .rounded))
+                .musaicFont(size: 24, weight: .bold, design: .rounded)
                 .foregroundStyle(Color.textPrimary)
 
             Group {
@@ -202,7 +202,7 @@ struct SleepTimerSheet: View {
 
     private var statusLineText: some View {
         Text(statusLine)
-            .font(.system(size: 13, weight: .medium))
+            .musaicFont(size: 13, weight: .medium)
             .foregroundStyle(Color.textSecondary)
             .multilineTextAlignment(.center)
             .padding(.horizontal, 24)
@@ -235,7 +235,7 @@ struct SleepTimerSheet: View {
         } label: {
             HStack {
                 Text(label)
-                    .font(.system(size: 15, weight: .semibold))
+                    .musaicFont(size: 15, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
                 Spacer()
                 if isActive {
@@ -259,10 +259,10 @@ struct SleepTimerSheet: View {
         } label: {
             HStack {
                 Image(systemName: "music.note")
-                    .font(.system(size: 14, weight: .bold))
+                    .musaicFont(size: 14, weight: .bold)
                     .foregroundStyle(Color.textPrimary)
                  Text(String(localized: "End of this track"))
-                    .font(.system(size: 15, weight: .semibold))
+                    .musaicFont(size: 15, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
                 Spacer()
                 if player.sleepTimerEndOfTrack {

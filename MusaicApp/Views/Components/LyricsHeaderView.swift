@@ -20,7 +20,7 @@ struct LyricsHeaderView: View {
         HStack {
             Button { dismiss() } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 15, weight: .bold))
+                    .musaicFont(size: 15, weight: .bold)
                     .foregroundStyle(Color.textSecondary)
                     .frame(width: 36, height: 36)
                     .background(Color.white.opacity(0.08), in: Circle())
@@ -32,16 +32,16 @@ struct LyricsHeaderView: View {
 
             VStack(spacing: 2) {
                 Text(track.title)
-                    .font(.system(size: 15, weight: .bold))
+                    .musaicFont(size: 15, weight: .bold)
                     .foregroundStyle(Color.textPrimary)
                     .lineLimit(1)
                 Text(track.artist)
-                    .font(.system(size: 12, weight: .medium))
+                    .musaicFont(size: 12, weight: .medium)
                     .foregroundStyle(Color.textSecondary)
                     .lineLimit(1)
                 if !lyricsSourceLabel.isEmpty {
                     Text(lyricsSourceLabel)
-                        .font(.system(size: 10, weight: .semibold))
+                        .musaicFont(size: 10, weight: .semibold)
                         .foregroundStyle(Color.textMuted)
                 }
             }
@@ -52,7 +52,7 @@ struct LyricsHeaderView: View {
                 if canAdjustTiming, let onToggleTiming {
                     Button(action: onToggleTiming) {
                         Image(systemName: "timer")
-                            .font(.system(size: 14, weight: .bold))
+                            .musaicFont(size: 14, weight: .bold)
                             .foregroundStyle(timingActive ? Color.accentStrong : Color.textSecondary)
                             .frame(width: 36, height: 36)
                             .background(Color.white.opacity(timingActive ? 0.14 : 0.08), in: Circle())
@@ -68,7 +68,7 @@ struct LyricsHeaderView: View {
                     showManualSearch = true
                 } label: {
                     Image(systemName: "magnifyingglass")
-                        .font(.system(size: 14, weight: .bold))
+                        .musaicFont(size: 14, weight: .bold)
                         .foregroundStyle(Color.textSecondary)
                         .frame(width: 36, height: 36)
                         .background(Color.white.opacity(0.08), in: Circle())
@@ -85,7 +85,7 @@ struct LyricsHeaderView: View {
                                     .scaleEffect(0.8)
                             } else {
                                 Image(systemName: "arrow.clockwise")
-                                    .font(.system(size: 14, weight: .bold))
+                                    .musaicFont(size: 14, weight: .bold)
                                     .foregroundStyle(Color.textSecondary)
                             }
                         }

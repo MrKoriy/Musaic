@@ -110,14 +110,14 @@ struct AlbumDetailView: View {
 
             VStack(spacing: 6) {
                 Text(albumTitle)
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .musaicFont(size: 22, weight: .bold, design: .rounded)
                     .foregroundStyle(Color.textPrimary)
                     .multilineTextAlignment(.center)
                 Text(artistName)
-                    .font(.system(size: 14, weight: .medium))
+                    .musaicFont(size: 14, weight: .medium)
                     .foregroundStyle(Color.textSecondary)
                 Text(String(localized: "\(tracks.count) tracks") + (source.map { " • \(artistSourceDisplayName($0))" } ?? ""))
-                    .font(.system(size: 12, weight: .semibold))
+                    .musaicFont(size: 12, weight: .semibold)
                     .foregroundStyle(Color.textMuted)
             }
             .padding(.horizontal, 18)

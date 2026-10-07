@@ -49,6 +49,9 @@ targets:
         # Dark-only app: system chrome and the launch screen must match.
         UIUserInterfaceStyle: Dark
         LSApplicationCategoryType: public.app-category.music
+        CFBundleURLTypes:
+          - CFBundleURLName: com.leonid.musaic.track
+            CFBundleURLSchemes: [musaic]
         NSAppTransportSecurity:
           # Personal server over plain HTTP at a user-configurable address.
           # Must stay the only ATS key: NSAllowsArbitraryLoads is ignored when
@@ -92,6 +95,9 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSApplicationCategoryType: public.app-category.music
+        CFBundleURLTypes:
+          - CFBundleURLName: com.leonid.musaic.track
+            CFBundleURLSchemes: [musaic]
         CFBundleIconName: MusaicIcon
         CFBundleIconFile: MusaicIcon
         NSAppTransportSecurity:

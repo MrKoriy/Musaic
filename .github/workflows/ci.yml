@@ -96,7 +96,7 @@ jobs:
       - name: ShellCheck
         run: |
           shopt -s nullglob
-          shellcheck --severity=warning deploy-server.sh server/scripts/*.sh server/sidecar/*.sh
+          shellcheck --severity=warning deploy-server.sh server/scripts/*.sh server/sidecar/*.sh .github/scripts/*.sh
       - name: actionlint
         uses: raven-actions/actionlint@v2
 
@@ -117,7 +117,7 @@ jobs:
       - name: Build macOS app
         working-directory: MusaicApp
         run: >-
-          xcodebuild -project Musaic.xcodeproj -scheme MusaicMac
+          bash ../.github/scripts/xcodebuild-with-diagnostics.sh -project Musaic.xcodeproj -scheme MusaicMac
           -configuration ${{ matrix.configuration }}
           -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
 
@@ -134,7 +134,7 @@ jobs:
       - name: Run unit tests
         working-directory: MusaicApp
         run: >-
-          xcodebuild test -project Musaic.xcodeproj -scheme MusaicMac -configuration Debug
+          bash ../.github/scripts/xcodebuild-with-diagnostics.sh test -project Musaic.xcodeproj -scheme MusaicMac -configuration Debug
           -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
 
   app-build-ios:
@@ -150,7 +150,7 @@ jobs:
       - name: Build iOS app (with widget extension)
         working-directory: MusaicApp
         run: >-
-          xcodebuild -project Musaic.xcodeproj -scheme Musaic -configuration Debug
+          bash ../.github/scripts/xcodebuild-with-diagnostics.sh -project Musaic.xcodeproj -scheme Musaic -configuration Debug
           -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
 
   app-build-watchos:
@@ -166,5 +166,5 @@ jobs:
       - name: Build watch app
         working-directory: MusaicApp
         run: >-
-          xcodebuild -project Musaic.xcodeproj -scheme MusaicWatch -configuration Debug
+          bash ../.github/scripts/xcodebuild-with-diagnostics.sh -project Musaic.xcodeproj -scheme MusaicWatch -configuration Debug
           -destination 'generic/platform=watchOS' CODE_SIGNING_ALLOWED=NO build

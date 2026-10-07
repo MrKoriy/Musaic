@@ -164,17 +164,17 @@ struct ProfileVKSection: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(settings.vkUsername.isEmpty ? String(localized: "VK User") : settings.vkUsername)
-                            .font(.system(size: 15, weight: .semibold))
+                            .musaicFont(size: 15, weight: .semibold)
                             .foregroundStyle(Color.textPrimary)
                         Text("Token is stored on the server.")
-                            .font(.system(size: 12, weight: .medium))
+                            .musaicFont(size: 12, weight: .medium)
                             .foregroundStyle(Color.textSecondary)
                     }
                     Spacer()
                     Button(String(localized: "Disconnect")) {
                         auth.disconnectVK()
                     }
-                    .font(.system(size: 12, weight: .semibold))
+                    .musaicFont(size: 12, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
@@ -183,12 +183,12 @@ struct ProfileVKSection: View {
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Sign in to VK directly inside Musaic and send the token to your server.")
-                        .font(.system(size: 13, weight: .medium))
+                        .musaicFont(size: 13, weight: .medium)
                         .foregroundStyle(Color.textSecondary)
 
                     if let vkError = auth.vkError {
                         Text(vkError)
-                            .font(.system(size: 12, weight: .semibold))
+                            .musaicFont(size: 12, weight: .semibold)
                             .foregroundStyle(.red)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -200,7 +200,7 @@ struct ProfileVKSection: View {
                             Image(systemName: "globe")
                             Text(auth.vkLoggingIn ? String(localized: "Opening VK...") : String(localized: "Login to VK"))
                         }
-                        .font(.system(size: 14, weight: .semibold))
+                        .musaicFont(size: 14, weight: .semibold)
                         .foregroundStyle(Color.bgPrimary)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
@@ -233,17 +233,17 @@ struct ProfileYandexSection: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(settings.yandexUsername.isEmpty ? String(localized: "Yandex account") : settings.yandexUsername)
-                            .font(.system(size: 15, weight: .semibold))
+                            .musaicFont(size: 15, weight: .semibold)
                             .foregroundStyle(Color.textPrimary)
                         Text("Token is stored encrypted on the server.")
-                            .font(.system(size: 12, weight: .medium))
+                            .musaicFont(size: 12, weight: .medium)
                             .foregroundStyle(Color.textSecondary)
                     }
                     Spacer()
                     Button(String(localized: "Disconnect")) {
                         auth.disconnectYandex()
                     }
-                    .font(.system(size: 12, weight: .semibold))
+                    .musaicFont(size: 12, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
@@ -257,21 +257,21 @@ struct ProfileYandexSection: View {
                             auth.yandexImporting ? String(localized: "Syncing…") : String(localized: "Sync Yandex likes"),
                             systemImage: "arrow.triangle.2.circlepath"
                         )
-                        .font(.system(size: 13, weight: .semibold))
+                        .musaicFont(size: 13, weight: .semibold)
                         .foregroundStyle(Color.textPrimary)
                     }
                     .buttonStyle(.plain)
                     .disabled(auth.yandexImporting)
                     if let yandexImportMessage = auth.yandexImportMessage {
                         Text(yandexImportMessage)
-                            .font(.system(size: 11, weight: .medium))
+                            .musaicFont(size: 11, weight: .medium)
                             .foregroundStyle(Color.textSecondary)
                             .lineLimit(2)
                     }
                 }
                 if let yandexPlusWarning = auth.yandexPlusWarning {
                     Text(yandexPlusWarning)
-                        .font(.system(size: 12, weight: .semibold))
+                        .musaicFont(size: 12, weight: .semibold)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -279,13 +279,13 @@ struct ProfileYandexSection: View {
                 // Device-flow in progress: show the code + open the verification page.
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Open the Yandex page, sign in, and enter this code exactly as shown (valid ~5 min):")
-                        .font(.system(size: 13, weight: .medium))
+                        .musaicFont(size: 13, weight: .medium)
                         .foregroundStyle(Color.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                     // Show the code verbatim — Yandex codes are lowercase and
                     // case-sensitive, so never transform the case here.
                     Text(auth.yandexUserCode)
-                        .font(.system(size: 32, weight: .bold, design: .monospaced))
+                        .musaicFont(size: 32, weight: .bold, design: .monospaced)
                         .tracking(2)
                         .foregroundStyle(Color.textPrimary)
                         .textSelection(.enabled)
@@ -299,7 +299,7 @@ struct ProfileYandexSection: View {
                                 Image(systemName: "safari")
                                 Text("Open \(host)")
                             }
-                            .font(.system(size: 14, weight: .semibold))
+                            .musaicFont(size: 14, weight: .semibold)
                             .foregroundStyle(Color.bgPrimary)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 14)
@@ -310,20 +310,20 @@ struct ProfileYandexSection: View {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
                         Text("Waiting for confirmation…")
-                            .font(.system(size: 12, weight: .medium))
+                            .musaicFont(size: 12, weight: .medium)
                             .foregroundStyle(Color.textSecondary)
                     }
                 }
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Connect your Yandex account by code — no password typing. Full tracks require an active Yandex Plus subscription.")
-                        .font(.system(size: 13, weight: .medium))
+                        .musaicFont(size: 13, weight: .medium)
                         .foregroundStyle(Color.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
 
                     if let yandexError = auth.yandexError {
                         Text(yandexError)
-                            .font(.system(size: 12, weight: .semibold))
+                            .musaicFont(size: 12, weight: .semibold)
                             .foregroundStyle(.red)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -335,7 +335,7 @@ struct ProfileYandexSection: View {
                             Image(systemName: "qrcode")
                             Text(auth.yandexConnecting ? String(localized: "Starting…") : String(localized: "Connect with a code"))
                         }
-                        .font(.system(size: 14, weight: .semibold))
+                        .musaicFont(size: 14, weight: .semibold)
                         .foregroundStyle(Color.bgPrimary)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
@@ -346,14 +346,14 @@ struct ProfileYandexSection: View {
 
                     Button { auth.showYandexPasteFallback.toggle() } label: {
                         Text(auth.showYandexPasteFallback ? String(localized: "Hide manual token") : String(localized: "Or paste a token manually"))
-                            .font(.system(size: 12, weight: .semibold))
+                            .musaicFont(size: 12, weight: .semibold)
                             .foregroundStyle(Color.textSecondary)
                     }
                     .buttonStyle(.plain)
 
                     if auth.showYandexPasteFallback {
                         SecureField("Yandex OAuth token", text: $auth.yandexToken)
-                            .font(.system(size: 13))
+                            .musaicFont(size: 13)
                             .foregroundStyle(Color.textPrimary)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 12)
@@ -366,7 +366,7 @@ struct ProfileYandexSection: View {
                             auth.connectYandex()
                         } label: {
                             Text(auth.yandexConnecting ? String(localized: "Connecting…") : String(localized: "Connect with token"))
-                                .font(.system(size: 13, weight: .semibold))
+                                .musaicFont(size: 13, weight: .semibold)
                                 .foregroundStyle(Color.textPrimary)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 12)

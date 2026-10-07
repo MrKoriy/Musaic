@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import fs from "fs";
+import { readdir, stat } from "node:fs/promises";
 import path from "path";
 import crypto from "crypto";
 import { parseFile } from "music-metadata";
@@ -21,15 +22,15 @@ let scanStatus: { scanning: boolean; scanned: number; total: number; lastScanAt:
 };
 
 /** Recursively walk a directory and return all audio file paths */
-function walkDir(dir: string): string[] {
+async function walkDir(dir: string): Promise<string[]> {
   const results: string[] = [];
   try {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    const entries = await readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.name.startsWith(".")) continue;
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        results.push(...walkDir(fullPath));
+        results.push(...await walkDir(fullPath));
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name).toLowerCase();
         if (AUDIO_EXTENSIONS.has(ext)) {
@@ -62,6 +63,14 @@ function inferMoodFromGenre(genre: string | undefined): string | undefined {
 async function indexFile(filePath: string): Promise<void> {
   const id = "local_" + crypto.createHash("sha1").update(filePath).digest("hex");
   try {
+    const fileStat = await stat(filePath);
+    const previous = getDb().prepare("SELECT metadata FROM tracks WHERE id = ?").get(id) as { metadata: string | null } | null;
+    if (previous?.metadata) {
+      try {
+        const stored = JSON.parse(previous.metadata);
+        if (stored.fileSize === fileStat.size && stored.fileMtimeMs === fileStat.mtimeMs) return;
+      } catch { /* Re-index legacy metadata. */ }
+    }
     const meta = await parseFile(filePath, { skipCovers: false, duration: true });
     const common = meta.common;
     const format = meta.format;
@@ -98,7 +107,7 @@ async function indexFile(filePath: string): Promise<void> {
       local_path: filePath,
       genre,
       mood,
-      metadata: { bitrate, format: format.codec, sampleRate: format.sampleRate },
+      metadata: { bitrate, format: format.codec, sampleRate: format.sampleRate, fileSize: fileStat.size, fileMtimeMs: fileStat.mtimeMs },
     });
   } catch (err) {
     console.error(`[scan] Failed to parse ${filePath}:`, err instanceof Error ? err.message : err);
@@ -134,10 +143,10 @@ localRouter.post("/scan", async (c) => {
 
   scanStatus = { scanning: true, scanned: 0, total: 0, lastScanAt: null };
 
+  const files = await walkDir(resolvedMusicDir);
+  scanStatus.total = files.length;
   (async () => {
     try {
-      const files = walkDir(resolvedMusicDir);
-      scanStatus.total = files.length;
       console.log(`[scan] Found ${files.length} audio files in ${resolvedMusicDir}`);
 
       for (const file of files) {

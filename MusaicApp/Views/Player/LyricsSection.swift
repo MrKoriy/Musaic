@@ -128,7 +128,7 @@ struct LyricsSheet: View {
                     .tint(Color.textPrimary)
                     .scaleEffect(1.1)
                 Text(String(localized: "Loading lyrics..."))
-                    .font(.system(size: 14, weight: .medium))
+                    .musaicFont(size: 14, weight: .medium)
                     .foregroundStyle(Color.textSecondary)
             }
             Spacer()
@@ -141,7 +141,7 @@ struct LyricsSheet: View {
         } else if let rawLrc, !rawLrc.isEmpty {
             ScrollView {
                 Text(rawLrc)
-                    .font(.system(size: 20, weight: .medium, design: .rounded))
+                    .musaicFont(size: 20, weight: .medium, design: .rounded)
                     .foregroundStyle(Color.textPrimary.opacity(0.7))
                     .lineSpacing(10)
                     .padding(24)
@@ -197,9 +197,9 @@ struct LyricsSheet: View {
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "arrow.down")
-                                .font(.system(size: 11, weight: .bold))
+                                .musaicFont(size: 11, weight: .bold)
                             Text(String(localized: "Back to lyrics"))
-                                .font(.system(size: 12, weight: .bold))
+                                .musaicFont(size: 12, weight: .bold)
                         }
                         .foregroundStyle(Color.textPrimary)
                         .padding(.horizontal, 16)
@@ -218,13 +218,13 @@ struct LyricsSheet: View {
     private func errorView(_ message: String) -> some View {
         VStack(spacing: 20) {
             Image(systemName: "wifi.exclamationmark")
-                .font(.system(size: 44))
+                .musaicFont(size: 44)
                 .foregroundStyle(Color.white.opacity(0.15))
             Text(String(localized: "Failed to load lyrics"))
-                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .musaicFont(size: 18, weight: .bold, design: .rounded)
                 .foregroundStyle(Color.textPrimary)
             Text(message)
-                .font(.system(size: 13, weight: .medium))
+                .musaicFont(size: 13, weight: .medium)
                 .foregroundStyle(Color.textSecondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
@@ -236,7 +236,7 @@ struct LyricsSheet: View {
                     Image(systemName: "arrow.clockwise")
                     Text(String(localized: "Retry"))
                 }
-                .font(.system(size: 14, weight: .bold))
+                .musaicFont(size: 14, weight: .bold)
                 .foregroundStyle(Color.bgPrimary)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)
@@ -248,20 +248,20 @@ struct LyricsSheet: View {
     private var emptyView: some View {
         VStack(spacing: 20) {
             Image(systemName: "text.quote")
-                .font(.system(size: 44))
+                .musaicFont(size: 44)
                 .foregroundStyle(Color.white.opacity(0.15))
             Text(String(localized: "No lyrics found"))
-                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .musaicFont(size: 18, weight: .bold, design: .rounded)
                 .foregroundStyle(Color.textPrimary)
             Text(String(localized: "Try generating with AI"))
-                .font(.system(size: 13, weight: .medium))
+                .musaicFont(size: 13, weight: .medium)
                 .foregroundStyle(Color.textSecondary)
             Button { generate() } label: {
                 HStack(spacing: 8) {
                     Image(systemName: generating ? "hourglass" : "sparkles")
                     Text(generating ? String(localized: "Generating...") : String(localized: "Generate with AI"))
                 }
-                .font(.system(size: 14, weight: .bold))
+                .musaicFont(size: 14, weight: .bold)
                 .foregroundStyle(Color.bgPrimary)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)
@@ -280,10 +280,10 @@ struct LyricsSheet: View {
                     .scaleEffect(0.85)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(String(localized: "Re-aligning lyrics with AI"))
-                        .font(.system(size: 13, weight: .bold))
+                        .musaicFont(size: 13, weight: .bold)
                         .foregroundStyle(Color.textPrimary)
                     Text(String(localized: "Takes ~15-25 seconds"))
-                        .font(.system(size: 11, weight: .medium))
+                        .musaicFont(size: 11, weight: .medium)
                         .foregroundStyle(Color.textSecondary)
                 }
             }
@@ -538,10 +538,10 @@ private struct LyricsOffsetControl: View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(String(localized: "Lyrics timing"))
-                    .font(.system(size: 12, weight: .semibold))
+                    .musaicFont(size: 12, weight: .semibold)
                     .foregroundStyle(Color.textPrimary)
                 Text(saveFailed ? String(localized: "Not saved — check connection") : String(localized: "+ shows lines earlier"))
-                    .font(.system(size: 10, weight: .medium))
+                    .musaicFont(size: 10, weight: .medium)
                     .foregroundStyle(saveFailed ? Color.accentStrong : Color.textMuted)
             }
 
@@ -550,7 +550,7 @@ private struct LyricsOffsetControl: View {
             stepButton(systemName: "minus", label: String(localized: "Show lyrics later")) { onAdjust(-0.1) }
 
             Text(Self.format(offset))
-                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                .musaicFont(size: 13, weight: .semibold, design: .monospaced)
                 .foregroundStyle(offset == 0 ? Color.textSecondary : Color.accentStrong)
                 .frame(minWidth: 58)
                 .contentTransition(.numericText())
@@ -559,7 +559,7 @@ private struct LyricsOffsetControl: View {
 
             Button(action: onReset) {
                 Image(systemName: "arrow.counterclockwise")
-                    .font(.system(size: 12, weight: .bold))
+                    .musaicFont(size: 12, weight: .bold)
                     .foregroundStyle(offset == 0 ? Color.textMuted : Color.textPrimary)
                     .frame(width: 30, height: 30)
             }
@@ -576,7 +576,7 @@ private struct LyricsOffsetControl: View {
     private func stepButton(systemName: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 13, weight: .bold))
+                .musaicFont(size: 13, weight: .bold)
                 .foregroundStyle(Color.textPrimary)
                 .frame(width: 30, height: 30)
                 .background(Color.white.opacity(0.08), in: Circle())

@@ -34,16 +34,19 @@ export class LocalFLACProvider implements MusicProvider {
     const q = query.trim();
     if (!q) return [];
     const safeLimit = Math.max(1, Math.min(limit, 200));
+    const tokens = q.match(/[\p{L}\p{N}]+/gu) ?? [];
+    if (tokens.length === 0) return [];
+    const ftsQuery = tokens.map((token) => `"${token}"*`).join(" AND ");
     const safeOffset = Math.max(0, offset);
     // FTS5 search
     const rows = db
       .prepare(
         `SELECT t.* FROM tracks t
-         JOIN tracks_fts fts ON t.rowid = fts.rowid
-         WHERE fts MATCH $q AND t.source = 'local'
+         JOIN tracks_fts ON t.rowid = tracks_fts.rowid
+         WHERE tracks_fts MATCH $q AND t.source = 'local'
          ORDER BY rank LIMIT $limit OFFSET $offset`
       )
-      .all({ $q: `${q}*`, $limit: safeLimit, $offset: safeOffset }) as Record<string, unknown>[];
+      .all({ $q: ftsQuery, $limit: safeLimit, $offset: safeOffset }) as Record<string, unknown>[];
     return rows.map(rowToTrack);
   }
 

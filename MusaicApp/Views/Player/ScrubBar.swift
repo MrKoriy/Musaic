@@ -157,14 +157,14 @@ private struct ScrubTimeLabels: View {
     var body: some View {
         HStack {
             Text(Self.format(elapsedSeconds))
-                .font(.system(size: isDragging ? 13 : 12, weight: .semibold, design: .monospaced))
+                .musaicFont(size: isDragging ? 13 : 12, weight: .semibold, design: .monospaced)
                 .foregroundStyle(isDragging ? Color.textPrimary : Color.textSecondary)
                 .scaleEffect(isDragging ? 1.08 : 1.0, anchor: .leading)
 
             Spacer()
 
             Text("-\(Self.format(remainingSeconds))")
-                .font(.system(size: isDragging ? 13 : 12, weight: .semibold, design: .monospaced))
+                .musaicFont(size: isDragging ? 13 : 12, weight: .semibold, design: .monospaced)
                 .foregroundStyle(isDragging ? Color.textPrimary : Color.textSecondary)
                 .scaleEffect(isDragging ? 1.08 : 1.0, anchor: .trailing)
         }

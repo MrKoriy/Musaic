@@ -203,7 +203,8 @@ export function initSchema(db: Database): void {
 
 const TRACKS_COLUMNS =
   "id, source, title, artist, album, duration, cover_url, cover_path, local_path, waveform_url, " +
-  "mood, genre, play_count, last_played_at, metadata, created_at, updated_at";
+  "mood, genre, play_count, last_played_at, metadata, created_at, updated_at, " +
+  "loudness_lufs, loudness_peak_db, loudness_source, loudness_scanned_at";
 
 /**
  * One-time rebuild of the `tracks` table to drop the legacy
@@ -246,7 +247,11 @@ export function dropTracksSourceCheck(db: Database): void {
         last_played_at INTEGER,
         metadata TEXT,
         created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+        loudness_lufs REAL,
+        loudness_peak_db REAL,
+        loudness_source TEXT,
+        loudness_scanned_at INTEGER
       )
     `);
     db.exec(`INSERT INTO tracks_new (${TRACKS_COLUMNS}) SELECT ${TRACKS_COLUMNS} FROM tracks`);
@@ -265,6 +270,11 @@ export function dropTracksSourceCheck(db: Database): void {
   initSchema(db);
   db.exec("CREATE INDEX IF NOT EXISTS idx_tracks_album_artist ON tracks(album, artist)");
   db.exec("INSERT INTO tracks_fts(tracks_fts) VALUES('rebuild')");
+  db.exec(`CREATE TRIGGER IF NOT EXISTS playlist_revision_track
+    AFTER UPDATE OF title, artist, album, duration, cover_url, waveform_url, loudness_lufs, loudness_peak_db ON tracks BEGIN
+      UPDATE playlists SET revision = revision + 1 WHERE id IN
+        (SELECT playlist_id FROM playlist_tracks WHERE track_id = NEW.id);
+    END`);
   console.log("[db] migrated tracks table: dropped legacy source CHECK constraint");
 }
 
@@ -516,6 +526,7 @@ export function clearYandexConfig(): void {
 
 // Listening history
 export interface ListeningEventDetails {
+  playedAt?: number | null;
   eventId?: string | null;
   playedMs?: number | null;
   durationMs?: number | null;
@@ -543,7 +554,7 @@ export function logListening(
     const uid = userId ?? null;
     const eventId = details.eventId?.trim() || null;
     const duplicate = eventId
-      ? db.prepare("SELECT 1 FROM listening_history WHERE event_id = $eventId LIMIT 1")
+      ? db.prepare("SELECT 1 FROM listening_event_receipts WHERE event_id = $eventId LIMIT 1")
           .get({ $eventId: eventId })
       : db.prepare(`
           SELECT 1 FROM listening_history
@@ -567,10 +578,10 @@ export function logListening(
 
     db.prepare(`
       INSERT INTO listening_history (
-        event_id, track_id, action, user_id, played_ms, duration_ms, played_ratio,
+        event_id, track_id, action, user_id, played_at, played_ms, duration_ms, played_ratio,
         session_id, request_id, surface, is_organic, position, context
       ) VALUES (
-        $eventId, $id, $action, $uid, $playedMs, $durationMs, $playedRatio,
+        $eventId, $id, $action, $uid, $playedAt, $playedMs, $durationMs, $playedRatio,
         $sessionId, $requestId, $surface, $isOrganic, $position, $context
       )
     `).run({
@@ -578,6 +589,7 @@ export function logListening(
       $id: trackId,
       $action: action,
       $uid: uid,
+      $playedAt: details.playedAt == null ? Math.floor(Date.now() / 1000) : Math.floor(details.playedAt),
       $playedMs: playedMs,
       $durationMs: durationMs,
       $playedRatio: playedRatio,
@@ -588,6 +600,10 @@ export function logListening(
       $position: finiteNonNegative(details.position),
       $context: details.context ? JSON.stringify(details.context) : null,
     });
+
+    if (eventId) {
+      db.prepare("INSERT INTO listening_event_receipts (event_id, user_key) VALUES (?, ?)").run(eventId, uid ?? "");
+    }
 
     // A completed track or a manually advanced track heard past halfway both
     // count as one qualified listen. The event itself still preserves whether
@@ -667,7 +683,7 @@ export function getPlaylists(userId?: string | null): Record<string, unknown>[] 
       CASE WHEN pcd.playlist_id IS NOT NULL THEN 1 ELSE 0 END as has_custom_cover,
       COALESCE(
         CASE
-          WHEN pcd.playlist_id IS NOT NULL THEN '/api/playlists/' || p.id || '/image'
+          WHEN pcd.playlist_id IS NOT NULL THEN '/api/playlists/' || p.id || '/image?v=' || p.revision
           ELSE NULL
         END,
         (
@@ -705,17 +721,23 @@ export function getPlaylistTracks(playlistId: string): Record<string, unknown>[]
     SELECT t.* FROM tracks t
     JOIN playlist_tracks pt ON t.id = pt.track_id
     WHERE pt.playlist_id = $pid
-    ORDER BY pt.position ASC
+    ORDER BY pt.position ASC, pt.id ASC
   `).all({ $pid: playlistId }) as Record<string, unknown>[];
 }
 
-export function addTrackToPlaylist(playlistId: string, trackId: string, position: number): void {
+export function addTrackToPlaylist(playlistId: string, trackId: string, position?: number): void {
   const db = getDb();
   db.transaction(() => {
+    if (db.prepare("SELECT 1 FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?").get(playlistId, trackId)) return;
+    const tail = db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS next FROM playlist_tracks WHERE playlist_id = ?").get(playlistId) as { next: number };
+    const slot = position == null ? tail.next : Math.min(tail.next, Math.max(0, Math.floor(position)));
+    if (position != null) {
+      db.prepare("UPDATE playlist_tracks SET position = position + 1 WHERE playlist_id = ? AND position >= ?").run(playlistId, slot);
+    }
     db.prepare(`
       INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position)
       VALUES ($pid, $tid, $pos)
-    `).run({ $pid: playlistId, $tid: trackId, $pos: position });
+    `).run({ $pid: playlistId, $tid: trackId, $pos: slot });
     db.prepare("UPDATE playlists SET updated_at = unixepoch() WHERE id = $id")
       .run({ $id: playlistId });
   })();

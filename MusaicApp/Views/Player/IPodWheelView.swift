@@ -93,7 +93,7 @@ struct IPodWheelView: View {
             HStack {
                 Button(action: close) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 13, weight: .bold))
+                        .musaicFont(size: 13, weight: .bold)
                         .foregroundStyle(Color.textSecondary)
                         .frame(width: 32, height: 32)
                         .background(Color.white.opacity(0.08), in: Circle())
@@ -104,7 +104,7 @@ struct IPodWheelView: View {
                 Spacer()
 
                 Text(mode.title.uppercased())
-                    .font(.system(size: 11, weight: .bold))
+                    .musaicFont(size: 11, weight: .bold)
                     .tracking(2)
                     .foregroundStyle(Color.accentStrong)
                     .contentTransition(.opacity)
@@ -126,7 +126,7 @@ struct IPodWheelView: View {
         case .scrub:
             if let fraction = scrubFraction, audio.duration > 0 {
                 Text("\(timeString(fraction * audio.duration)) / \(timeString(audio.duration))")
-                    .font(.system(size: 26, weight: .semibold, design: .monospaced))
+                    .musaicFont(size: 26, weight: .semibold, design: .monospaced)
                     .foregroundStyle(Color.accentStrong)
                     .contentTransition(.numericText())
             } else {
@@ -136,7 +136,7 @@ struct IPodWheelView: View {
         case .volume:
             VStack(spacing: 6) {
                 Text("\(Int((player.volume * 100).rounded()))%")
-                    .font(.system(size: 26, weight: .semibold, design: .monospaced))
+                    .musaicFont(size: 26, weight: .semibold, design: .monospaced)
                     .foregroundStyle(Color.accentStrong)
                     .contentTransition(.numericText())
                 ProgressView(value: Double(player.volume))
@@ -173,7 +173,7 @@ struct IPodWheelView: View {
             Image(systemName: systemImage)
             Text(title)
         }
-        .font(.system(size: 13, weight: .semibold))
+        .musaicFont(size: 13, weight: .semibold)
         .foregroundStyle(highlighted ? Color.bgPrimary : Color.textPrimary)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -230,7 +230,7 @@ struct IPodWheelView: View {
                 player.togglePlayPause()
             } label: {
                 Image(systemName: "playpause")
-                    .font(.system(size: 20, weight: .semibold))
+                    .musaicFont(size: 20, weight: .semibold)
                     .foregroundStyle(Color.textPrimary.opacity(0.9))
                     .frame(width: 64, height: 40)
             }
@@ -241,7 +241,7 @@ struct IPodWheelView: View {
             // MENU — cycles the wheel mode, like the original.
             Button(action: cycleMode) {
                 Text("MENU")
-                    .font(.system(size: 14, weight: .bold))
+                    .musaicFont(size: 14, weight: .bold)
                     .tracking(1.5)
                     .foregroundStyle(Color.textPrimary.opacity(0.9))
                     .frame(width: 64, height: 40)
@@ -260,17 +260,17 @@ struct IPodWheelView: View {
         VStack(spacing: 4) {
             if mode == .playbackModes {
                 Image(systemName: "checkmark")
-                    .font(.system(size: 26, weight: .medium))
+                    .musaicFont(size: 26, weight: .medium)
                     .foregroundStyle(Color.textPrimary)
                 Text(String(localized: "Select"))
-                    .font(.system(size: 10, weight: .semibold))
+                    .musaicFont(size: 10, weight: .semibold)
                     .foregroundStyle(Color.textSecondary)
             } else {
                 Image(systemName: player.isPlaybackIntended ? "pause.fill" : "play.fill")
-                    .font(.system(size: 30, weight: .medium))
+                    .musaicFont(size: 30, weight: .medium)
                     .foregroundStyle(Color.textPrimary)
                 Text(player.isPlaybackIntended ? String(localized: "Pause") : String(localized: "Play"))
-                    .font(.system(size: 10, weight: .semibold))
+                    .musaicFont(size: 10, weight: .semibold)
                     .foregroundStyle(Color.textSecondary)
             }
         }
@@ -279,7 +279,7 @@ struct IPodWheelView: View {
     private func edgeButton(systemName: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 22, weight: .semibold))
+                .musaicFont(size: 22, weight: .semibold)
                 .foregroundStyle(Color.textPrimary.opacity(0.9))
                 .frame(width: 64, height: 64)
                 .contentShape(Rectangle())
@@ -413,10 +413,10 @@ private struct WheelLiveTime: View {
     var body: some View {
         VStack(spacing: 2) {
             Text(audio.duration > 0 ? "\(format(audio.currentTime)) / \(format(audio.duration))" : "--:--")
-                .font(.system(size: 20, weight: .semibold, design: .monospaced))
+                .musaicFont(size: 20, weight: .semibold, design: .monospaced)
                 .foregroundStyle(Color.textPrimary.opacity(0.85))
             Text(String(localized: "Spin the wheel to scrub"))
-                .font(.system(size: 11, weight: .medium))
+                .musaicFont(size: 11, weight: .medium)
                 .foregroundStyle(Color.textSecondary)
         }
     }

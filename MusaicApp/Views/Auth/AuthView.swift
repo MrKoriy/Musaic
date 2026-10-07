@@ -29,10 +29,10 @@ struct AuthView: View {
 
                     VStack(spacing: 8) {
                         Text(verbatim: "Musaic")
-                            .font(.system(size: 42, weight: .bold, design: .rounded))
+                            .musaicFont(size: 42, weight: .bold, design: .rounded)
                             .foregroundStyle(Color.textPrimary)
                         Text(isRegistering ? String(localized: "Create your account") : String(localized: "Welcome back"))
-                            .font(.system(size: 15, weight: .medium))
+                            .musaicFont(size: 15, weight: .medium)
                             .foregroundStyle(Color.textSecondary)
                     }
 
@@ -54,7 +54,7 @@ struct AuthView: View {
 
                     if let error {
                         Text(error)
-                            .font(.system(size: 13, weight: .medium))
+                            .musaicFont(size: 13, weight: .medium)
                             .foregroundStyle(.red)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 24)
@@ -68,7 +68,7 @@ struct AuthView: View {
                                 ProgressView().tint(Color.bgPrimary).scaleEffect(0.8)
                             }
                             Text(isRegistering ? String(localized: "Create Account") : String(localized: "Sign In"))
-                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                                .musaicFont(size: 16, weight: .bold, design: .rounded)
                         }
                         .foregroundStyle(Color.bgPrimary)
                         .frame(maxWidth: .infinity)
@@ -87,7 +87,7 @@ struct AuthView: View {
                         }
                     } label: {
                         Text(isRegistering ? String(localized: "Already have an account? Sign In") : String(localized: "Don't have an account? Register"))
-                            .font(.system(size: 13, weight: .semibold))
+                            .musaicFont(size: 13, weight: .semibold)
                             .foregroundStyle(Color.textSecondary)
                     }
                     .buttonStyle(.plain)
@@ -113,7 +113,7 @@ struct AuthView: View {
                             ProgressView().tint(Color.textPrimary)
                         } else {
                             Image(systemName: serverStatusIcon)
-                                .font(.system(size: 16, weight: .semibold))
+                                .musaicFont(size: 16, weight: .semibold)
                                 .foregroundStyle(serverStatusColor)
                         }
                     }
@@ -127,7 +127,7 @@ struct AuthView: View {
 
             if let serverCheck {
                 Text(serverCheck.message)
-                    .font(.system(size: 12, weight: .medium))
+                    .musaicFont(size: 12, weight: .medium)
                     .foregroundStyle(serverCheck == .ok ? Color.textSecondary : Color.accentStrong)
                     .fixedSize(horizontal: false, vertical: true)
             }

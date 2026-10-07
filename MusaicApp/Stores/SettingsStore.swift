@@ -86,6 +86,13 @@ final class SettingsStore {
         enabledRecommendationSources.joined(separator: ",")
     }
 
+    var downloadBitrate: Int {
+        didSet { UserDefaults.standard.set(downloadBitrate, forKey: "download_bitrate") }
+    }
+    var downloadsWifiOnly: Bool {
+        didSet { UserDefaults.standard.set(downloadsWifiOnly, forKey: "downloads_wifi_only") }
+    }
+
     var serverConnected = false
 
     // MARK: Auth
@@ -137,6 +144,8 @@ final class SettingsStore {
         authUsername = defaults.string(forKey: Keys.authUsername) ?? ""
         authDisplayName = defaults.string(forKey: Keys.authDisplayName) ?? ""
 
+        downloadBitrate = defaults.object(forKey: "download_bitrate") as? Int ?? 128
+        downloadsWifiOnly = defaults.object(forKey: "downloads_wifi_only") as? Bool ?? true
         let token = Self.loadAuthToken()
         APICredentials.shared.setToken(token)
         isLoggedIn = token != nil
